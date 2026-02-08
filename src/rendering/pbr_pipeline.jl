@@ -211,6 +211,10 @@ end
 
 Main render loop. Creates a window, initializes OpenGL, and renders the scene
 until the window is closed.
+
+If a PlayerComponent exists in the scene, FPS controls are automatically enabled:
+WASD movement, mouse look, Space/Ctrl for up/down, Shift to sprint, Escape to
+release cursor.
 """
 function run_render_loop!(scene::Scene;
                           backend::AbstractBackend = OpenGLBackend(),
@@ -219,9 +223,37 @@ function run_render_loop!(scene::Scene;
                           title::String = "OpenReality")
     initialize!(backend, width=width, height=height, title=title)
 
+    # Auto-detect player and set up FPS controller
+    controller = nothing
+    result = find_player_and_camera(scene)
+    if result !== nothing
+        player_id, camera_id = result
+        controller = PlayerController(player_id, camera_id)
+        capture_cursor!(backend.window)
+        @info "Player controller active — WASD to move, mouse to look, Shift to sprint, Escape to release cursor"
+    end
+
+    last_time = get_time()
+
     try
         while !should_close(backend.window)
+            # Delta time
+            now = get_time()
+            dt = now - last_time
+            last_time = now
+
             poll_events!()
+
+            # Update player
+            if controller !== nothing
+                # Escape toggles cursor capture
+                if is_key_pressed(backend.input, KEY_ESCAPE)
+                    release_cursor!(backend.window)
+                end
+
+                update_player!(controller, backend.input, dt)
+            end
+
             render_frame!(backend, scene)
         end
     finally

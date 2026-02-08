@@ -40,10 +40,14 @@ include("components/material.jl")
 include("components/camera.jl")
 include("components/lights.jl")
 include("components/primitives.jl")
+include("components/player.jl")
 
 # Windowing (before backend — backend needs Window and InputState)
 include("windowing/glfw.jl")
 include("windowing/input.jl")
+
+# Systems (after windowing — uses GLFW key constants)
+include("systems/player_controller.jl")
 
 # Rendering utilities (before backend — backend needs these)
 include("rendering/shader.jl")
@@ -85,6 +89,8 @@ export MaterialComponent
 export CameraComponent
 export PointLightComponent, DirectionalLightComponent
 export cube_mesh, sphere_mesh, plane_mesh
+export PlayerComponent, create_player
+export PlayerController, find_player_and_camera, update_player!
 
 # Export Backend
 export AbstractBackend, initialize!, shutdown!, render_frame!
@@ -99,7 +105,7 @@ export run_render_loop!
 
 # Export Windowing
 export Window, create_window!, destroy_window!, should_close, poll_events!, swap_buffers!
-export setup_resize_callback!
+export setup_resize_callback!, capture_cursor!, release_cursor!, get_time
 export InputState, is_key_pressed, get_mouse_position, setup_input_callbacks!
 
 # Export Math

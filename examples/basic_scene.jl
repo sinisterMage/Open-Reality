@@ -6,13 +6,10 @@ using OpenReality
 reset_entity_counter!()
 reset_component_stores!()
 
-# Build a PBR scene with camera, lights, and objects
+# Build a PBR scene with FPS player, lights, and objects
 s = scene([
-    # Camera looking at the origin from an elevated angle
-    entity([
-        CameraComponent(fov=60.0f0, aspect=Float32(16/9), near=0.1f0, far=100.0f0),
-        transform(position=Vec3d(0, 3, 8))
-    ]),
+    # Player with FPS controls (WASD + mouse look)
+    create_player(position=Vec3d(0, 1.7, 8)),
 
     # Directional light (sun)
     entity([

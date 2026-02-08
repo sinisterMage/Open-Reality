@@ -94,3 +94,34 @@ function setup_resize_callback!(window::Window, on_resize::Function)
     end)
     return nothing
 end
+
+"""
+    capture_cursor!(window::Window)
+
+Hide and capture the mouse cursor for FPS-style mouse look.
+The cursor becomes invisible and is locked to the window center.
+"""
+function capture_cursor!(window::Window)
+    GLFW.SetInputMode(window.handle, GLFW.CURSOR, GLFW.CURSOR_DISABLED)
+    return nothing
+end
+
+"""
+    release_cursor!(window::Window)
+
+Release the mouse cursor back to normal mode.
+"""
+function release_cursor!(window::Window)
+    GLFW.SetInputMode(window.handle, GLFW.CURSOR, GLFW.CURSOR_NORMAL)
+    return nothing
+end
+
+"""
+    get_time() -> Float64
+
+Get the current time in seconds (high-resolution clock).
+Uses Julia's built-in `time()` since GLFW.jl does not wrap `glfwGetTime`.
+"""
+function get_time()
+    return time()
+end
