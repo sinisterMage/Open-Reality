@@ -487,6 +487,12 @@ mutable struct DeferredPipeline
     # IBL environment (optional)
     ibl_env::Union{IBLEnvironment, Nothing}
 
+    # Screen-space reflections (optional)
+    ssr_pass::Union{SSRPass, Nothing}
+
+    # Screen-space ambient occlusion (optional)
+    ssao_pass::Union{SSAOPass, Nothing}
+
     # Fullscreen quad for lighting pass
     quad_vao::GLuint
     quad_vbo::GLuint
@@ -494,6 +500,8 @@ mutable struct DeferredPipeline
     DeferredPipeline() = new(
         GBuffer(),
         Framebuffer(),
+        nothing,
+        nothing,
         nothing,
         nothing,
         nothing,
@@ -560,6 +568,16 @@ function create_deferred_pipeline!(pipeline::DeferredPipeline, width::Int, heigh
 
     glBindVertexArray(GLuint(0))
 
+    # Create SSR pass (optional, can be enabled/disabled)
+    pipeline.ssr_pass = SSRPass(width=width, height=height)
+    create_ssr_pass!(pipeline.ssr_pass, width, height)
+
+    # Create SSAO pass (optional, can be enabled/disabled)
+    pipeline.ssao_pass = SSAOPass(width=width, height=height)
+    create_ssao_pass!(pipeline.ssao_pass, width, height)
+
+    @info "Created deferred pipeline" width=width height=height
+
     return nothing
 end
 
@@ -592,6 +610,16 @@ function destroy_deferred_pipeline!(pipeline::DeferredPipeline)
         pipeline.quad_vbo = GLuint(0)
     end
 
+    if pipeline.ssr_pass !== nothing
+        destroy_ssr_pass!(pipeline.ssr_pass)
+        pipeline.ssr_pass = nothing
+    end
+
+    if pipeline.ssao_pass !== nothing
+        destroy_ssao_pass!(pipeline.ssao_pass)
+        pipeline.ssao_pass = nothing
+    end
+
     return nothing
 end
 
@@ -603,4 +631,12 @@ Resize the deferred pipeline framebuffers.
 function resize_deferred_pipeline!(pipeline::DeferredPipeline, width::Int, height::Int)
     resize_gbuffer!(pipeline.gbuffer, width, height)
     resize_framebuffer!(pipeline.lighting_fbo, width, height)
+
+    if pipeline.ssr_pass !== nothing
+        resize_ssr_pass!(pipeline.ssr_pass, width, height)
+    end
+
+    if pipeline.ssao_pass !== nothing
+        resize_ssao_pass!(pipeline.ssao_pass, width, height)
+    end
 end

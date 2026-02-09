@@ -572,9 +572,41 @@ function render_frame!(backend::OpenGLBackend, scene::Scene)
         # ---- Deferred lighting pass ----
         render_deferred_lighting_pass!(backend, pipeline, cam_pos, view, proj, light_space, has_shadows)
 
+        # ---- Screen-Space Ambient Occlusion (SSAO) pass ----
+        ssao_texture = GLuint(0)
+        if pipeline.ssao_pass !== nothing
+            # Render SSAO (returns blurred occlusion texture)
+            ssao_texture = render_ssao!(pipeline.ssao_pass, pipeline.gbuffer, proj)
+        end
+
+        # ---- Screen-Space Reflections (SSR) pass ----
+        if pipeline.ssr_pass !== nothing
+            # Run SSR ray-marching
+            render_ssr!(pipeline.ssr_pass, pipeline.gbuffer,
+                       pipeline.lighting_fbo.color_texture,
+                       view, proj, cam_pos)
+
+            # Composite SSR over lighting result (in-place)
+            composite_ssr!(pipeline.lighting_fbo.fbo,
+                          pipeline.lighting_fbo.color_texture,
+                          pipeline.ssr_pass.ssr_texture,
+                          pipeline.lighting_fbo.width,
+                          pipeline.lighting_fbo.height,
+                          pipeline.quad_vao)
+        end
+
+        # ---- Apply SSAO to lighting result ----
+        if ssao_texture != GLuint(0)
+            apply_ssao_to_lighting!(pipeline.lighting_fbo.fbo,
+                                   pipeline.lighting_fbo.color_texture,
+                                   ssao_texture,
+                                   pipeline.lighting_fbo.width,
+                                   pipeline.lighting_fbo.height,
+                                   pipeline.quad_vao)
+        end
+
         # ---- Copy lighting result to screen ----
-        # For now, blit directly to default framebuffer
-        # TODO: Add post-processing support for deferred rendering
+        # Blit to default framebuffer
         glBindFramebuffer(GL_READ_FRAMEBUFFER, pipeline.lighting_fbo.fbo)
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, GLuint(0))
         viewport = Int32[0, 0, 0, 0]

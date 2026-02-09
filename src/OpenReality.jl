@@ -65,6 +65,8 @@ include("rendering/framebuffer.jl")
 include("rendering/gbuffer.jl")
 include("rendering/shader_variants.jl")
 include("rendering/ibl.jl")
+include("rendering/ssr.jl")
+include("rendering/ssao.jl")
 include("rendering/deferred.jl")
 include("rendering/post_processing.jl")
 include("rendering/shadow_map.jl")
@@ -147,6 +149,12 @@ export bind_gbuffer_for_write!, bind_gbuffer_textures_for_read!, unbind_framebuf
 export ShaderFeature, ShaderVariantKey, ShaderLibrary
 export get_or_compile_variant!, determine_shader_variant, destroy_shader_library!
 export DeferredPipeline, create_deferred_pipeline!, destroy_deferred_pipeline!, resize_deferred_pipeline!
+
+# Export SSR
+export SSRPass, create_ssr_pass!, destroy_ssr_pass!, resize_ssr_pass!, render_ssr!
+
+# Export SSAO
+export SSAOPass, create_ssao_pass!, destroy_ssao_pass!, resize_ssao_pass!, render_ssao!, apply_ssao_to_lighting!
 
 # Export IBL
 export IBLEnvironment, create_ibl_environment!, destroy_ibl_environment!
