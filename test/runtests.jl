@@ -167,6 +167,7 @@ using LinearAlgebra
             @test DirectionalLightComponent <: Component
             @test ColliderComponent <: Component
             @test RigidBodyComponent <: Component
+            @test AnimationComponent <: Component
         end
     end
 
@@ -903,6 +904,312 @@ using LinearAlgebra
             @test local_mat[1] ≈ 2.0 atol=1e-10
             @test local_mat[6] ≈ 2.0 atol=1e-10
             @test local_mat[11] ≈ 2.0 atol=1e-10
+        end
+    end
+
+    @testset "Shadow Mapping" begin
+        @testset "ShadowMap struct" begin
+            sm = ShadowMap()
+            @test sm.width == 2048
+            @test sm.height == 2048
+            @test sm.fbo == UInt32(0)
+            @test sm.depth_texture == UInt32(0)
+            @test sm.shader === nothing
+
+            sm2 = ShadowMap(width=1024, height=1024)
+            @test sm2.width == 1024
+            @test sm2.height == 1024
+        end
+
+        @testset "compute_light_space_matrix" begin
+            cam_pos = Vec3f(0, 5, 10)
+            light_dir = Vec3f(0, -1, 0)
+            lsm = compute_light_space_matrix(cam_pos, light_dir)
+            @test lsm isa Mat4f
+            @test size(lsm) == (4, 4)
+            # Light-space matrix should be non-identity for a non-trivial setup
+            @test lsm != Mat4f(I)
+        end
+
+        @testset "ortho matrix" begin
+            ortho = OpenReality._ortho_matrix(-10.0f0, 10.0f0, -10.0f0, 10.0f0, -50.0f0, 50.0f0)
+            @test ortho isa Mat4f
+            # The diagonal entries should be 2/(right-left), 2/(top-bottom), -2/(far-near)
+            @test ortho[1,1] ≈ 2.0f0/20.0f0 atol=1e-5
+            @test ortho[2,2] ≈ 2.0f0/20.0f0 atol=1e-5
+            @test ortho[3,3] ≈ -2.0f0/100.0f0 atol=1e-5
+        end
+    end
+
+    @testset "Frustum Culling" begin
+        @testset "BoundingSphere from mesh" begin
+            mesh = MeshComponent(
+                vertices=[
+                    Point3f(-1, -1, -1),
+                    Point3f(1, 1, 1),
+                    Point3f(0, 0, 0)
+                ],
+                indices=UInt32[0, 1, 2]
+            )
+            bs = bounding_sphere_from_mesh(mesh)
+            @test bs isa BoundingSphere
+            @test bs.center ≈ Vec3f(0, 0, 0) atol=1e-5
+            @test bs.radius ≈ sqrt(3.0f0) atol=1e-5
+        end
+
+        @testset "BoundingSphere from empty mesh" begin
+            mesh = MeshComponent()
+            bs = bounding_sphere_from_mesh(mesh)
+            @test bs.center == Vec3f(0, 0, 0)
+            @test bs.radius == 0.0f0
+        end
+
+        @testset "Frustum extraction" begin
+            # Use a simple identity VP matrix — all points in [-1,1]^3 should be "inside"
+            vp = Mat4f(I)
+            f = extract_frustum(vp)
+            @test f isa Frustum
+            @test length(f.planes) == 6
+        end
+
+        @testset "Sphere in frustum test" begin
+            vp = Mat4f(I)
+            f = extract_frustum(vp)
+
+            # A sphere at origin with small radius should be inside identity frustum
+            @test is_sphere_in_frustum(f, Vec3f(0, 0, 0), 0.5f0) == true
+
+            # A sphere far outside should be culled
+            @test is_sphere_in_frustum(f, Vec3f(100, 100, 100), 0.1f0) == false
+        end
+
+        @testset "Transform bounding sphere" begin
+            bs = BoundingSphere(Vec3f(0, 0, 0), 1.0f0)
+
+            # Identity transform — no change
+            identity_model = Mat4f(I)
+            center, radius = OpenReality.transform_bounding_sphere(bs, identity_model)
+            @test center ≈ Vec3f(0, 0, 0) atol=1e-5
+            @test radius ≈ 1.0f0 atol=1e-5
+
+            # Translation
+            trans_model = Mat4f(
+                1, 0, 0, 0,
+                0, 1, 0, 0,
+                0, 0, 1, 0,
+                5, 3, 1, 1
+            )
+            center2, radius2 = OpenReality.transform_bounding_sphere(bs, trans_model)
+            @test center2 ≈ Vec3f(5, 3, 1) atol=1e-5
+            @test radius2 ≈ 1.0f0 atol=1e-5
+
+            # Uniform scale of 2
+            scale_model = Mat4f(
+                2, 0, 0, 0,
+                0, 2, 0, 0,
+                0, 0, 2, 0,
+                0, 0, 0, 1
+            )
+            center3, radius3 = OpenReality.transform_bounding_sphere(bs, scale_model)
+            @test center3 ≈ Vec3f(0, 0, 0) atol=1e-5
+            @test radius3 ≈ 2.0f0 atol=1e-5
+        end
+    end
+
+    @testset "Animation System" begin
+        @testset "AnimationComponent defaults" begin
+            anim = AnimationComponent()
+            @test isempty(anim.clips)
+            @test anim.active_clip == 0
+            @test anim.current_time == 0.0
+            @test anim.playing == false
+            @test anim.looping == true
+            @test anim.speed == 1.0f0
+        end
+
+        @testset "AnimationClip and AnimationChannel" begin
+            channel = AnimationChannel(
+                EntityID(1), :position,
+                Float32[0.0, 1.0, 2.0],
+                Any[Vec3d(0, 0, 0), Vec3d(1, 0, 0), Vec3d(2, 0, 0)],
+                INTERP_LINEAR
+            )
+            @test channel.target_property == :position
+            @test length(channel.times) == 3
+
+            clip = AnimationClip("test", [channel], 2.0f0)
+            @test clip.name == "test"
+            @test clip.duration == 2.0f0
+            @test length(clip.channels) == 1
+        end
+
+        @testset "InterpolationMode enum" begin
+            @test INTERP_STEP isa InterpolationMode
+            @test INTERP_LINEAR isa InterpolationMode
+            @test INTERP_CUBICSPLINE isa InterpolationMode
+        end
+
+        @testset "Keyframe pair finding" begin
+            times = Float32[0.0, 1.0, 2.0, 3.0]
+
+            # Before first keyframe
+            idx_a, idx_b, t = OpenReality._find_keyframe_pair(times, -1.0f0)
+            @test idx_a == 1
+            @test idx_b == 1
+            @test t == 0.0f0
+
+            # After last keyframe
+            idx_a, idx_b, t = OpenReality._find_keyframe_pair(times, 5.0f0)
+            @test idx_a == 4
+            @test idx_b == 4
+
+            # Between keyframes
+            idx_a, idx_b, t = OpenReality._find_keyframe_pair(times, 1.5f0)
+            @test idx_a == 2
+            @test idx_b == 3
+            @test t ≈ 0.5f0 atol=1e-5
+
+            # Exact keyframe — binary search lands on the keyframe
+            idx_a, idx_b, t = OpenReality._find_keyframe_pair(times, 1.0f0)
+            @test idx_a == 2  # times[2] == 1.0
+        end
+
+        @testset "Vec3d lerp" begin
+            a = Vec3d(0, 0, 0)
+            b = Vec3d(10, 20, 30)
+            mid = OpenReality._lerp_vec3d(a, b, 0.5f0)
+            @test mid ≈ Vec3d(5, 10, 15) atol=1e-10
+        end
+
+        @testset "Quaternion slerp" begin
+            # Slerp between identity and 90° rotation around Z
+            q1 = Quaterniond(1, 0, 0, 0)
+            angle = π/2
+            q2 = Quaterniond(cos(angle/2), 0, 0, sin(angle/2))
+
+            # At t=0, should be q1
+            r0 = OpenReality._slerp(q1, q2, 0.0f0)
+            @test r0.s ≈ 1.0 atol=1e-5
+            @test r0.v1 ≈ 0.0 atol=1e-5
+            @test r0.v2 ≈ 0.0 atol=1e-5
+            @test r0.v3 ≈ 0.0 atol=1e-5
+
+            # At t=1, should be q2
+            r1 = OpenReality._slerp(q1, q2, 1.0f0)
+            @test r1.s ≈ q2.s atol=1e-5
+            @test r1.v3 ≈ q2.v3 atol=1e-5
+        end
+
+        @testset "update_animations! moves position" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+
+            # Create entity with transform
+            eid = create_entity_id()
+            add_component!(eid, transform(position=Vec3d(0, 0, 0)))
+
+            # Create animation that moves x from 0 to 10 over 1 second
+            channel = AnimationChannel(
+                eid, :position,
+                Float32[0.0, 1.0],
+                Any[Vec3d(0, 0, 0), Vec3d(10, 0, 0)],
+                INTERP_LINEAR
+            )
+            clip = AnimationClip("move", [channel], 1.0f0)
+            anim = AnimationComponent(
+                clips=[clip], active_clip=1,
+                playing=true, looping=false, speed=1.0f0
+            )
+            add_component!(eid, anim)
+
+            # Step forward 0.5 seconds
+            update_animations!(0.5)
+
+            tc = get_component(eid, TransformComponent)
+            @test tc.position[][1] ≈ 5.0 atol=0.5  # approximately halfway
+        end
+    end
+
+    @testset "Transparency" begin
+        @testset "MaterialComponent opacity defaults" begin
+            mat = MaterialComponent()
+            @test mat.opacity == 1.0f0
+            @test mat.alpha_cutoff == 0.0f0
+        end
+
+        @testset "MaterialComponent with opacity" begin
+            mat = MaterialComponent(opacity=0.5f0)
+            @test mat.opacity == 0.5f0
+            @test mat.alpha_cutoff == 0.0f0
+        end
+
+        @testset "MaterialComponent with alpha cutoff" begin
+            mat = MaterialComponent(alpha_cutoff=0.5f0)
+            @test mat.opacity == 1.0f0
+            @test mat.alpha_cutoff == 0.5f0
+        end
+
+        @testset "MaterialComponent transparent with texture" begin
+            mat = MaterialComponent(
+                opacity=0.7f0,
+                alpha_cutoff=0.3f0,
+                albedo_map=TextureRef("/path/to/albedo.png")
+            )
+            @test mat.opacity == 0.7f0
+            @test mat.alpha_cutoff == 0.3f0
+            @test mat.albedo_map !== nothing
+        end
+    end
+
+    @testset "Post-Processing" begin
+        @testset "PostProcessConfig defaults" begin
+            config = PostProcessConfig()
+            @test config.bloom_enabled == false
+            @test config.bloom_threshold == 1.0f0
+            @test config.bloom_intensity == 0.3f0
+            @test config.ssao_enabled == false
+            @test config.ssao_radius == 0.5f0
+            @test config.ssao_samples == 16
+            @test config.tone_mapping == TONEMAP_REINHARD
+            @test config.fxaa_enabled == false
+            @test config.gamma == 2.2f0
+        end
+
+        @testset "PostProcessConfig custom" begin
+            config = PostProcessConfig(
+                bloom_enabled=true,
+                bloom_threshold=0.8f0,
+                tone_mapping=TONEMAP_ACES,
+                fxaa_enabled=true,
+                gamma=2.4f0
+            )
+            @test config.bloom_enabled == true
+            @test config.bloom_threshold == 0.8f0
+            @test config.tone_mapping == TONEMAP_ACES
+            @test config.fxaa_enabled == true
+            @test config.gamma == 2.4f0
+        end
+
+        @testset "ToneMappingMode enum" begin
+            @test TONEMAP_REINHARD isa ToneMappingMode
+            @test TONEMAP_ACES isa ToneMappingMode
+            @test TONEMAP_UNCHARTED2 isa ToneMappingMode
+        end
+
+        @testset "Framebuffer struct" begin
+            fb = Framebuffer()
+            @test fb.fbo == UInt32(0)
+            @test fb.color_texture == UInt32(0)
+            @test fb.depth_rbo == UInt32(0)
+            @test fb.width == 1280
+            @test fb.height == 720
+        end
+
+        @testset "PostProcessPipeline struct" begin
+            pp = PostProcessPipeline()
+            @test pp.config isa PostProcessConfig
+            @test pp.quad_vao == UInt32(0)
+            @test pp.composite_shader === nothing
         end
     end
 

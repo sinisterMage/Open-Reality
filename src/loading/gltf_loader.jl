@@ -13,14 +13,60 @@ function load_gltf(path::String; base_dir::String = dirname(abspath(path)))
     buffers_data = _load_gltf_buffers(gltf, base_dir)
 
     entities_out = EntityDef[]
+    # Map glTF node index (0-based) -> EntityID for animation targeting
+    node_to_entity = Dict{Int, EntityID}()
 
     gltf.meshes === nothing && return entities_out
 
-    for mesh in gltf.meshes
+    # Build node→mesh mapping for animation targets
+    node_mesh_map = Dict{Int, Int}()  # node_idx -> mesh_idx (0-based)
+    if gltf.nodes !== nothing
+        for (i, node) in enumerate(gltf.nodes)
+            if node.mesh !== nothing
+                node_mesh_map[i-1] = node.mesh  # store 0-based
+            end
+        end
+    end
+
+    # Track which mesh index maps to which entity indices
+    mesh_entity_map = Dict{Int, Vector{Int}}()  # mesh_idx (0-based) -> entity indices in entities_out
+    entity_idx = 0
+
+    for (mi, mesh) in enumerate(gltf.meshes)
+        mesh_0idx = mi - 1
+        start_idx = entity_idx
         for prim in mesh.primitives
             mesh_comp = _extract_gltf_mesh(gltf, prim, buffers_data)
             mat_comp = _extract_gltf_material(gltf, prim, base_dir)
             push!(entities_out, entity([mesh_comp, mat_comp, transform()]))
+            entity_idx += 1
+        end
+        mesh_entity_map[mesh_0idx] = collect(start_idx:(entity_idx-1))
+    end
+
+    # Build node_to_entity: map node 0-based index to the first entity of its mesh
+    for (node_idx, mesh_idx) in node_mesh_map
+        if haskey(mesh_entity_map, mesh_idx) && !isempty(mesh_entity_map[mesh_idx])
+            # Note: entity IDs are assigned at scene creation, not here.
+            # Store the index into entities_out (0-based) for later mapping.
+            node_to_entity[node_idx] = EntityID(mesh_entity_map[mesh_idx][1] + 1)
+        end
+    end
+
+    # Extract animations if present
+    anim_clips = _extract_gltf_animations(gltf, buffers_data, node_to_entity)
+    if !isempty(anim_clips)
+        # Attach AnimationComponent to the first entity
+        anim_comp = AnimationComponent(
+            clips=anim_clips,
+            active_clip=1,
+            playing=true,
+            looping=true
+        )
+        # Add animation component to first entity
+        if !isempty(entities_out)
+            first_def = entities_out[1]
+            push!(first_def.components, anim_comp)
         end
     end
 
@@ -221,11 +267,24 @@ function _extract_gltf_material(gltf::GLTFLib.Object, prim::GLTFLib.Primitive, b
         emissive_factor = Vec3f(Float32(ef[1]), Float32(ef[2]), Float32(ef[3]))
     end
 
+    # Alpha mode
+    opacity = Float32(1.0)
+    alpha_cutoff = Float32(0.0)
+    if hasproperty(mat, :alphaMode) && mat.alphaMode !== nothing
+        if mat.alphaMode == "BLEND"
+            opacity = length(bc) >= 4 ? Float32(bc[4]) : Float32(1.0)
+        elseif mat.alphaMode == "MASK"
+            alpha_cutoff = hasproperty(mat, :alphaCutoff) && mat.alphaCutoff !== nothing ?
+                Float32(mat.alphaCutoff) : Float32(0.5)
+        end
+    end
+
     return MaterialComponent(
         color=color, metallic=metallic, roughness=roughness,
         albedo_map=albedo_map, normal_map=normal_map,
         metallic_roughness_map=mr_map, ao_map=ao_map,
-        emissive_map=emissive_map, emissive_factor=emissive_factor
+        emissive_map=emissive_map, emissive_factor=emissive_factor,
+        opacity=opacity, alpha_cutoff=alpha_cutoff
     )
 end
 
@@ -244,4 +303,91 @@ function _resolve_gltf_texture(gltf::GLTFLib.Object, tex_info, base_dir::String)
     startswith(image.uri, "data:") && return nothing
 
     return TextureRef(joinpath(base_dir, image.uri))
+end
+
+# ---- Animation extraction ----
+
+const GLTF_PATH_MAP = Dict(
+    "translation" => :position,
+    "rotation" => :rotation,
+    "scale" => :scale,
+)
+
+const GLTF_INTERP_MAP = Dict(
+    "STEP" => INTERP_STEP,
+    "LINEAR" => INTERP_LINEAR,
+    "CUBICSPLINE" => INTERP_CUBICSPLINE,
+)
+
+function _extract_gltf_animations(gltf::GLTFLib.Object, buffers_data::Vector{Vector{UInt8}},
+                                  node_to_entity::Dict{Int, EntityID})
+    clips = AnimationClip[]
+    (gltf.animations === nothing || isempty(gltf.animations)) && return clips
+
+    for anim in gltf.animations
+        channels_out = AnimationChannel[]
+        name = hasproperty(anim, :name) && anim.name !== nothing ? anim.name : "clip"
+
+        for ch in anim.channels
+            ch.target === nothing && continue
+            ch.target.node === nothing && continue
+
+            node_idx = ch.target.node
+            !haskey(node_to_entity, node_idx) && continue
+
+            target_eid = node_to_entity[node_idx]
+            path_str = ch.target.path
+            !haskey(GLTF_PATH_MAP, path_str) && continue
+            target_prop = GLTF_PATH_MAP[path_str]
+
+            sampler = anim.samplers[ch.sampler + 1]  # 0-indexed in glTF
+
+            # Read keyframe times
+            times_raw = _read_accessor_data(gltf, sampler.input, buffers_data)
+            times = Float32.(times_raw)
+
+            # Read keyframe values
+            values_raw = _read_accessor_data(gltf, sampler.output, buffers_data)
+
+            interp = get(GLTF_INTERP_MAP,
+                        hasproperty(sampler, :interpolation) && sampler.interpolation !== nothing ?
+                            sampler.interpolation : "LINEAR",
+                        INTERP_LINEAR)
+
+            # Parse values based on target property
+            values = Any[]
+            if target_prop == :position || target_prop == :scale
+                for i in 1:3:length(values_raw)
+                    i + 2 > length(values_raw) && break
+                    push!(values, Vec3d(Float64(values_raw[i]), Float64(values_raw[i+1]), Float64(values_raw[i+2])))
+                end
+            elseif target_prop == :rotation
+                for i in 1:4:length(values_raw)
+                    i + 3 > length(values_raw) && break
+                    # glTF quaternions are (x, y, z, w), Quaternions.jl is (w, x, y, z)
+                    push!(values, Quaterniond(
+                        Float64(values_raw[i+3]),  # w
+                        Float64(values_raw[i]),    # x
+                        Float64(values_raw[i+1]),  # y
+                        Float64(values_raw[i+2])   # z
+                    ))
+                end
+            end
+
+            isempty(values) && continue
+
+            push!(channels_out, AnimationChannel(target_eid, target_prop, times, values, interp))
+        end
+
+        duration = 0.0f0
+        for ch in channels_out
+            if !isempty(ch.times)
+                duration = max(duration, ch.times[end])
+            end
+        end
+
+        !isempty(channels_out) && push!(clips, AnimationClip(name, channels_out, duration))
+    end
+
+    return clips
 end

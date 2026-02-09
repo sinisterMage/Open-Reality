@@ -12,10 +12,12 @@ uniform mat4 u_Model;
 uniform mat4 u_View;
 uniform mat4 u_Projection;
 uniform mat3 u_NormalMatrix;
+uniform mat4 u_LightSpaceMatrix;
 
 out vec3 v_WorldPos;
 out vec3 v_Normal;
 out vec2 v_TexCoord;
+out vec4 v_LightSpacePos;
 
 void main()
 {
@@ -23,6 +25,7 @@ void main()
     v_WorldPos = worldPos.xyz;
     v_Normal = normalize(u_NormalMatrix * a_Normal);
     v_TexCoord = a_TexCoord;
+    v_LightSpacePos = u_LightSpaceMatrix * worldPos;
     gl_Position = u_Projection * u_View * worldPos;
 }
 """
@@ -36,6 +39,7 @@ const PBR_FRAGMENT_SHADER = """
 in vec3 v_WorldPos;
 in vec3 v_Normal;
 in vec2 v_TexCoord;
+in vec4 v_LightSpacePos;
 
 out vec4 FragColor;
 
@@ -44,6 +48,10 @@ uniform vec3 u_Albedo;
 uniform float u_Metallic;
 uniform float u_Roughness;
 uniform float u_AO;
+
+// Transparency
+uniform float u_Opacity;
+uniform float u_AlphaCutoff;
 
 // Texture maps
 uniform sampler2D u_AlbedoMap;
@@ -60,6 +68,10 @@ uniform int u_HasAOMap;
 uniform int u_HasEmissiveMap;
 
 uniform vec3 u_EmissiveFactor;
+
+// Shadow mapping
+uniform sampler2D u_ShadowMap;
+uniform int u_HasShadows;
 
 // Camera
 uniform vec3 u_CameraPos;
@@ -137,6 +149,35 @@ vec3 computeRadiance(vec3 N, vec3 V, vec3 L, vec3 radiance,
     return (kD * albedo / PI + specular) * radiance * NdotL;
 }
 
+// Shadow computation with 3x3 PCF
+float computeShadow(vec4 fragPosLightSpace, vec3 N, vec3 L)
+{
+    // Perspective divide
+    vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
+    projCoords = projCoords * 0.5 + 0.5;
+
+    // Outside light frustum => no shadow
+    if (projCoords.z > 1.0)
+        return 0.0;
+
+    // Slope-scaled bias
+    float bias = max(0.005 * (1.0 - dot(N, L)), 0.001);
+
+    // 3x3 PCF
+    float shadow = 0.0;
+    vec2 texelSize = 1.0 / textureSize(u_ShadowMap, 0);
+    for (int x = -1; x <= 1; ++x)
+    {
+        for (int y = -1; y <= 1; ++y)
+        {
+            float pcfDepth = texture(u_ShadowMap, projCoords.xy + vec2(x, y) * texelSize).r;
+            shadow += projCoords.z - bias > pcfDepth ? 1.0 : 0.0;
+        }
+    }
+    shadow /= 9.0;
+    return shadow;
+}
+
 // Normal mapping via screen-space derivatives (no stored tangents needed)
 vec3 getNormalFromMap()
 {
@@ -159,10 +200,19 @@ vec3 getNormalFromMap()
 
 void main()
 {
-    // Sample or use fallback values
+    // Sample albedo (and alpha from texture if available)
+    vec4 albedoSample = u_HasAlbedoMap == 1
+        ? texture(u_AlbedoMap, v_TexCoord)
+        : vec4(u_Albedo, 1.0);
     vec3 albedo = u_HasAlbedoMap == 1
-        ? pow(texture(u_AlbedoMap, v_TexCoord).rgb, vec3(2.2))
-        : u_Albedo;
+        ? pow(albedoSample.rgb, vec3(2.2))
+        : albedoSample.rgb;
+
+    // Compute alpha
+    float alpha = u_Opacity * albedoSample.a;
+    if (u_AlphaCutoff > 0.0 && alpha < u_AlphaCutoff)
+        discard;
+
     float metallic = u_HasMetallicRoughnessMap == 1
         ? texture(u_MetallicRoughnessMap, v_TexCoord).b
         : u_Metallic;
@@ -197,12 +247,20 @@ void main()
         Lo += computeRadiance(N, V, L, radiance, albedo, metallic, roughness, F0);
     }
 
-    // Directional lights
+    // Directional lights (first light casts shadows)
     for (int i = 0; i < u_NumDirLights; ++i)
     {
         vec3 L = normalize(-u_DirLightDirections[i]);
         vec3 radiance = u_DirLightColors[i] * u_DirLightIntensities[i];
-        Lo += computeRadiance(N, V, L, radiance, albedo, metallic, roughness, F0);
+        vec3 contrib = computeRadiance(N, V, L, radiance, albedo, metallic, roughness, F0);
+
+        // Apply shadow to first directional light
+        if (i == 0 && u_HasShadows == 1) {
+            float shadow = computeShadow(v_LightSpacePos, N, L);
+            contrib *= (1.0 - shadow);
+        }
+
+        Lo += contrib;
     }
 
     // Ambient
@@ -214,13 +272,8 @@ void main()
         color += texture(u_EmissiveMap, v_TexCoord).rgb * u_EmissiveFactor;
     }
 
-    // HDR tonemapping (Reinhard)
-    color = color / (color + vec3(1.0));
-
-    // Gamma correction
-    color = pow(color, vec3(1.0 / 2.2));
-
-    FragColor = vec4(color, 1.0);
+    // Output linear HDR — post-processing handles tone mapping and gamma
+    FragColor = vec4(color, alpha);
 }
 """
 
@@ -279,7 +332,8 @@ function run_render_loop!(scene::Scene;
                           backend::AbstractBackend = OpenGLBackend(),
                           width::Int = 1280,
                           height::Int = 720,
-                          title::String = "OpenReality")
+                          title::String = "OpenReality",
+                          post_process::Union{PostProcessConfig, Nothing} = nothing)
     initialize!(backend, width=width, height=height, title=title)
 
     # Auto-detect player and set up FPS controller
@@ -312,6 +366,9 @@ function run_render_loop!(scene::Scene;
 
                 update_player!(controller, backend.input, dt)
             end
+
+            # Animation step
+            update_animations!(dt)
 
             # Physics step (collision detection, gravity, resolution)
             update_physics!(dt)

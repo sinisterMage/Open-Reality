@@ -118,6 +118,11 @@ function set_uniform!(sp::ShaderProgram, name::String, val::RGB{Float32})
     glUniform3f(loc, val.r, val.g, val.b)
 end
 
+function set_uniform!(sp::ShaderProgram, name::String, val::Vec2f)
+    loc = get_uniform_location!(sp, name)
+    glUniform2f(loc, val[1], val[2])
+end
+
 """
     destroy_shader_program!(sp::ShaderProgram)
 

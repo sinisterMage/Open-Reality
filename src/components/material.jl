@@ -28,6 +28,8 @@ struct MaterialComponent <: Component
     ao_map::Union{TextureRef, Nothing}
     emissive_map::Union{TextureRef, Nothing}
     emissive_factor::Vec3f
+    opacity::Float32
+    alpha_cutoff::Float32
 
     MaterialComponent(;
         color::RGB{Float32} = RGB{Float32}(1.0, 1.0, 1.0),
@@ -38,7 +40,10 @@ struct MaterialComponent <: Component
         metallic_roughness_map::Union{TextureRef, Nothing} = nothing,
         ao_map::Union{TextureRef, Nothing} = nothing,
         emissive_map::Union{TextureRef, Nothing} = nothing,
-        emissive_factor::Vec3f = Vec3f(0, 0, 0)
+        emissive_factor::Vec3f = Vec3f(0, 0, 0),
+        opacity::Float32 = 1.0f0,
+        alpha_cutoff::Float32 = 0.0f0
     ) = new(color, metallic, roughness, albedo_map, normal_map,
-            metallic_roughness_map, ao_map, emissive_map, emissive_factor)
+            metallic_roughness_map, ao_map, emissive_map, emissive_factor,
+            opacity, alpha_cutoff)
 end

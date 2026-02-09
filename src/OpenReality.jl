@@ -46,6 +46,7 @@ include("components/primitives.jl")
 include("components/player.jl")
 include("components/collider.jl")
 include("components/rigidbody.jl")
+include("components/animation.jl")
 
 # Windowing (before backend — backend needs Window and InputState)
 include("windowing/glfw.jl")
@@ -54,12 +55,17 @@ include("windowing/input.jl")
 # Systems (after windowing — uses GLFW key constants)
 include("systems/player_controller.jl")
 include("systems/physics.jl")
+include("systems/animation.jl")
 
 # Rendering utilities (before backend — backend needs these)
 include("rendering/shader.jl")
 include("rendering/gpu_resources.jl")
 include("rendering/texture.jl")
+include("rendering/framebuffer.jl")
+include("rendering/post_processing.jl")
+include("rendering/shadow_map.jl")
 include("rendering/camera_utils.jl")
+include("rendering/frustum_culling.jl")
 
 # Backend
 include("backend/abstract.jl")
@@ -110,6 +116,22 @@ export collider_from_mesh, sphere_collider_from_mesh
 export RigidBodyComponent, BodyType, BODY_STATIC, BODY_KINEMATIC, BODY_DYNAMIC
 export PhysicsConfig, update_physics!
 
+# Export Animation
+export InterpolationMode, INTERP_STEP, INTERP_LINEAR, INTERP_CUBICSPLINE
+export AnimationChannel, AnimationClip, AnimationComponent
+export update_animations!
+
+# Export Shadow Mapping
+export ShadowMap, create_shadow_map!, destroy_shadow_map!, compute_light_space_matrix
+
+# Export Frustum Culling
+export Frustum, FrustumPlane, BoundingSphere
+export extract_frustum, bounding_sphere_from_mesh, is_sphere_in_frustum
+
+# Export Post-Processing
+export Framebuffer, PostProcessConfig, PostProcessPipeline
+export ToneMappingMode, TONEMAP_REINHARD, TONEMAP_ACES, TONEMAP_UNCHARTED2
+
 # Export Backend
 export AbstractBackend, initialize!, shutdown!, render_frame!
 export OpenGLBackend
@@ -141,15 +163,16 @@ export find_active_camera, get_view_matrix, get_projection_matrix
 export load_model, load_obj, load_gltf
 
 """
-    render(scene::Scene; width=1280, height=720, title="OpenReality")
+    render(scene::Scene; width=1280, height=720, title="OpenReality", post_process=nothing)
 
 Start the PBR render loop for the given scene.
 Opens a window and renders until closed.
 """
 function render(scene::Scene;
                 width::Int = 1280, height::Int = 720,
-                title::String = "OpenReality")
-    run_render_loop!(scene, width=width, height=height, title=title)
+                title::String = "OpenReality",
+                post_process::Union{PostProcessConfig, Nothing} = nothing)
+    run_render_loop!(scene, width=width, height=height, title=title, post_process=post_process)
 end
 
 export render
