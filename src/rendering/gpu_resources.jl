@@ -12,10 +12,11 @@ mutable struct GPUMesh
     vao::GLuint
     vbo::GLuint     # vertex positions
     nbo::GLuint     # normals
+    ubo::GLuint     # UV coordinates
     ebo::GLuint     # element (index) buffer
     index_count::Int32
 
-    GPUMesh() = new(GLuint(0), GLuint(0), GLuint(0), GLuint(0), Int32(0))
+    GPUMesh() = new(GLuint(0), GLuint(0), GLuint(0), GLuint(0), GLuint(0), Int32(0))
 end
 
 """
@@ -66,6 +67,17 @@ function upload_mesh!(cache::GPUResourceCache, entity_id::EntityID, mesh::MeshCo
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, C_NULL)
     glEnableVertexAttribArray(1)
 
+    # UV coordinates (layout = 2)
+    if !isempty(mesh.uvs)
+        ubo_ref = Ref(GLuint(0))
+        glGenBuffers(1, ubo_ref)
+        gpu.ubo = ubo_ref[]
+        glBindBuffer(GL_ARRAY_BUFFER, gpu.ubo)
+        glBufferData(GL_ARRAY_BUFFER, sizeof(mesh.uvs), mesh.uvs, GL_STATIC_DRAW)
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 0, C_NULL)
+        glEnableVertexAttribArray(2)
+    end
+
     # Index buffer
     ebo_ref = Ref(GLuint(0))
     glGenBuffers(1, ebo_ref)
@@ -99,12 +111,16 @@ Delete OpenGL buffers for a mesh.
 """
 function destroy_gpu_mesh!(gpu::GPUMesh)
     bufs = GLuint[gpu.vbo, gpu.nbo, gpu.ebo]
-    glDeleteBuffers(3, bufs)
+    if gpu.ubo != GLuint(0)
+        push!(bufs, gpu.ubo)
+    end
+    glDeleteBuffers(length(bufs), bufs)
     vaos = GLuint[gpu.vao]
     glDeleteVertexArrays(1, vaos)
     gpu.vao = GLuint(0)
     gpu.vbo = GLuint(0)
     gpu.nbo = GLuint(0)
+    gpu.ubo = GLuint(0)
     gpu.ebo = GLuint(0)
 end
 

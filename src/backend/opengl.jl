@@ -13,8 +13,9 @@ mutable struct OpenGLBackend <: AbstractBackend
     input::InputState
     shader::Union{ShaderProgram, Nothing}
     gpu_cache::GPUResourceCache
+    texture_cache::TextureCache
 
-    OpenGLBackend() = new(false, nothing, InputState(), nothing, GPUResourceCache())
+    OpenGLBackend() = new(false, nothing, InputState(), nothing, GPUResourceCache(), TextureCache())
 end
 
 function initialize!(backend::OpenGLBackend;
@@ -49,11 +50,84 @@ function shutdown!(backend::OpenGLBackend)
         backend.shader = nothing
     end
     destroy_all!(backend.gpu_cache)
+    destroy_all_textures!(backend.texture_cache)
     if backend.window !== nothing
         destroy_window!(backend.window)
         backend.window = nothing
     end
     backend.initialized = false
+    return nothing
+end
+
+"""
+    bind_material_textures!(sp, material, texture_cache)
+
+Bind texture maps for a material, setting sampler uniforms and has-flags.
+"""
+function bind_material_textures!(sp::ShaderProgram, material::MaterialComponent, texture_cache::TextureCache)
+    texture_unit = Int32(0)
+
+    # Albedo map
+    if material.albedo_map !== nothing
+        gpu_tex = load_texture(texture_cache, material.albedo_map.path)
+        glActiveTexture(GL_TEXTURE0 + UInt32(texture_unit))
+        glBindTexture(GL_TEXTURE_2D, gpu_tex.id)
+        set_uniform!(sp, "u_AlbedoMap", texture_unit)
+        set_uniform!(sp, "u_HasAlbedoMap", Int32(1))
+        texture_unit += Int32(1)
+    else
+        set_uniform!(sp, "u_HasAlbedoMap", Int32(0))
+    end
+
+    # Normal map
+    if material.normal_map !== nothing
+        gpu_tex = load_texture(texture_cache, material.normal_map.path)
+        glActiveTexture(GL_TEXTURE0 + UInt32(texture_unit))
+        glBindTexture(GL_TEXTURE_2D, gpu_tex.id)
+        set_uniform!(sp, "u_NormalMap", texture_unit)
+        set_uniform!(sp, "u_HasNormalMap", Int32(1))
+        texture_unit += Int32(1)
+    else
+        set_uniform!(sp, "u_HasNormalMap", Int32(0))
+    end
+
+    # Metallic-roughness map
+    if material.metallic_roughness_map !== nothing
+        gpu_tex = load_texture(texture_cache, material.metallic_roughness_map.path)
+        glActiveTexture(GL_TEXTURE0 + UInt32(texture_unit))
+        glBindTexture(GL_TEXTURE_2D, gpu_tex.id)
+        set_uniform!(sp, "u_MetallicRoughnessMap", texture_unit)
+        set_uniform!(sp, "u_HasMetallicRoughnessMap", Int32(1))
+        texture_unit += Int32(1)
+    else
+        set_uniform!(sp, "u_HasMetallicRoughnessMap", Int32(0))
+    end
+
+    # AO map
+    if material.ao_map !== nothing
+        gpu_tex = load_texture(texture_cache, material.ao_map.path)
+        glActiveTexture(GL_TEXTURE0 + UInt32(texture_unit))
+        glBindTexture(GL_TEXTURE_2D, gpu_tex.id)
+        set_uniform!(sp, "u_AOMap", texture_unit)
+        set_uniform!(sp, "u_HasAOMap", Int32(1))
+        texture_unit += Int32(1)
+    else
+        set_uniform!(sp, "u_HasAOMap", Int32(0))
+    end
+
+    # Emissive map
+    if material.emissive_map !== nothing
+        gpu_tex = load_texture(texture_cache, material.emissive_map.path)
+        glActiveTexture(GL_TEXTURE0 + UInt32(texture_unit))
+        glBindTexture(GL_TEXTURE_2D, gpu_tex.id)
+        set_uniform!(sp, "u_EmissiveMap", texture_unit)
+        set_uniform!(sp, "u_HasEmissiveMap", Int32(1))
+    else
+        set_uniform!(sp, "u_HasEmissiveMap", Int32(0))
+    end
+
+    set_uniform!(sp, "u_EmissiveFactor", material.emissive_factor)
+
     return nothing
 end
 
@@ -119,6 +193,9 @@ function render_frame!(backend::OpenGLBackend, scene::Scene)
         set_uniform!(sp, "u_Metallic", material.metallic)
         set_uniform!(sp, "u_Roughness", material.roughness)
         set_uniform!(sp, "u_AO", 1.0f0)
+
+        # Bind textures
+        bind_material_textures!(sp, material, backend.texture_cache)
 
         # Get or upload GPU mesh
         gpu_mesh = get_or_upload_mesh!(backend.gpu_cache, entity_id, mesh)

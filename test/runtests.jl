@@ -165,6 +165,8 @@ using LinearAlgebra
             @test CameraComponent <: Component
             @test PointLightComponent <: Component
             @test DirectionalLightComponent <: Component
+            @test ColliderComponent <: Component
+            @test RigidBodyComponent <: Component
         end
     end
 
@@ -484,6 +486,7 @@ using LinearAlgebra
             m = MeshComponent()
             @test isempty(m.vertices)
             @test isempty(m.indices)
+            @test isempty(m.uvs)
         end
 
         @testset "MaterialComponent" begin
@@ -491,6 +494,25 @@ using LinearAlgebra
             @test mat.color == RGB{Float32}(1.0, 1.0, 1.0)
             @test mat.metallic == 0.0f0
             @test mat.roughness == 0.5f0
+            @test mat.albedo_map === nothing
+            @test mat.normal_map === nothing
+            @test mat.metallic_roughness_map === nothing
+            @test mat.ao_map === nothing
+            @test mat.emissive_map === nothing
+            @test mat.emissive_factor == Vec3f(0, 0, 0)
+        end
+
+        @testset "MaterialComponent with TextureRef" begin
+            tex = TextureRef("/path/to/texture.png")
+            mat = MaterialComponent(
+                albedo_map=tex,
+                normal_map=TextureRef("/path/to/normal.png"),
+                metallic=0.5f0
+            )
+            @test mat.albedo_map !== nothing
+            @test mat.albedo_map.path == "/path/to/texture.png"
+            @test mat.normal_map.path == "/path/to/normal.png"
+            @test mat.metallic == 0.5f0
         end
 
         @testset "CameraComponent" begin
@@ -506,6 +528,157 @@ using LinearAlgebra
 
             dl = DirectionalLightComponent()
             @test dl.direction == Vec3f(0, -1, 0)
+        end
+
+        @testset "ColliderComponent" begin
+            # Default collider
+            c = ColliderComponent()
+            @test c.shape isa AABBShape
+            @test c.shape.half_extents == Vec3f(0.5, 0.5, 0.5)
+            @test c.offset == Vec3f(0, 0, 0)
+
+            # Sphere collider
+            c2 = ColliderComponent(shape=SphereShape(2.0f0))
+            @test c2.shape isa SphereShape
+            @test c2.shape.radius == 2.0f0
+
+            # Custom AABB
+            c3 = ColliderComponent(
+                shape=AABBShape(Vec3f(1, 2, 3)),
+                offset=Vec3f(0, 1, 0)
+            )
+            @test c3.shape.half_extents == Vec3f(1, 2, 3)
+            @test c3.offset == Vec3f(0, 1, 0)
+        end
+
+        @testset "RigidBodyComponent" begin
+            # Default
+            rb = RigidBodyComponent()
+            @test rb.body_type == BODY_DYNAMIC
+            @test rb.velocity == Vec3d(0, 0, 0)
+            @test rb.mass == 1.0
+            @test rb.grounded == false
+
+            # Static body
+            rb2 = RigidBodyComponent(body_type=BODY_STATIC)
+            @test rb2.body_type == BODY_STATIC
+
+            # Kinematic body
+            rb3 = RigidBodyComponent(body_type=BODY_KINEMATIC)
+            @test rb3.body_type == BODY_KINEMATIC
+        end
+
+        @testset "collider_from_mesh" begin
+            mesh = MeshComponent(
+                vertices=[
+                    Point3f(-1, -2, -3),
+                    Point3f(1, 2, 3),
+                    Point3f(0, 0, 0)
+                ],
+                indices=UInt32[0, 1, 2]
+            )
+            c = collider_from_mesh(mesh)
+            @test c.shape isa AABBShape
+            @test c.shape.half_extents ≈ Vec3f(1, 2, 3) atol=1e-5
+            @test c.offset ≈ Vec3f(0, 0, 0) atol=1e-5
+        end
+
+        @testset "sphere_collider_from_mesh" begin
+            mesh = MeshComponent(
+                vertices=[
+                    Point3f(1, 0, 0),
+                    Point3f(-1, 0, 0),
+                    Point3f(0, 1, 0),
+                    Point3f(0, -1, 0)
+                ],
+                indices=UInt32[0, 1, 2, 0, 2, 3]
+            )
+            c = sphere_collider_from_mesh(mesh)
+            @test c.shape isa SphereShape
+            @test c.shape.radius ≈ 1.0f0 atol=1e-5
+        end
+    end
+
+    @testset "Primitives with UVs" begin
+        @testset "cube_mesh has UVs" begin
+            m = cube_mesh()
+            @test !isempty(m.uvs)
+            @test length(m.uvs) == length(m.vertices)
+        end
+
+        @testset "plane_mesh has UVs" begin
+            m = plane_mesh()
+            @test !isempty(m.uvs)
+            @test length(m.uvs) == length(m.vertices)
+        end
+
+        @testset "sphere_mesh has UVs" begin
+            m = sphere_mesh()
+            @test !isempty(m.uvs)
+            @test length(m.uvs) == length(m.vertices)
+        end
+    end
+
+    @testset "Physics" begin
+        @testset "AABB overlap" begin
+            a = OpenReality.WorldAABB(Vec3d(0, 0, 0), Vec3d(2, 2, 2))
+            b = OpenReality.WorldAABB(Vec3d(1, 1, 1), Vec3d(3, 3, 3))
+            @test OpenReality.aabb_overlap(a, b) == true
+
+            c = OpenReality.WorldAABB(Vec3d(5, 5, 5), Vec3d(6, 6, 6))
+            @test OpenReality.aabb_overlap(a, c) == false
+        end
+
+        @testset "AABB non-overlap" begin
+            a = OpenReality.WorldAABB(Vec3d(0, 0, 0), Vec3d(1, 1, 1))
+            b = OpenReality.WorldAABB(Vec3d(2, 0, 0), Vec3d(3, 1, 1))
+            @test OpenReality.aabb_overlap(a, b) == false
+        end
+
+        @testset "Collision resolution — floor prevents fall-through" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+
+            # Create a floor (static, at y=0, extends from -10 to 10 in xz, height 0.1)
+            floor_id = create_entity_id()
+            add_component!(floor_id, transform(position=Vec3d(0, -0.05, 0)))
+            add_component!(floor_id, ColliderComponent(
+                shape=AABBShape(Vec3f(10.0, 0.05, 10.0))
+            ))
+            add_component!(floor_id, RigidBodyComponent(body_type=BODY_STATIC))
+
+            # Create a dynamic box above the floor
+            box_id = create_entity_id()
+            add_component!(box_id, transform(position=Vec3d(0, 0.5, 0)))
+            add_component!(box_id, ColliderComponent(
+                shape=AABBShape(Vec3f(0.5, 0.5, 0.5))
+            ))
+            add_component!(box_id, RigidBodyComponent(body_type=BODY_DYNAMIC))
+
+            # Simulate several physics steps
+            for _ in 1:100
+                update_physics!(1.0 / 60.0)
+            end
+
+            # Box should not have fallen through the floor
+            box_tc = get_component(box_id, TransformComponent)
+            @test box_tc.position[][2] >= -0.1  # Should be at or above floor level
+        end
+
+        @testset "PhysicsConfig" begin
+            config = PhysicsConfig()
+            @test config.gravity == Vec3d(0, -9.81, 0)
+
+            custom = PhysicsConfig(gravity=Vec3d(0, -20.0, 0))
+            @test custom.gravity == Vec3d(0, -20.0, 0)
+        end
+    end
+
+    @testset "Model Loading" begin
+        @testset "load_model dispatches by extension" begin
+            # Test that unsupported extensions throw
+            @test_throws ErrorException load_model("test.xyz")
+            @test_throws ErrorException load_model("test.fbx")
         end
     end
 

@@ -40,6 +40,13 @@ function cube_mesh(; size::Float32 = 1.0f0)
         Vec3f(0, -1, 0), Vec3f(0, -1, 0), Vec3f(0, -1, 0), Vec3f(0, -1, 0),
     ]
 
+    # UVs: same pattern for each face
+    face_uvs = Vec2f[Vec2f(0, 0), Vec2f(1, 0), Vec2f(1, 1), Vec2f(0, 1)]
+    uvs = Vec2f[]
+    for _ in 1:6
+        append!(uvs, face_uvs)
+    end
+
     # Two triangles per face, 0-indexed for OpenGL
     indices = UInt32[]
     for face in 0:5
@@ -47,7 +54,7 @@ function cube_mesh(; size::Float32 = 1.0f0)
         append!(indices, [base, base+1, base+2, base, base+2, base+3])
     end
 
-    return MeshComponent(vertices=vertices, indices=indices, normals=normals)
+    return MeshComponent(vertices=vertices, indices=indices, normals=normals, uvs=uvs)
 end
 
 """
@@ -70,9 +77,13 @@ function plane_mesh(; width::Float32 = 1.0f0, depth::Float32 = 1.0f0)
         Vec3f(0, 1, 0), Vec3f(0, 1, 0), Vec3f(0, 1, 0), Vec3f(0, 1, 0),
     ]
 
+    uvs = Vec2f[
+        Vec2f(0, 0), Vec2f(1, 0), Vec2f(1, 1), Vec2f(0, 1),
+    ]
+
     indices = UInt32[0, 1, 2, 0, 2, 3]
 
-    return MeshComponent(vertices=vertices, indices=indices, normals=normals)
+    return MeshComponent(vertices=vertices, indices=indices, normals=normals, uvs=uvs)
 end
 
 """
@@ -84,6 +95,7 @@ Generate a UV sphere mesh centered at the origin.
 function sphere_mesh(; radius::Float32 = 0.5f0, segments::Int = 32, rings::Int = 16)
     vertices = Point3f[]
     normals = Vec3f[]
+    uvs = Vec2f[]
     indices = UInt32[]
 
     for j in 0:rings
@@ -102,6 +114,7 @@ function sphere_mesh(; radius::Float32 = 0.5f0, segments::Int = 32, rings::Int =
 
             push!(vertices, Point3f(radius * nx, radius * ny, radius * nz))
             push!(normals, Vec3f(nx, ny, nz))
+            push!(uvs, Vec2f(Float32(i) / Float32(segments), Float32(j) / Float32(rings)))
         end
     end
 
@@ -120,5 +133,5 @@ function sphere_mesh(; radius::Float32 = 0.5f0, segments::Int = 32, rings::Int =
         end
     end
 
-    return MeshComponent(vertices=vertices, indices=indices, normals=normals)
+    return MeshComponent(vertices=vertices, indices=indices, normals=normals, uvs=uvs)
 end

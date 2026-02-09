@@ -120,7 +120,6 @@ function update_player!(controller::PlayerController, input::InputState, dt::Flo
     # Forward/right vectors derived from yaw (no pitch — keeps movement horizontal)
     forward = Vec3d(-sin(player.yaw), 0, -cos(player.yaw))
     right   = Vec3d( cos(player.yaw), 0, -sin(player.yaw))
-    up      = Vec3d(0, 1, 0)
 
     move = Vec3d(0, 0, 0)
     if is_key_pressed(input, KEY_W)
@@ -135,17 +134,40 @@ function update_player!(controller::PlayerController, input::InputState, dt::Flo
     if is_key_pressed(input, KEY_A)
         move = move - right
     end
-    if is_key_pressed(input, KEY_SPACE)
-        move = move + up
-    end
-    if is_key_pressed(input, KEY_LCTRL)
-        move = move - up
-    end
 
-    # Normalize diagonal movement so it isn't faster
+    # Normalize horizontal movement
     len = sqrt(move[1]^2 + move[2]^2 + move[3]^2)
     if len > 0
         move = move / len
-        player_transform.position[] = player_transform.position[] + move * speed * dt
     end
+
+    horizontal_delta = move * speed * dt
+
+    # --- Gravity and jump (if RigidBodyComponent exists) ---
+    rb = get_component(controller.player_entity, RigidBodyComponent)
+    vertical_delta = Vec3d(0, 0, 0)
+
+    if rb !== nothing
+        # Apply gravity to player velocity
+        rb.velocity = rb.velocity + Vec3d(0, -9.81, 0) * dt
+
+        # Jump: set upward velocity when grounded and space pressed
+        if is_key_pressed(input, KEY_SPACE) && rb.grounded
+            rb.velocity = Vec3d(rb.velocity[1], 5.0, rb.velocity[3])
+        end
+
+        vertical_delta = Vec3d(0, rb.velocity[2] * dt, 0)
+    else
+        # Fallback: no physics, fly mode (original behavior)
+        if is_key_pressed(input, KEY_SPACE)
+            vertical_delta = Vec3d(0, speed * dt, 0)
+        end
+        if is_key_pressed(input, KEY_LCTRL)
+            vertical_delta = Vec3d(0, -speed * dt, 0)
+        end
+    end
+
+    # Apply movement (physics system will resolve collisions after this)
+    new_pos = player_transform.position[] + horizontal_delta + vertical_delta
+    player_transform.position[] = new_pos
 end

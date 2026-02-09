@@ -9,6 +9,9 @@ using Quaternions
 using LinearAlgebra
 using ModernGL
 import GLFW
+using FileIO
+using Base64
+import GLTF as GLTFLib
 
 # Type aliases for common 3D types
 # Point3f and Vec3f come from GeometryBasics
@@ -41,6 +44,8 @@ include("components/camera.jl")
 include("components/lights.jl")
 include("components/primitives.jl")
 include("components/player.jl")
+include("components/collider.jl")
+include("components/rigidbody.jl")
 
 # Windowing (before backend — backend needs Window and InputState)
 include("windowing/glfw.jl")
@@ -48,10 +53,12 @@ include("windowing/input.jl")
 
 # Systems (after windowing — uses GLFW key constants)
 include("systems/player_controller.jl")
+include("systems/physics.jl")
 
 # Rendering utilities (before backend — backend needs these)
 include("rendering/shader.jl")
 include("rendering/gpu_resources.jl")
+include("rendering/texture.jl")
 include("rendering/camera_utils.jl")
 
 # Backend
@@ -62,6 +69,11 @@ include("backend/opengl.jl")
 include("rendering/pipeline.jl")
 include("rendering/systems.jl")
 include("rendering/pbr_pipeline.jl")
+
+# Model loading (after components and rendering — uses MeshComponent, MaterialComponent, TextureRef)
+include("loading/obj_loader.jl")
+include("loading/gltf_loader.jl")
+include("loading/loader.jl")
 
 # Export ECS
 export EntityID, World, create_entity!, create_entity_id
@@ -85,12 +97,18 @@ export get_all_descendants, get_ancestors, entity_count
 export TransformComponent, transform, with_parent
 export Vec3d, Quaterniond
 export MeshComponent
-export MaterialComponent
+export MaterialComponent, TextureRef
 export CameraComponent
 export PointLightComponent, DirectionalLightComponent
 export cube_mesh, sphere_mesh, plane_mesh
 export PlayerComponent, create_player
 export PlayerController, find_player_and_camera, update_player!
+
+# Export Physics Components
+export ColliderComponent, ColliderShape, AABBShape, SphereShape
+export collider_from_mesh, sphere_collider_from_mesh
+export RigidBodyComponent, BodyType, BODY_STATIC, BODY_KINEMATIC, BODY_DYNAMIC
+export PhysicsConfig, update_physics!
 
 # Export Backend
 export AbstractBackend, initialize!, shutdown!, render_frame!
@@ -101,6 +119,7 @@ export RenderPipeline, execute!
 export RenderSystem, update!
 export ShaderProgram, create_shader_program, destroy_shader_program!
 export GPUMesh, GPUResourceCache, upload_mesh!, get_or_upload_mesh!, destroy_all!
+export GPUTexture, TextureCache, load_texture
 export run_render_loop!
 
 # Export Windowing
@@ -117,6 +136,9 @@ export Mat4d
 
 # Export Camera Utils
 export find_active_camera, get_view_matrix, get_projection_matrix
+
+# Export Model Loading
+export load_model, load_obj, load_gltf
 
 """
     render(scene::Scene; width=1280, height=720, title="OpenReality")

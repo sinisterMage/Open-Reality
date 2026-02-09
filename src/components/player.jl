@@ -63,7 +63,9 @@ function create_player(;
             sprint_multiplier=sprint_multiplier,
             mouse_sensitivity=mouse_sensitivity
         ),
-        transform(position=position)
+        transform(position=position),
+        ColliderComponent(shape=AABBShape(Vec3f(0.3f0, 0.9f0, 0.3f0))),
+        RigidBodyComponent(body_type=BODY_KINEMATIC)
     ]
 
     # Optional visible body

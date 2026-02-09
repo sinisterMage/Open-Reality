@@ -6,6 +6,7 @@ const PBR_VERTEX_SHADER = """
 
 layout(location = 0) in vec3 a_Position;
 layout(location = 1) in vec3 a_Normal;
+layout(location = 2) in vec2 a_TexCoord;
 
 uniform mat4 u_Model;
 uniform mat4 u_View;
@@ -14,12 +15,14 @@ uniform mat3 u_NormalMatrix;
 
 out vec3 v_WorldPos;
 out vec3 v_Normal;
+out vec2 v_TexCoord;
 
 void main()
 {
     vec4 worldPos = u_Model * vec4(a_Position, 1.0);
     v_WorldPos = worldPos.xyz;
     v_Normal = normalize(u_NormalMatrix * a_Normal);
+    v_TexCoord = a_TexCoord;
     gl_Position = u_Projection * u_View * worldPos;
 }
 """
@@ -32,14 +35,31 @@ const PBR_FRAGMENT_SHADER = """
 
 in vec3 v_WorldPos;
 in vec3 v_Normal;
+in vec2 v_TexCoord;
 
 out vec4 FragColor;
 
-// Material
+// Material uniforms (fallback values when no texture)
 uniform vec3 u_Albedo;
 uniform float u_Metallic;
 uniform float u_Roughness;
 uniform float u_AO;
+
+// Texture maps
+uniform sampler2D u_AlbedoMap;
+uniform sampler2D u_NormalMap;
+uniform sampler2D u_MetallicRoughnessMap;
+uniform sampler2D u_AOMap;
+uniform sampler2D u_EmissiveMap;
+
+// Texture flags (1 = use texture, 0 = use uniform)
+uniform int u_HasAlbedoMap;
+uniform int u_HasNormalMap;
+uniform int u_HasMetallicRoughnessMap;
+uniform int u_HasAOMap;
+uniform int u_HasEmissiveMap;
+
+uniform vec3 u_EmissiveFactor;
 
 // Camera
 uniform vec3 u_CameraPos;
@@ -117,14 +137,48 @@ vec3 computeRadiance(vec3 N, vec3 V, vec3 L, vec3 radiance,
     return (kD * albedo / PI + specular) * radiance * NdotL;
 }
 
+// Normal mapping via screen-space derivatives (no stored tangents needed)
+vec3 getNormalFromMap()
+{
+    if (u_HasNormalMap == 0) return normalize(v_Normal);
+
+    vec3 tangentNormal = texture(u_NormalMap, v_TexCoord).xyz * 2.0 - 1.0;
+
+    vec3 Q1  = dFdx(v_WorldPos);
+    vec3 Q2  = dFdy(v_WorldPos);
+    vec2 st1 = dFdx(v_TexCoord);
+    vec2 st2 = dFdy(v_TexCoord);
+
+    vec3 N   = normalize(v_Normal);
+    vec3 T   = normalize(Q1 * st2.t - Q2 * st1.t);
+    vec3 B   = -normalize(cross(N, T));
+    mat3 TBN = mat3(T, B, N);
+
+    return normalize(TBN * tangentNormal);
+}
+
 void main()
 {
-    vec3 N = normalize(v_Normal);
+    // Sample or use fallback values
+    vec3 albedo = u_HasAlbedoMap == 1
+        ? pow(texture(u_AlbedoMap, v_TexCoord).rgb, vec3(2.2))
+        : u_Albedo;
+    float metallic = u_HasMetallicRoughnessMap == 1
+        ? texture(u_MetallicRoughnessMap, v_TexCoord).b
+        : u_Metallic;
+    float roughness = u_HasMetallicRoughnessMap == 1
+        ? texture(u_MetallicRoughnessMap, v_TexCoord).g
+        : u_Roughness;
+    float ao = u_HasAOMap == 1
+        ? texture(u_AOMap, v_TexCoord).r
+        : u_AO;
+
+    vec3 N = getNormalFromMap();
     vec3 V = normalize(u_CameraPos - v_WorldPos);
 
     // Base reflectivity: dielectrics ~0.04, metals use albedo
     vec3 F0 = vec3(0.04);
-    F0 = mix(F0, u_Albedo, u_Metallic);
+    F0 = mix(F0, albedo, metallic);
 
     vec3 Lo = vec3(0.0);
 
@@ -140,7 +194,7 @@ void main()
         attenuation *= rangeFactor * rangeFactor;
 
         vec3 radiance = u_PointLightColors[i] * u_PointLightIntensities[i] * attenuation;
-        Lo += computeRadiance(N, V, L, radiance, u_Albedo, u_Metallic, u_Roughness, F0);
+        Lo += computeRadiance(N, V, L, radiance, albedo, metallic, roughness, F0);
     }
 
     // Directional lights
@@ -148,12 +202,17 @@ void main()
     {
         vec3 L = normalize(-u_DirLightDirections[i]);
         vec3 radiance = u_DirLightColors[i] * u_DirLightIntensities[i];
-        Lo += computeRadiance(N, V, L, radiance, u_Albedo, u_Metallic, u_Roughness, F0);
+        Lo += computeRadiance(N, V, L, radiance, albedo, metallic, roughness, F0);
     }
 
     // Ambient
-    vec3 ambient = vec3(0.03) * u_Albedo * u_AO;
+    vec3 ambient = vec3(0.03) * albedo * ao;
     vec3 color = ambient + Lo;
+
+    // Emissive
+    if (u_HasEmissiveMap == 1) {
+        color += texture(u_EmissiveMap, v_TexCoord).rgb * u_EmissiveFactor;
+    }
 
     // HDR tonemapping (Reinhard)
     color = color / (color + vec3(1.0));
@@ -253,6 +312,9 @@ function run_render_loop!(scene::Scene;
 
                 update_player!(controller, backend.input, dt)
             end
+
+            # Physics step (collision detection, gravity, resolution)
+            update_physics!(dt)
 
             render_frame!(backend, scene)
         end
