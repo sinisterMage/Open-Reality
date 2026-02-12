@@ -32,15 +32,18 @@ Attaches a collision shape to an entity. The shape is defined in local space;
 the physics system uses the entity's world transform to position it.
 
 `offset` shifts the collider relative to the entity's origin.
+`is_trigger` if true, generates trigger events instead of contact forces.
 """
 struct ColliderComponent <: Component
     shape::ColliderShape
     offset::Vec3f
+    is_trigger::Bool
 
     ColliderComponent(;
         shape::ColliderShape = AABBShape(Vec3f(0.5, 0.5, 0.5)),
-        offset::Vec3f = Vec3f(0, 0, 0)
-    ) = new(shape, offset)
+        offset::Vec3f = Vec3f(0, 0, 0),
+        is_trigger::Bool = false
+    ) = new(shape, offset, is_trigger)
 end
 
 """

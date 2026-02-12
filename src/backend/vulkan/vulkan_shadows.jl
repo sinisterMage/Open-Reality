@@ -85,7 +85,7 @@ function vk_create_shadow_depth_pipeline(device::Device, csm::VulkanCascadedShad
         true,   # depth test
         true,   # depth write
         CULL_MODE_FRONT_BIT,  # front-face culling reduces peter-panning
-        FRONT_FACE_COUNTER_CLOCKWISE,
+        FRONT_FACE_CLOCKWISE,
         0,  # no color attachments
         csm.resolution,
         csm.resolution

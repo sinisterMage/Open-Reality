@@ -151,6 +151,16 @@ function update_player!(controller::PlayerController, input::InputState, dt::Flo
         # Apply gravity to player velocity
         rb.velocity = rb.velocity + Vec3d(0, -9.81, 0) * dt
 
+        # Raycast-based ground detection
+        foot_pos = player_transform.position[] - Vec3d(0, 0.9, 0)
+        hit = raycast(foot_pos, Vec3d(0, -1, 0), max_distance=player.ground_ray_length)
+        if hit !== nothing
+            rb.grounded = true
+            if rb.velocity[2] < 0
+                rb.velocity = Vec3d(rb.velocity[1], 0.0, rb.velocity[3])
+            end
+        end
+
         # Jump: set upward velocity when grounded and space pressed
         if is_key_pressed(input, KEY_SPACE) && rb.grounded
             rb.velocity = Vec3d(rb.velocity[1], 5.0, rb.velocity[3])

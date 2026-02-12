@@ -45,8 +45,27 @@ include("components/lights.jl")
 include("components/primitives.jl")
 include("components/player.jl")
 include("components/collider.jl")
+
+# Physics types + shapes (before rigidbody — rigidbody uses CCDMode; shapes extends ColliderShape)
+include("physics/types.jl")
+include("physics/shapes.jl")
+
 include("components/rigidbody.jl")
 include("components/animation.jl")
+
+# Physics engine (after rigidbody — solver/world use RigidBodyComponent)
+include("physics/inertia.jl")
+include("physics/broadphase.jl")
+include("physics/narrowphase.jl")
+include("physics/gjk_epa.jl")
+include("physics/contact.jl")
+include("physics/solver.jl")
+include("physics/constraints.jl")
+include("physics/triggers.jl")
+include("physics/raycast.jl")
+include("physics/ccd.jl")
+include("physics/islands.jl")
+include("physics/world.jl")
 
 # Windowing (before backend — backend needs Window and InputState)
 include("windowing/glfw.jl")
@@ -182,10 +201,29 @@ export PlayerComponent, create_player
 export PlayerController, find_player_and_camera, update_player!
 
 # Export Physics Components
-export ColliderComponent, ColliderShape, AABBShape, SphereShape
+export ColliderComponent, ColliderShape, AABBShape, SphereShape, CapsuleShape, CapsuleAxis
+export OBBShape, ConvexHullShape, CompoundShape, CompoundChild
+export CAPSULE_X, CAPSULE_Y, CAPSULE_Z
 export collider_from_mesh, sphere_collider_from_mesh
 export RigidBodyComponent, BodyType, BODY_STATIC, BODY_KINEMATIC, BODY_DYNAMIC
+export CCDMode, CCD_NONE, CCD_SWEPT
 export PhysicsConfig, update_physics!
+
+# Export Physics Engine
+export PhysicsWorldConfig, PhysicsWorld, get_physics_world, reset_physics_world!
+export AABB3D, ContactManifold, ContactPoint, CollisionPair, RaycastHit
+export SpatialHashGrid
+export initialize_rigidbody_inertia!
+export raycast, raycast_all
+export sweep_test, apply_ccd!
+export SimulationIsland, build_islands, update_islands!
+
+# Export Joints/Constraints
+export JointConstraint, JointComponent
+export BallSocketJoint, DistanceJoint, HingeJoint, FixedJoint, SliderJoint
+
+# Export Triggers
+export TriggerComponent
 
 # Export Animation
 export InterpolationMode, INTERP_STEP, INTERP_LINEAR, INTERP_CUBICSPLINE

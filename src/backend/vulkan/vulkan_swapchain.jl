@@ -309,8 +309,20 @@ function vk_recreate_swapchain!(backend)
 
     old_swapchain = backend.swapchain
 
+    # Destroy old render_finished semaphores (sized per swapchain image)
+    for sem in backend.render_finished_semaphores
+        finalize(sem)
+    end
+    empty!(backend.render_finished_semaphores)
+
     # Recreate
     vk_create_swapchain!(backend)
+
+    # Create new render_finished semaphores matching new swapchain image count
+    for _ in 1:length(backend.swapchain_images)
+        push!(backend.render_finished_semaphores,
+            unwrap(create_semaphore(backend.device, SemaphoreCreateInfo())))
+    end
 
     # Destroy old swapchain
     if old_swapchain !== nothing

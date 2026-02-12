@@ -283,14 +283,11 @@ void main() {
     vec4 emissiveAO = texture(gEmissiveAO, fragUV);
     float depth = texture(gDepth, fragUV).r;
 
-    // DEBUG: output raw G-buffer albedo to check if G-buffer pass works
-    // Red channel of albedo > 0 = green, else magenta (for background)
-    if (albedoMetallic.r > 0.001 || albedoMetallic.g > 0.001 || albedoMetallic.b > 0.001) {
-        outColor = vec4(albedoMetallic.rgb, 1.0);
-    } else {
-        outColor = vec4(0.1, 0.0, 0.1, 1.0); // dark magenta for empty/background pixels
+    // Skip background pixels (no geometry rendered)
+    if (depth >= 1.0) {
+        outColor = vec4(0.1, 0.1, 0.1, 1.0);
+        return;
     }
-    return;
 
     vec3 albedo = albedoMetallic.rgb;
     float metallic = albedoMetallic.a;
@@ -404,7 +401,7 @@ function vk_create_deferred_pipeline(device::Device, physical_device::PhysicalDe
                 true,   # depth test
                 true,   # depth write
                 CULL_MODE_BACK_BIT,
-                FRONT_FACE_COUNTER_CLOCKWISE,
+                FRONT_FACE_CLOCKWISE,
                 4,      # 4 color MRT attachments
                 width, height
             ))

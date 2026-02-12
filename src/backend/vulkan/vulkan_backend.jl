@@ -110,6 +110,7 @@ mutable struct VulkanBackend <: AbstractBackend
     csm::Union{VulkanCascadedShadowMap, Nothing}
     post_process::Union{VulkanPostProcessPipeline, Nothing}
     default_texture::Union{VulkanGPUTexture, Nothing}
+    black_texture::Union{VulkanGPUTexture, Nothing}
     shadow_sampler::Union{Sampler, Nothing}
 
     # Per-frame transient descriptor pools (reset each frame for per-material allocations)
@@ -148,7 +149,7 @@ function VulkanBackend()
         DescriptorSet[], Buffer[], DeviceMemory[], Buffer[], DeviceMemory[],
         # Pipelines
         nothing, nothing, VulkanGPUResourceCache(), VulkanTextureCache(),
-        Dict{EntityID, BoundingSphere}(), nothing, nothing, nothing, nothing,
+        Dict{EntityID, BoundingSphere}(), nothing, nothing, nothing, nothing, nothing,
         # Transient pools
         DescriptorPool[],
         # Temp buffers per frame
@@ -209,13 +210,17 @@ function initialize!(backend::VulkanBackend; width::Int=1280, height::Int=720, t
     backend.command_buffers = unwrap(allocate_command_buffers(backend.device, alloc_info))
 
     # Create sync objects
+    # image_available semaphores: per frame-in-flight (used before we know image index)
     for _ in 1:VK_MAX_FRAMES_IN_FLIGHT
         push!(backend.image_available_semaphores,
             unwrap(create_semaphore(backend.device, SemaphoreCreateInfo())))
-        push!(backend.render_finished_semaphores,
-            unwrap(create_semaphore(backend.device, SemaphoreCreateInfo())))
         push!(backend.in_flight_fences,
             unwrap(create_fence(backend.device, FenceCreateInfo(; flags=FENCE_CREATE_SIGNALED_BIT))))
+    end
+    # render_finished semaphores: per swapchain image (presentation holds onto these)
+    for _ in 1:length(backend.swapchain_images)
+        push!(backend.render_finished_semaphores,
+            unwrap(create_semaphore(backend.device, SemaphoreCreateInfo())))
     end
 
     # Create descriptor pool (persistent allocations)
@@ -274,11 +279,17 @@ function initialize!(backend::VulkanBackend; width::Int=1280, height::Int=720, t
     backend.quad_buffer, backend.quad_memory = vk_create_fullscreen_quad(
         backend.device, backend.physical_device, backend.command_pool, backend.graphics_queue)
 
-    # Create 1x1 white default texture
+    # Create 1x1 white default texture (SSAO default = no occlusion)
     white_pixel = UInt8[0xFF, 0xFF, 0xFF, 0xFF]
     backend.default_texture = vk_upload_texture(
         backend.device, backend.physical_device, backend.command_pool, backend.graphics_queue,
         white_pixel, 1, 1, 4; format=FORMAT_R8G8B8A8_UNORM, generate_mipmaps=false)
+
+    # Create 1x1 black texture (SSR default = no reflections, alpha=0 prevents SSR contribution)
+    black_pixel = UInt8[0x00, 0x00, 0x00, 0x00]
+    backend.black_texture = vk_upload_texture(
+        backend.device, backend.physical_device, backend.command_pool, backend.graphics_queue,
+        black_pixel, 1, 1, 4; format=FORMAT_R8G8B8A8_UNORM, generate_mipmaps=false)
 
     # Fill lighting descriptor set unused bindings with default texture
     for i in 1:VK_MAX_FRAMES_IN_FLIGHT
@@ -366,9 +377,12 @@ function shutdown!(backend::VulkanBackend)
         finalize(backend.forward_pipeline.pipeline_layout)
     end
 
-    # Destroy default texture + shadow sampler
+    # Destroy default textures + shadow sampler
     if backend.default_texture !== nothing
         vk_destroy_texture!(backend.device, backend.default_texture)
+    end
+    if backend.black_texture !== nothing
+        vk_destroy_texture!(backend.device, backend.black_texture)
     end
     if backend.shadow_sampler !== nothing
         finalize(backend.shadow_sampler)
@@ -418,8 +432,10 @@ function shutdown!(backend::VulkanBackend)
     # Destroy sync objects
     for i in 1:VK_MAX_FRAMES_IN_FLIGHT
         finalize(backend.image_available_semaphores[i])
-        finalize(backend.render_finished_semaphores[i])
         finalize(backend.in_flight_fences[i])
+    end
+    for sem in backend.render_finished_semaphores
+        finalize(sem)
     end
 
     # Destroy command pool
@@ -496,8 +512,17 @@ function render_frame!(backend::VulkanBackend, scene::Scene)
     unwrap(reset_command_buffer(cmd))
     unwrap(begin_command_buffer(cmd, CommandBufferBeginInfo()))
 
+    # Flip Y for Vulkan's Y-down NDC (OpenGL projection has Y-up)
+    proj = frame_data.proj
+    vk_proj = Mat4f(
+        proj[1], proj[2], proj[3], proj[4],
+        proj[5], -proj[6], proj[7], proj[8],
+        proj[9], proj[10], proj[11], proj[12],
+        proj[13], proj[14], proj[15], proj[16]
+    )
+
     # Update per-frame UBO
-    per_frame_uniforms = vk_pack_per_frame(frame_data.view, frame_data.proj,
+    per_frame_uniforms = vk_pack_per_frame(frame_data.view, vk_proj,
                                              frame_data.cam_pos, Float32(backend_get_time(backend)))
     vk_upload_struct_data!(backend.device, backend.per_frame_ubo_mems[frame_idx], per_frame_uniforms)
 
@@ -518,7 +543,7 @@ function render_frame!(backend::VulkanBackend, scene::Scene)
     # --- Shadow pass ---
     if has_shadows && backend.csm !== nothing
         vk_render_csm_passes!(cmd, backend, backend.csm,
-            frame_data.view, frame_data.proj, frame_data.primary_light_dir)
+            frame_data.view, vk_proj, frame_data.primary_light_dir)
     end
 
     # --- G-Buffer pass ---
@@ -537,12 +562,12 @@ function render_frame!(backend::VulkanBackend, scene::Scene)
     # End command buffer
     unwrap(end_command_buffer(cmd))
 
-    # Submit
+    # Submit (render_finished semaphore indexed by swapchain image to avoid reuse conflicts)
     submit_info = SubmitInfo(
         [backend.image_available_semaphores[frame_idx]],
         [PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT],
         [cmd],
-        [backend.render_finished_semaphores[frame_idx]]
+        [backend.render_finished_semaphores[image_index]]
     )
     unwrap(queue_submit(backend.graphics_queue, [submit_info];
                          fence=backend.in_flight_fences[frame_idx]))
@@ -550,7 +575,7 @@ function render_frame!(backend::VulkanBackend, scene::Scene)
     # Present
     present_result = queue_present_khr(backend.present_queue,
         PresentInfoKHR(
-            [backend.render_finished_semaphores[frame_idx]],
+            [backend.render_finished_semaphores[image_index]],
             [backend.swapchain],
             [UInt32(image_index - 1)]  # 1-indexed → 0-indexed
         ))
@@ -601,13 +626,13 @@ function _submit_empty_frame!(backend::VulkanBackend, frame_idx::Int, image_inde
         [backend.image_available_semaphores[frame_idx]],
         [PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT],
         [cmd],
-        [backend.render_finished_semaphores[frame_idx]]
+        [backend.render_finished_semaphores[image_index]]
     )
     unwrap(queue_submit(backend.graphics_queue, [submit_info];
                          fence=backend.in_flight_fences[frame_idx]))
     queue_present_khr(backend.present_queue,
         PresentInfoKHR(
-            [backend.render_finished_semaphores[frame_idx]],
+            [backend.render_finished_semaphores[image_index]],
             [backend.swapchain],
             [UInt32(image_index - 1)]
         ))
@@ -733,11 +758,12 @@ function _render_lighting_pass!(cmd::CommandBuffer, backend::VulkanBackend,
         vk_update_texture_descriptor!(backend.device, lighting_ds, 4, gb.advanced_material)
         vk_update_texture_descriptor!(backend.device, lighting_ds, 5, gb.depth)
 
-        # Bindings 6-8: SSAO / SSR / unused
-        # TODO: bind actual SSAO/SSR textures once those passes are executed in the render loop
-        for bind_idx in 6:8
-            vk_update_texture_descriptor!(backend.device, lighting_ds, bind_idx, backend.default_texture)
-        end
+        # Binding 6: SSAO (white = no occlusion)
+        vk_update_texture_descriptor!(backend.device, lighting_ds, 6, backend.default_texture)
+        # Binding 7: SSR (black/alpha=0 = no reflections)
+        vk_update_texture_descriptor!(backend.device, lighting_ds, 7, backend.black_texture)
+        # Binding 8: unused
+        vk_update_texture_descriptor!(backend.device, lighting_ds, 8, backend.default_texture)
 
         cmd_bind_descriptor_sets(cmd, PIPELINE_BIND_POINT_GRAPHICS, dp.lighting_pipeline.pipeline_layout,
             UInt32(0), [lighting_ds, backend.lighting_ds[frame_idx]], UInt32[])
@@ -780,9 +806,18 @@ function _render_present_pass!(cmd::CommandBuffer, backend::VulkanBackend,
         present_ds = vk_allocate_descriptor_set(backend.device,
             backend.transient_pools[frame_idx], backend.fullscreen_layout)
 
-        # Binding 0: UBO (reuse per-frame UBO, contents unused by present shader)
+        # Binding 0: Present pass UBO (post-process params matching PresentUBO layout)
+        pp = backend.post_process_config !== nothing ? backend.post_process_config : PostProcessConfig()
+        present_uniforms = VulkanPostProcessUniforms(
+            pp.bloom_threshold, pp.bloom_intensity, pp.gamma,
+            Int32(pp.tone_mapping), Int32(0),
+            0.0f0, 0.0f0, 0.0f0
+        )
+        present_ubo, present_mem = vk_create_uniform_buffer(
+            backend.device, backend.physical_device, present_uniforms)
+        push!(backend.frame_temp_buffers[frame_idx], (present_ubo, present_mem))
         vk_update_ubo_descriptor!(backend.device, present_ds, 0,
-            backend.per_frame_ubos[frame_idx], sizeof(VulkanPerFrameUniforms))
+            present_ubo, sizeof(VulkanPostProcessUniforms))
 
         # Binding 1: deferred lighting result texture
         vk_update_image_sampler_descriptor!(backend.device, present_ds, 1,
@@ -817,7 +852,7 @@ function backend_create_shader(backend::VulkanBackend, vertex_src::String, fragm
             [backend.per_frame_layout, backend.per_material_layout, backend.lighting_layout],
             [backend.push_constant_range],
             false, true, true,
-            CULL_MODE_BACK_BIT, FRONT_FACE_COUNTER_CLOCKWISE,
+            CULL_MODE_BACK_BIT, FRONT_FACE_CLOCKWISE,
             1, backend.width, backend.height
         ))
 end

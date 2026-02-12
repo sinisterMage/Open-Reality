@@ -16,14 +16,16 @@ mutable struct PlayerComponent <: Component
     mouse_sensitivity::Float32
     yaw::Float64    # radians, rotation around Y axis
     pitch::Float64  # radians, rotation around X axis (clamped ±89°)
+    ground_ray_length::Float64  # Raycast distance for ground detection
 
     PlayerComponent(;
         move_speed::Float32 = 5.0f0,
         sprint_multiplier::Float32 = 2.0f0,
         mouse_sensitivity::Float32 = 0.002f0,
         yaw::Float64 = 0.0,
-        pitch::Float64 = 0.0
-    ) = new(move_speed, sprint_multiplier, mouse_sensitivity, yaw, pitch)
+        pitch::Float64 = 0.0,
+        ground_ray_length::Float64 = 1.1
+    ) = new(move_speed, sprint_multiplier, mouse_sensitivity, yaw, pitch, ground_ray_length)
 end
 
 """
