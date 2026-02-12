@@ -192,7 +192,7 @@ include("loading/loader.jl")
 export EntityID, World, create_entity!, create_entity_id
 export Component, ComponentStore
 export add_component!, get_component, has_component, remove_component!
-export collect_components, entities_with_component, component_count, iterate_components
+export collect_components, entities_with_component, first_entity_with_component, component_count, iterate_components
 export register_component_type, reset_entity_counter!, reset_component_stores!
 
 # Export State
@@ -361,7 +361,7 @@ export InputState, is_key_pressed, get_mouse_position, setup_input_callbacks!
 # Export Math
 export translation_matrix, scale_matrix, rotation_x, rotation_y, rotation_z
 export rotation_matrix, compose_transform
-export get_world_transform, get_local_transform
+export get_world_transform, get_local_transform, clear_world_transform_cache!
 export perspective_matrix, look_at_matrix
 export Mat4d
 

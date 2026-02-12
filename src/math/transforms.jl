@@ -164,14 +164,57 @@ Compose a 4x4 transformation matrix from position, rotation (quaternion), and sc
 The composition order is: Translation * Rotation * Scale (T * R * S).
 
 This means points are first scaled, then rotated, then translated.
+Fused into a single matrix construction to avoid 3 temporary matrices + 2 multiplications.
 """
 function compose_transform(position::Vec{3, Float64}, rotation::Quaternion{Float64}, scale::Vec{3, Float64})
-    T = translation_matrix(position)
-    R = rotation_matrix(rotation)
-    S = scale_matrix(scale)
+    # Extract and normalize quaternion
+    w, x, y, z = rotation.s, rotation.v1, rotation.v2, rotation.v3
+    n = sqrt(x*x + y*y + z*z + w*w)
+    if n > 0
+        inv_n = 1.0 / n
+        x *= inv_n; y *= inv_n; z *= inv_n; w *= inv_n
+    end
 
-    return T * R * S
+    # Precompute rotation terms
+    xx = 2.0 * x * x; yy = 2.0 * y * y; zz = 2.0 * z * z
+    xy = 2.0 * x * y; xz = 2.0 * x * z; yz = 2.0 * y * z
+    wx = 2.0 * w * x; wy = 2.0 * w * y; wz = 2.0 * w * z
+
+    sx, sy, sz = scale[1], scale[2], scale[3]
+    tx, ty, tz = position[1], position[2], position[3]
+
+    # Fused T * R * S — each column of R is scaled by the corresponding scale factor
+    return Mat4d(
+        (1.0 - yy - zz) * sx, (xy + wz) * sx,       (xz - wy) * sx,       0.0,
+        (xy - wz) * sy,       (1.0 - xx - zz) * sy,  (yz + wx) * sy,       0.0,
+        (xz + wy) * sz,       (yz - wx) * sz,        (1.0 - xx - yy) * sz, 0.0,
+        tx,                   ty,                    tz,                   1.0
+    )
 end
+
+# =============================================================================
+# World Transform Cache (per-frame)
+# =============================================================================
+
+"""
+Per-frame cache for world transform matrices. Call `clear_world_transform_cache!()`
+at the start of each frame. Avoids recomputing the same transform when
+`get_world_transform` is called multiple times for the same entity (shadow passes,
+entity classification, light upload, particles, etc.).
+"""
+const _WORLD_TRANSFORM_CACHE = Dict{EntityID, Mat4d}()
+
+"""
+    clear_world_transform_cache!()
+
+Clear the per-frame world transform cache. Call once at the start of each frame.
+"""
+function clear_world_transform_cache!()
+    empty!(_WORLD_TRANSFORM_CACHE)
+end
+
+# Register cache clearing with ECS reset so tests don't see stale transforms
+push!(_RESET_HOOKS, clear_world_transform_cache!)
 
 # =============================================================================
 # World Transform Calculation
@@ -181,16 +224,21 @@ end
     get_world_transform(entity_id::EntityID) -> Mat4d
 
 Calculate the world transformation matrix for an entity, taking into account
-the full parent hierarchy.
+the full parent hierarchy. Results are cached per frame.
 
 Returns identity matrix if the entity has no TransformComponent.
 Child transforms are multiplied by parent transforms, so children move with their parents.
 """
 function get_world_transform(entity_id::EntityID)
+    cached = get(_WORLD_TRANSFORM_CACHE, entity_id, nothing)
+    cached !== nothing && return cached
+
     transform_comp = get_component(entity_id, TransformComponent)
 
     if transform_comp === nothing
-        return Mat4d(I)  # Identity matrix
+        result = Mat4d(I)
+        _WORLD_TRANSFORM_CACHE[entity_id] = result
+        return result
     end
 
     # Calculate local transform matrix from Observable values
@@ -201,12 +249,15 @@ function get_world_transform(entity_id::EntityID)
     )
 
     # If entity has a parent, multiply by parent's world transform
-    if transform_comp.parent !== nothing
+    result = if transform_comp.parent !== nothing
         parent_world = get_world_transform(transform_comp.parent)
-        return parent_world * local_matrix
+        parent_world * local_matrix
+    else
+        local_matrix
     end
 
-    return local_matrix
+    _WORLD_TRANSFORM_CACHE[entity_id] = result
+    return result
 end
 
 """

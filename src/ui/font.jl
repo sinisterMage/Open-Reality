@@ -87,8 +87,9 @@ function get_or_create_font_atlas!(font_path::String, font_size::Int)
 
     for ch in chars
         bm, _ = glyph_bitmaps[ch]
-        bw = size(bm, 2)
-        bh = size(bm, 1)
+        # FreeTypeAbstraction renderface returns matrix as (width, height)
+        bw = size(bm, 1)
+        bh = size(bm, 2)
         if bw == 0 && bh == 0
             bw = font_size ÷ 3  # Reserve space for invisible chars
             bh = 0
@@ -122,15 +123,17 @@ function get_or_create_font_atlas!(font_path::String, font_size::Int)
     for ch in chars
         bm, extent = glyph_bitmaps[ch]
         px, py = positions[ch]
-        bw = size(bm, 2)
-        bh = size(bm, 1)
+        # FreeTypeAbstraction renderface returns matrix as (width, height)
+        bw = size(bm, 1)
+        bh = size(bm, 2)
 
         # Blit bitmap into atlas
+        # bm is indexed as bm[x, y] where x=column (width), y=row (height)
         for row in 1:bh, col in 1:bw
             atlas_x = px + col - 1
             atlas_y = py + row - 1
             if atlas_x < atlas_width && atlas_y < atlas_height
-                atlas[atlas_y * atlas_width + atlas_x + 1] = bm[row, col]
+                atlas[atlas_y * atlas_width + atlas_x + 1] = bm[col, row]
             end
         end
 

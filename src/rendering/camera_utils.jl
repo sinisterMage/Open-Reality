@@ -7,8 +7,7 @@
 Find the first entity with a CameraComponent.
 """
 function find_active_camera()
-    entities = entities_with_component(CameraComponent)
-    return isempty(entities) ? nothing : first(entities)
+    return first_entity_with_component(CameraComponent)
 end
 
 """

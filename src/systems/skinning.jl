@@ -11,18 +11,12 @@ For each entity with a SkinnedMeshComponent, compute the final bone matrices:
 Call this once per frame before rendering.
 """
 function update_skinned_meshes!()
-    skinned_entities = entities_with_component(SkinnedMeshComponent)
-    isempty(skinned_entities) && return
-
-    for eid in skinned_entities
-        skin = get_component(eid, SkinnedMeshComponent)
-        skin === nothing && continue
-
+    iterate_components(SkinnedMeshComponent) do eid, skin
         mesh_world = get_world_transform(eid)
         inv_mesh_world = inv(mesh_world)
 
         num_bones = length(skin.bone_entities)
-        num_bones == 0 && continue
+        num_bones == 0 && return
 
         # Resize bone_matrices if needed
         if length(skin.bone_matrices) != num_bones
@@ -38,8 +32,6 @@ function update_skinned_meshes!()
 
             if bone_comp !== nothing
                 bone_world = get_world_transform(bone_eid)
-                # Final matrix: transform vertex from bind pose to current pose
-                # in mesh-local space
                 skin.bone_matrices[i] = Mat4f(inv_mesh_world * bone_world) * bone_comp.inverse_bind_matrix
             else
                 skin.bone_matrices[i] = Mat4f(I)

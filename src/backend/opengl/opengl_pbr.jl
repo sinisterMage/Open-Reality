@@ -372,37 +372,29 @@ void main()
 Query all light components from ECS and upload to shader uniforms.
 """
 function upload_lights!(sp::ShaderProgram)
-    # Point lights
-    point_entities = entities_with_component(PointLightComponent)
-    num_point = min(length(point_entities), 16)
-    set_uniform!(sp, "u_NumPointLights", Int32(num_point))
-
-    for i in 1:num_point
-        eid = point_entities[i]
-        light = get_component(eid, PointLightComponent)
+    # Point lights — iterate without allocating
+    idx = 0
+    iterate_components(PointLightComponent) do eid, light
+        idx >= 16 && return
         world = get_world_transform(eid)
-        # Extract position from column 4 of the world transform matrix
         pos = Vec3f(Float32(world[1, 4]), Float32(world[2, 4]), Float32(world[3, 4]))
 
-        idx = i - 1
         set_uniform!(sp, "u_PointLightPositions[$idx]", pos)
         set_uniform!(sp, "u_PointLightColors[$idx]", light.color)
         set_uniform!(sp, "u_PointLightIntensities[$idx]", light.intensity)
         set_uniform!(sp, "u_PointLightRanges[$idx]", light.range)
+        idx += 1
     end
+    set_uniform!(sp, "u_NumPointLights", Int32(idx))
 
-    # Directional lights
-    dir_entities = entities_with_component(DirectionalLightComponent)
-    num_dir = min(length(dir_entities), 4)
-    set_uniform!(sp, "u_NumDirLights", Int32(num_dir))
-
-    for i in 1:num_dir
-        eid = dir_entities[i]
-        light = get_component(eid, DirectionalLightComponent)
-
-        idx = i - 1
+    # Directional lights — iterate without allocating
+    idx = 0
+    iterate_components(DirectionalLightComponent) do eid, light
+        idx >= 4 && return
         set_uniform!(sp, "u_DirLightDirections[$idx]", light.direction)
         set_uniform!(sp, "u_DirLightColors[$idx]", light.color)
         set_uniform!(sp, "u_DirLightIntensities[$idx]", light.intensity)
+        idx += 1
     end
+    set_uniform!(sp, "u_NumDirLights", Int32(idx))
 end

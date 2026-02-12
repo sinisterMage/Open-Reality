@@ -148,6 +148,7 @@ end
 """
 Push a quad (2 triangles, 6 vertices) into the UI vertex buffer.
 Each vertex: position.xy + uv.xy + color.rgba = 8 floats.
+Uses direct indexed writes to avoid allocating a temporary array.
 """
 function _push_quad!(ctx::UIContext,
                      x::Float32, y::Float32, w::Float32, h::Float32,
@@ -156,34 +157,50 @@ function _push_quad!(ctx::UIContext,
                      texture_id::UInt32, is_font::Bool)
     offset = length(ctx.vertices)
 
-    # 6 vertices * 8 floats = 48 floats per quad
-    # Triangle 1: top-left, top-right, bottom-right
-    # Triangle 2: top-left, bottom-right, bottom-left
     x0, y0 = x, y
     x1, y1 = x + w, y + h
     u0, v0 = uv_x, uv_y
     u1, v1 = uv_x + uv_w, uv_y + uv_h
 
-    append!(ctx.vertices, Float32[
-        # Vertex 1 (top-left)
-        x0, y0, u0, v0, r, g, b, a,
-        # Vertex 2 (top-right)
-        x1, y0, u1, v0, r, g, b, a,
-        # Vertex 3 (bottom-right)
-        x1, y1, u1, v1, r, g, b, a,
-        # Vertex 4 (top-left)
-        x0, y0, u0, v0, r, g, b, a,
-        # Vertex 5 (bottom-right)
-        x1, y1, u1, v1, r, g, b, a,
-        # Vertex 6 (bottom-left)
-        x0, y1, u0, v1, r, g, b, a,
-    ])
+    # Pre-grow buffer by 48 floats (6 vertices × 8 floats)
+    verts = ctx.vertices
+    resize!(verts, offset + 48)
+
+    # Vertex 1 (top-left)
+    @inbounds verts[offset + 1] = x0; @inbounds verts[offset + 2] = y0
+    @inbounds verts[offset + 3] = u0; @inbounds verts[offset + 4] = v0
+    @inbounds verts[offset + 5] = r;  @inbounds verts[offset + 6] = g
+    @inbounds verts[offset + 7] = b;  @inbounds verts[offset + 8] = a
+    # Vertex 2 (top-right)
+    @inbounds verts[offset + 9]  = x1; @inbounds verts[offset + 10] = y0
+    @inbounds verts[offset + 11] = u1; @inbounds verts[offset + 12] = v0
+    @inbounds verts[offset + 13] = r;  @inbounds verts[offset + 14] = g
+    @inbounds verts[offset + 15] = b;  @inbounds verts[offset + 16] = a
+    # Vertex 3 (bottom-right)
+    @inbounds verts[offset + 17] = x1; @inbounds verts[offset + 18] = y1
+    @inbounds verts[offset + 19] = u1; @inbounds verts[offset + 20] = v1
+    @inbounds verts[offset + 21] = r;  @inbounds verts[offset + 22] = g
+    @inbounds verts[offset + 23] = b;  @inbounds verts[offset + 24] = a
+    # Vertex 4 (top-left)
+    @inbounds verts[offset + 25] = x0; @inbounds verts[offset + 26] = y0
+    @inbounds verts[offset + 27] = u0; @inbounds verts[offset + 28] = v0
+    @inbounds verts[offset + 29] = r;  @inbounds verts[offset + 30] = g
+    @inbounds verts[offset + 31] = b;  @inbounds verts[offset + 32] = a
+    # Vertex 5 (bottom-right)
+    @inbounds verts[offset + 33] = x1; @inbounds verts[offset + 34] = y1
+    @inbounds verts[offset + 35] = u1; @inbounds verts[offset + 36] = v1
+    @inbounds verts[offset + 37] = r;  @inbounds verts[offset + 38] = g
+    @inbounds verts[offset + 39] = b;  @inbounds verts[offset + 40] = a
+    # Vertex 6 (bottom-left)
+    @inbounds verts[offset + 41] = x0; @inbounds verts[offset + 42] = y1
+    @inbounds verts[offset + 43] = u0; @inbounds verts[offset + 44] = v1
+    @inbounds verts[offset + 45] = r;  @inbounds verts[offset + 46] = g
+    @inbounds verts[offset + 47] = b;  @inbounds verts[offset + 48] = a
 
     # Add draw command (try to merge with last command if same texture)
     if !isempty(ctx.draw_commands)
         last = ctx.draw_commands[end]
         if last.texture_id == texture_id && last.is_font == is_font
-            # Merge: extend the last command
             ctx.draw_commands[end] = UIDrawCommand(
                 last.vertex_offset, last.vertex_count + 6,
                 texture_id, is_font

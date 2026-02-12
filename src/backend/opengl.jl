@@ -75,7 +75,7 @@ function initialize!(backend::OpenGLBackend;
     end
 
     # Cascaded Shadow Maps (CSM) - better quality than single shadow map
-    backend.csm = CascadedShadowMap(num_cascades=4, resolution=2048)
+    backend.csm = CascadedShadowMap(num_cascades=4, resolution=1024)
     # Create with camera near/far planes (will be updated per frame)
     create_csm!(backend.csm, 0.1f0, 150.0f0)
 
@@ -746,11 +746,11 @@ function render_frame!(backend::OpenGLBackend, scene::Scene)
     cam_pos = Vec3f(Float32(cam_world[1, 4]), Float32(cam_world[2, 4]), Float32(cam_world[3, 4]))
 
     # ---- Check for IBL component and create environment if needed ----
-    if backend.deferred_pipeline !== nothing
-        ibl_entities = entities_with_component(IBLComponent)
-        if !isempty(ibl_entities) && backend.deferred_pipeline.ibl_env === nothing
-            ibl_comp = get_component(ibl_entities[1], IBLComponent)
-            if ibl_comp.enabled
+    if backend.deferred_pipeline !== nothing && backend.deferred_pipeline.ibl_env === nothing
+        ibl_eid = first_entity_with_component(IBLComponent)
+        if ibl_eid !== nothing
+            ibl_comp = get_component(ibl_eid, IBLComponent)
+            if ibl_comp !== nothing && ibl_comp.enabled
                 @info "Creating IBL environment" path=ibl_comp.environment_path intensity=ibl_comp.intensity
                 ibl_env = IBLEnvironment(intensity=ibl_comp.intensity)
                 create_ibl_environment!(ibl_env, ibl_comp.environment_path)
@@ -763,9 +763,9 @@ function render_frame!(backend::OpenGLBackend, scene::Scene)
     light_space = Mat4f(I)
     has_shadows = false
     if backend.csm !== nothing
-        dir_entities = entities_with_component(DirectionalLightComponent)
-        if !isempty(dir_entities)
-            light = get_component(dir_entities[1], DirectionalLightComponent)
+        dir_eid = first_entity_with_component(DirectionalLightComponent)
+        if dir_eid !== nothing
+            light = get_component(dir_eid, DirectionalLightComponent)
             light_dir = light.direction
 
             # Create depth shader if needed (reuse from shadow_map.jl)

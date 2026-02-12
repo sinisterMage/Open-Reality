@@ -71,6 +71,9 @@ function run_render_loop!(scene::Scene;
 
             backend_poll_events!(backend)
 
+            # Clear per-frame caches
+            clear_world_transform_cache!()
+
             # Update UI input state
             if _UI_CONTEXT[] !== nothing && _UI_CALLBACK[] !== nothing
                 ctx = _UI_CONTEXT[]

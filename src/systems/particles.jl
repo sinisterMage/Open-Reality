@@ -113,14 +113,34 @@ end
     _sort_particles_back_to_front!(pool, cam_pos)
 
 Sort alive particles back-to-front relative to camera for correct alpha blending.
+Only sorts the alive portion of the pool (partitioned to the front).
 """
 function _sort_particles_back_to_front!(pool::ParticlePool, cam_pos::Vec3f)
-    sort!(pool.particles, by = p -> begin
-        if !p.alive
-            return -Inf32  # dead particles sort first (will be skipped)
+    particles = pool.particles
+    n = length(particles)
+    alive_count = pool.alive_count
+
+    # Skip sort if ≤1 alive
+    alive_count <= 1 && return
+
+    # Partition: move alive particles to the front
+    write_idx = 1
+    for read_idx in 1:n
+        if particles[read_idx].alive
+            if write_idx != read_idx
+                particles[write_idx], particles[read_idx] = particles[read_idx], particles[write_idx]
+            end
+            write_idx += 1
         end
-        d = p.position - cam_pos
-        -(d[1]*d[1] + d[2]*d[2] + d[3]*d[3])  # negative for back-to-front
+    end
+
+    # Sort only alive particles (indices 1:alive_count) by distance to camera
+    cx, cy, cz = cam_pos[1], cam_pos[2], cam_pos[3]
+    sort!(view(particles, 1:alive_count), by = p -> begin
+        dx = p.position[1] - cx
+        dy = p.position[2] - cy
+        dz = p.position[3] - cz
+        -(dx*dx + dy*dy + dz*dz)
     end)
 end
 
@@ -211,12 +231,12 @@ Simulate all particle systems and generate billboard geometry.
 Call once per frame before rendering.
 """
 function update_particles!(dt::Float32, cam_pos::Vec3f, cam_right::Vec3f, cam_up::Vec3f)
-    emitters = entities_with_component(ParticleSystemComponent)
+    # Track active emitters for pool cleanup
+    active_emitters = Set{EntityID}()
 
-    for eid in emitters
-        comp = get_component(eid, ParticleSystemComponent)
-        comp === nothing && continue
-        !comp._active && continue
+    iterate_components(ParticleSystemComponent) do eid, comp
+        !comp._active && return
+        push!(active_emitters, eid)
 
         # Get or create pool
         pool = get!(PARTICLE_POOLS, eid) do
@@ -255,7 +275,7 @@ function update_particles!(dt::Float32, cam_pos::Vec3f, cam_right::Vec3f, cam_up
         # Simulate
         _simulate_particles!(pool, comp, dt)
 
-        # Sort back-to-front
+        # Sort back-to-front (only alive particles)
         _sort_particles_back_to_front!(pool, cam_pos)
 
         # Build billboard quads
@@ -264,7 +284,7 @@ function update_particles!(dt::Float32, cam_pos::Vec3f, cam_right::Vec3f, cam_up
 
     # Clean up pools for removed entities
     for eid in keys(PARTICLE_POOLS)
-        if get_component(eid, ParticleSystemComponent) === nothing
+        if eid ∉ active_emitters
             delete!(PARTICLE_POOLS, eid)
         end
     end

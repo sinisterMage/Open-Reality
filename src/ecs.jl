@@ -116,8 +116,13 @@ const COMPONENT_STORES = Dict{DataType, ComponentStore{<:Component}}()
 
 Reset all component stores. Useful for testing.
 """
+const _RESET_HOOKS = Function[]
+
 function reset_component_stores!()
     empty!(COMPONENT_STORES)
+    for hook in _RESET_HOOKS
+        hook()
+    end
 end
 
 """
@@ -264,6 +269,7 @@ end
 
 Get all entity IDs that have a component of the specified type.
 Returns an empty vector if no entities have this component type.
+Note: This allocates a new vector. For hot-path iteration, use `iterate_components` instead.
 """
 function entities_with_component(::Type{T})::Vector{EntityID} where T <: Component
     store = get_component_store(T)
@@ -271,6 +277,19 @@ function entities_with_component(::Type{T})::Vector{EntityID} where T <: Compone
         return EntityID[]
     end
     return collect(keys(store.entity_map))
+end
+
+"""
+    first_entity_with_component(::Type{T}) where T <: Component -> Union{EntityID, Nothing}
+
+Get the first entity ID with a component of the specified type, or nothing.
+Non-allocating alternative to `entities_with_component(...)[1]`.
+"""
+function first_entity_with_component(::Type{T})::Union{EntityID, Nothing} where T <: Component
+    store = get_component_store(T)
+    store === nothing && return nothing
+    isempty(store.entity_map) && return nothing
+    return first(keys(store.entity_map))
 end
 
 """
