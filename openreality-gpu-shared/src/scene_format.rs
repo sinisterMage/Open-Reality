@@ -560,10 +560,10 @@ pub fn parse_orsb(data: &[u8]) -> Result<ParsedScene, String> {
         meshes.push(MeshParsed { positions, normals, uvs, indices, bone_weights, bone_indices });
     }
 
-    // ── Materials (108 bytes each) ──
+    // ── Materials (96 bytes each) ──
     let mut materials = Vec::with_capacity(num_materials);
     for _ in 0..num_materials {
-        if c.remaining() < 108 {
+        if c.remaining() < 96 {
             break;
         }
         let color = [c.read_f32().unwrap(), c.read_f32().unwrap(), c.read_f32().unwrap(), c.read_f32().unwrap()];
@@ -725,7 +725,7 @@ pub fn parse_orsb(data: &[u8]) -> Result<ParsedScene, String> {
                     let target_entity_index = c.read_u32().ok_or("Truncated channel")?;
                     let prop_byte = c.read_u8().ok_or("Truncated channel")?;
                     let interp_byte = c.read_u8().ok_or("Truncated channel")?;
-                    let keyframe_count = c.read_u16().ok_or("Truncated channel")? as usize;
+                    let keyframe_count = c.read_u32().ok_or("Truncated channel")? as usize;
 
                     let target_property = match prop_byte {
                         0 => TargetProperty::Position,
