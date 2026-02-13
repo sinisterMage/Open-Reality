@@ -60,14 +60,14 @@ function initialize!(backend::WebGPUBackend; width::Int=1280, height::Int=720, t
         error("Failed to create GLFW window for WebGPU backend")
     end
 
-    # Get raw window/display handles for the Rust FFI
+    # Get raw window/display handles for the Rust FFI via GLFW native access
     if Sys.islinux()
-        x11_window = UInt64(GLFW.GetX11Window(backend.window.handle))
-        x11_display = Ptr{Nothing}(GLFW.GetX11Display())
+        x11_window = ccall((:glfwGetX11Window, GLFW.libglfw), UInt64, (GLFW.Window,), backend.window.handle)
+        x11_display = ccall((:glfwGetX11Display, GLFW.libglfw), Ptr{Nothing}, ())
         backend.backend_handle = wgpu_initialize(x11_window, x11_display, width, height)
     elseif Sys.iswindows()
-        hwnd = UInt64(GLFW.GetWin32Window(backend.window.handle))
-        backend.backend_handle = wgpu_initialize(hwnd, Ptr{Nothing}(C_NULL), width, height)
+        hwnd = ccall((:glfwGetWin32Window, GLFW.libglfw), Ptr{Nothing}, (GLFW.Window,), backend.window.handle)
+        backend.backend_handle = wgpu_initialize(UInt64(hwnd), Ptr{Nothing}(C_NULL), width, height)
     else
         error("WebGPU backend not supported on this platform (use Metal on macOS)")
     end
