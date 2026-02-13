@@ -1,0 +1,18 @@
+[package]
+name = "openreality-cli"
+version = "0.1.0"
+edition = "2021"
+description = "TUI dashboard for the Open Reality game engine"
+
+[[bin]]
+name = "orcli"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = { version = "0.29", features = ["crossterm"] }
+crossterm = { version = "0.28", features = ["event-stream"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "time", "io-util"] }
+anyhow = "1"
+which = "7"
+chrono = "0.4"
+dirs = "6"
