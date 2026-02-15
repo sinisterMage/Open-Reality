@@ -2165,6 +2165,293 @@ using StaticArrays
         @test get_mouse_position(input) == (0.0, 0.0)
     end
 
+    @testset "Input Mapping" begin
+        @testset "InputMap creation" begin
+            map = InputMap()
+            @test isempty(map.bindings)
+            @test isempty(map.states)
+        end
+
+        @testset "Bind and unbind actions" begin
+            map = InputMap()
+
+            # Bind a keyboard key
+            bind!(map, "jump", KeyboardKey(32))  # space
+            @test haskey(map.bindings, "jump")
+            @test length(map.bindings["jump"].sources) == 1
+            @test haskey(map.states, "jump")
+
+            # Bind a second source to the same action
+            bind!(map, "jump", GamepadButton(1, GAMEPAD_BUTTON_A))
+            @test length(map.bindings["jump"].sources) == 2
+
+            # Unbind a specific source
+            unbind!(map, "jump", KeyboardKey(32))
+            @test length(map.bindings["jump"].sources) == 1
+
+            # Unbind entire action
+            unbind!(map, "jump")
+            @test !haskey(map.bindings, "jump")
+            @test !haskey(map.states, "jump")
+        end
+
+        @testset "Keyboard action pressed" begin
+            map = InputMap()
+            input = InputState()
+
+            bind!(map, "fire", KeyboardKey(70))  # F key
+
+            # Not pressed
+            update_actions!(map, input)
+            @test !is_action_pressed(map, "fire")
+
+            # Press key
+            push!(input.keys_pressed, 70)
+            update_actions!(map, input)
+            @test is_action_pressed(map, "fire")
+            @test get_axis(map, "fire") == 1.0f0
+
+            # Release key
+            delete!(input.keys_pressed, 70)
+            update_actions!(map, input)
+            @test !is_action_pressed(map, "fire")
+            @test get_axis(map, "fire") == 0.0f0
+        end
+
+        @testset "Mouse button action" begin
+            map = InputMap()
+            input = InputState()
+
+            bind!(map, "shoot", MouseButton(0))  # left click
+
+            push!(input.mouse_buttons, 0)
+            update_actions!(map, input)
+            @test is_action_pressed(map, "shoot")
+
+            delete!(input.mouse_buttons, 0)
+            update_actions!(map, input)
+            @test !is_action_pressed(map, "shoot")
+        end
+
+        @testset "Edge detection — just_pressed and just_released" begin
+            map = InputMap()
+            input = InputState()
+
+            bind!(map, "jump", KeyboardKey(32))
+
+            # Frame 1: not pressed
+            update_actions!(map, input)
+            @test !is_action_just_pressed(map, "jump")
+            @test !is_action_just_released(map, "jump")
+
+            # Frame 2: press key
+            push!(input.keys_pressed, 32)
+            update_actions!(map, input)
+            @test is_action_just_pressed(map, "jump")
+            @test !is_action_just_released(map, "jump")
+
+            # Frame 3: still held
+            update_actions!(map, input)
+            @test is_action_pressed(map, "jump")
+            @test !is_action_just_pressed(map, "jump")  # no longer "just"
+
+            # Frame 4: release
+            delete!(input.keys_pressed, 32)
+            update_actions!(map, input)
+            @test !is_action_pressed(map, "jump")
+            @test is_action_just_released(map, "jump")
+
+            # Frame 5: still released
+            update_actions!(map, input)
+            @test !is_action_just_released(map, "jump")  # no longer "just"
+        end
+
+        @testset "Gamepad button action" begin
+            map = InputMap()
+            input = InputState()
+
+            bind!(map, "jump", GamepadButton(1, GAMEPAD_BUTTON_A))
+
+            # No gamepad connected — action should be false
+            update_actions!(map, input)
+            @test !is_action_pressed(map, "jump")
+
+            # Simulate gamepad buttons (button A = index 0 pressed)
+            input.gamepad_buttons[1] = [true, false, false, false]
+            update_actions!(map, input)
+            @test is_action_pressed(map, "jump")
+
+            # Release
+            input.gamepad_buttons[1] = [false, false, false, false]
+            update_actions!(map, input)
+            @test !is_action_pressed(map, "jump")
+        end
+
+        @testset "Gamepad axis with deadzone" begin
+            map = InputMap()
+            input = InputState()
+
+            bind!(map, "move_forward", GamepadAxis(1, GAMEPAD_AXIS_LEFT_Y, false, 0.15f0))
+
+            # No gamepad — not active
+            update_actions!(map, input)
+            @test !is_action_pressed(map, "move_forward")
+            @test get_axis(map, "move_forward") == 0.0f0
+
+            # Axis within deadzone (Y = -0.1, magnitude 0.1 < 0.15)
+            input.gamepad_axes[1] = Float32[0.0, -0.1, 0.0, 0.0]
+            update_actions!(map, input)
+            @test !is_action_pressed(map, "move_forward")
+            @test get_axis(map, "move_forward") == 0.0f0
+
+            # Axis beyond deadzone (Y = -0.8, negative direction = forward)
+            input.gamepad_axes[1] = Float32[0.0, -0.8, 0.0, 0.0]
+            update_actions!(map, input)
+            @test is_action_pressed(map, "move_forward")
+            @test get_axis(map, "move_forward") > 0.5f0  # remapped above deadzone
+
+            # Positive direction should NOT trigger (positive=false means negative direction)
+            input.gamepad_axes[1] = Float32[0.0, 0.8, 0.0, 0.0]
+            update_actions!(map, input)
+            @test !is_action_pressed(map, "move_forward")
+        end
+
+        @testset "Gamepad axis positive direction" begin
+            map = InputMap()
+            input = InputState()
+
+            bind!(map, "move_backward", GamepadAxis(1, GAMEPAD_AXIS_LEFT_Y, true, 0.15f0))
+
+            # Positive Y = backward
+            input.gamepad_axes[1] = Float32[0.0, 0.8, 0.0, 0.0]
+            update_actions!(map, input)
+            @test is_action_pressed(map, "move_backward")
+            @test get_axis(map, "move_backward") > 0.5f0
+
+            # Negative Y should NOT trigger
+            input.gamepad_axes[1] = Float32[0.0, -0.8, 0.0, 0.0]
+            update_actions!(map, input)
+            @test !is_action_pressed(map, "move_backward")
+        end
+
+        @testset "Multiple sources — OR logic" begin
+            map = InputMap()
+            input = InputState()
+
+            bind!(map, "jump", KeyboardKey(32))
+            bind!(map, "jump", GamepadButton(1, GAMEPAD_BUTTON_A))
+
+            # Only keyboard
+            push!(input.keys_pressed, 32)
+            update_actions!(map, input)
+            @test is_action_pressed(map, "jump")
+
+            # Only gamepad
+            delete!(input.keys_pressed, 32)
+            input.gamepad_buttons[1] = [true, false]
+            update_actions!(map, input)
+            @test is_action_pressed(map, "jump")
+
+            # Both
+            push!(input.keys_pressed, 32)
+            update_actions!(map, input)
+            @test is_action_pressed(map, "jump")
+
+            # Neither
+            delete!(input.keys_pressed, 32)
+            input.gamepad_buttons[1] = [false, false]
+            update_actions!(map, input)
+            @test !is_action_pressed(map, "jump")
+        end
+
+        @testset "Query nonexistent action" begin
+            map = InputMap()
+            @test !is_action_pressed(map, "nope")
+            @test !is_action_just_pressed(map, "nope")
+            @test !is_action_just_released(map, "nope")
+            @test get_axis(map, "nope") == 0.0f0
+        end
+
+        @testset "Default player map" begin
+            map = create_default_player_map()
+
+            @test haskey(map.bindings, "move_forward")
+            @test haskey(map.bindings, "move_backward")
+            @test haskey(map.bindings, "move_left")
+            @test haskey(map.bindings, "move_right")
+            @test haskey(map.bindings, "jump")
+            @test haskey(map.bindings, "crouch")
+            @test haskey(map.bindings, "sprint")
+            @test haskey(map.bindings, "look_up")
+            @test haskey(map.bindings, "look_down")
+            @test haskey(map.bindings, "look_left")
+            @test haskey(map.bindings, "look_right")
+
+            # Each movement action has 2 sources (keyboard + gamepad)
+            @test length(map.bindings["move_forward"].sources) == 2
+            @test length(map.bindings["jump"].sources) == 2
+            @test length(map.bindings["sprint"].sources) == 2
+
+            # Look actions have only gamepad (mouse is handled separately)
+            @test length(map.bindings["look_up"].sources) == 1
+        end
+
+        @testset "InputState edge detection helpers" begin
+            input = InputState()
+
+            # Key not pressed
+            @test !is_key_just_pressed(input, 65)
+            @test !is_key_just_released(input, 65)
+
+            # Press key (no previous frame yet)
+            push!(input.keys_pressed, 65)
+            @test is_key_just_pressed(input, 65)
+
+            # After begin_frame, key is in prev_keys
+            begin_frame!(input)
+            @test !is_key_just_pressed(input, 65)  # still held, not "just"
+
+            # Release
+            delete!(input.keys_pressed, 65)
+            @test is_key_just_released(input, 65)
+        end
+
+        @testset "InputState gamepad state tracking" begin
+            input = InputState()
+
+            # Simulate gamepad data
+            input.gamepad_axes[1] = Float32[0.5, -0.3, 0.0, 0.0]
+            input.gamepad_buttons[1] = [true, false, true]
+
+            @test input.gamepad_axes[1][1] ≈ 0.5f0
+            @test input.gamepad_buttons[1][1] == true
+            @test input.gamepad_buttons[1][2] == false
+
+            # begin_frame copies to prev
+            begin_frame!(input)
+            @test input.prev_gamepad_buttons[1] == [true, false, true]
+
+            # Modify current — prev should stay
+            input.gamepad_buttons[1] = [false, false, false]
+            @test input.prev_gamepad_buttons[1] == [true, false, true]
+        end
+
+        @testset "Gamepad constants" begin
+            @test GAMEPAD_BUTTON_A == 0
+            @test GAMEPAD_BUTTON_B == 1
+            @test GAMEPAD_BUTTON_X == 2
+            @test GAMEPAD_BUTTON_Y == 3
+            @test GAMEPAD_BUTTON_LB == 4
+            @test GAMEPAD_BUTTON_RB == 5
+            @test GAMEPAD_AXIS_LEFT_X == 0
+            @test GAMEPAD_AXIS_LEFT_Y == 1
+            @test GAMEPAD_AXIS_RIGHT_X == 2
+            @test GAMEPAD_AXIS_RIGHT_Y == 3
+            @test GAMEPAD_AXIS_TRIGGER_LEFT == 4
+            @test GAMEPAD_AXIS_TRIGGER_RIGHT == 5
+        end
+    end
+
     @testset "Audio" begin
         @testset "AudioListenerComponent defaults" begin
             listener = AudioListenerComponent()

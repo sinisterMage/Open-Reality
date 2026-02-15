@@ -54,9 +54,11 @@ function run_render_loop!(scene::Scene;
     result = find_player_and_camera(scene)
     if result !== nothing
         player_id, camera_id = result
-        controller = PlayerController(player_id, camera_id)
+        player_comp = get_component(player_id, PlayerComponent)
+        player_input_map = player_comp !== nothing ? player_comp.input_map : nothing
+        controller = PlayerController(player_id, camera_id; input_map=player_input_map)
         backend_capture_cursor!(backend)
-        @info "Player controller active — WASD to move, mouse to look, Shift to sprint, Escape to release cursor"
+        @info "Player controller active — WASD/gamepad to move, mouse/right stick to look, Shift/LB to sprint, Escape to release cursor"
     end
 
     last_time = backend_get_time(backend)
@@ -70,6 +72,9 @@ function run_render_loop!(scene::Scene;
             last_time = now
 
             backend_poll_events!(backend)
+
+            # Snapshot input state for edge detection (just_pressed / just_released)
+            begin_frame!(backend_get_input(backend))
 
             # Clear per-frame caches
             clear_world_transform_cache!()

@@ -17,6 +17,7 @@ mutable struct PlayerComponent <: Component
     yaw::Float64    # radians, rotation around Y axis
     pitch::Float64  # radians, rotation around X axis (clamped ±89°)
     ground_ray_length::Float64  # Raycast distance for ground detection
+    input_map::Union{InputMap, Nothing}  # Custom input bindings (nothing = use defaults)
 
     PlayerComponent(;
         move_speed::Float32 = 5.0f0,
@@ -24,8 +25,9 @@ mutable struct PlayerComponent <: Component
         mouse_sensitivity::Float32 = 0.002f0,
         yaw::Float64 = 0.0,
         pitch::Float64 = 0.0,
-        ground_ray_length::Float64 = 1.1
-    ) = new(move_speed, sprint_multiplier, mouse_sensitivity, yaw, pitch, ground_ray_length)
+        ground_ray_length::Float64 = 1.1,
+        input_map::Union{InputMap, Nothing} = nothing
+    ) = new(move_speed, sprint_multiplier, mouse_sensitivity, yaw, pitch, ground_ray_length, input_map)
 end
 
 """
@@ -51,6 +53,7 @@ function create_player(;
     move_speed::Float32 = 5.0f0,
     sprint_multiplier::Float32 = 2.0f0,
     mouse_sensitivity::Float32 = 0.002f0,
+    input_map::Union{InputMap, Nothing} = nothing,
     mesh::Union{MeshComponent, Nothing} = nothing,
     material::Union{MaterialComponent, Nothing} = nothing,
     fov::Float32 = 70.0f0,
@@ -63,7 +66,8 @@ function create_player(;
         PlayerComponent(
             move_speed=move_speed,
             sprint_multiplier=sprint_multiplier,
-            mouse_sensitivity=mouse_sensitivity
+            mouse_sensitivity=mouse_sensitivity,
+            input_map=input_map
         ),
         transform(position=position),
         ColliderComponent(shape=AABBShape(Vec3f(0.3f0, 0.9f0, 0.3f0))),

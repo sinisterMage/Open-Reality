@@ -45,7 +45,6 @@ include("components/camera.jl")
 include("components/lights.jl")
 include("components/primitives.jl")
 include("components/lod.jl")
-include("components/player.jl")
 include("components/collider.jl")
 
 # Physics types + shapes (before rigidbody — rigidbody uses CCDMode; shapes extends ColliderShape)
@@ -76,6 +75,8 @@ include("physics/world.jl")
 # Windowing (before backend — backend needs Window and InputState)
 include("windowing/glfw.jl")
 include("windowing/input.jl")
+include("windowing/input_mapping.jl")
+include("components/player.jl")  # after input_mapping — PlayerComponent uses InputMap
 
 # Audio backend (after ECS — uses EntityID)
 include("audio/openal_backend.jl")
@@ -408,7 +409,21 @@ export run_render_loop!
 # Export Windowing
 export Window, create_window!, destroy_window!, should_close, poll_events!, swap_buffers!
 export setup_resize_callback!, capture_cursor!, release_cursor!, get_time
-export InputState, is_key_pressed, get_mouse_position, setup_input_callbacks!
+export InputState, is_key_pressed, is_key_just_pressed, is_key_just_released
+export get_mouse_position, setup_input_callbacks!
+export begin_frame!, poll_gamepads!
+
+# Export Input Mapping
+export InputSource, KeyboardKey, MouseButton, GamepadButton, GamepadAxis
+export InputMap, ActionBinding, ActionState
+export bind!, unbind!, update_actions!
+export is_action_pressed, is_action_just_pressed, is_action_just_released, get_axis
+export create_default_player_map
+export GAMEPAD_BUTTON_A, GAMEPAD_BUTTON_B, GAMEPAD_BUTTON_X, GAMEPAD_BUTTON_Y
+export GAMEPAD_BUTTON_LB, GAMEPAD_BUTTON_RB, GAMEPAD_BUTTON_BACK, GAMEPAD_BUTTON_START
+export GAMEPAD_BUTTON_LSTICK, GAMEPAD_BUTTON_RSTICK
+export GAMEPAD_AXIS_LEFT_X, GAMEPAD_AXIS_LEFT_Y, GAMEPAD_AXIS_RIGHT_X, GAMEPAD_AXIS_RIGHT_Y
+export GAMEPAD_AXIS_TRIGGER_LEFT, GAMEPAD_AXIS_TRIGGER_RIGHT
 
 # Export Math
 export translation_matrix, scale_matrix, rotation_x, rotation_y, rotation_z

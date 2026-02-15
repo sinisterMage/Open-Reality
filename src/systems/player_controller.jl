@@ -1,7 +1,7 @@
 # FPS player controller system
-# Handles WASD movement + mouse look
+# Handles WASD movement + mouse look + gamepad input via InputMap
 
-# GLFW key constants
+# GLFW key constants (kept for backward compatibility and escape handling)
 const KEY_W     = Int(GLFW.KEY_W)
 const KEY_A     = Int(GLFW.KEY_A)
 const KEY_S     = Int(GLFW.KEY_S)
@@ -16,17 +16,23 @@ const KEY_ESCAPE = Int(GLFW.KEY_ESCAPE)
 
 Manages FPS-style input processing for a player entity.
 Created automatically by the render loop when a PlayerComponent is detected.
+
+Uses an `InputMap` for action-based input — supports keyboard, mouse, and gamepad.
+Custom bindings can be provided via `create_player(input_map=...)`.
 """
 mutable struct PlayerController
     player_entity::EntityID
     camera_entity::Union{EntityID, Nothing}
+    input_map::InputMap
     last_mouse_x::Float64
     last_mouse_y::Float64
     first_mouse::Bool
     last_time::Float64
 
-    function PlayerController(player_entity::EntityID, camera_entity::Union{EntityID, Nothing})
-        new(player_entity, camera_entity, 0.0, 0.0, true, get_time())
+    function PlayerController(player_entity::EntityID, camera_entity::Union{EntityID, Nothing};
+                              input_map::Union{InputMap, Nothing}=nothing)
+        map = input_map !== nothing ? input_map : create_default_player_map()
+        new(player_entity, camera_entity, map, 0.0, 0.0, true, get_time())
     end
 end
 
@@ -62,12 +68,12 @@ end
 
 Process input and update player transform for one frame.
 
-- WASD: horizontal movement relative to facing direction
-- Mouse: yaw (horizontal) and pitch (vertical) look
-- Space: move up
-- Left Ctrl: move down
-- Left Shift: sprint
-- Escape: release mouse cursor
+Uses the controller's InputMap for action queries. Default bindings:
+- WASD / left stick: horizontal movement
+- Mouse / right stick: look
+- Space / A button: jump
+- Left Ctrl / B button: crouch / fly down
+- Left Shift / LB: sprint
 """
 function update_player!(controller::PlayerController, input::InputState, dt::Float64)
     player = get_component(controller.player_entity, PlayerComponent)
@@ -75,6 +81,11 @@ function update_player!(controller::PlayerController, input::InputState, dt::Flo
     if player === nothing || player_transform === nothing
         return
     end
+
+    # Poll gamepads and update action states
+    poll_gamepads!(input)
+    update_actions!(controller.input_map, input)
+    map = controller.input_map
 
     # --- Mouse look ---
     mx, my = input.mouse_position
@@ -94,6 +105,16 @@ function update_player!(controller::PlayerController, input::InputState, dt::Flo
     player.yaw -= dx * sens
     player.pitch -= dy * sens
 
+    # --- Gamepad right stick look ---
+    look_x = get_axis(map, "look_right") - get_axis(map, "look_left")
+    look_y = get_axis(map, "look_down") - get_axis(map, "look_up")
+
+    if abs(look_x) > 0.01 || abs(look_y) > 0.01
+        gamepad_look_speed = 2.5  # radians/sec at full deflection
+        player.yaw -= Float64(look_x) * gamepad_look_speed * dt
+        player.pitch -= Float64(look_y) * gamepad_look_speed * dt
+    end
+
     # Clamp pitch to avoid gimbal lock at poles
     max_pitch = deg2rad(89.0)
     player.pitch = clamp(player.pitch, -max_pitch, max_pitch)
@@ -111,9 +132,9 @@ function update_player!(controller::PlayerController, input::InputState, dt::Flo
         end
     end
 
-    # --- WASD movement ---
+    # --- Movement ---
     speed = Float64(player.move_speed)
-    if is_key_pressed(input, KEY_LSHIFT)
+    if is_action_pressed(map, "sprint")
         speed *= Float64(player.sprint_multiplier)
     end
 
@@ -122,16 +143,16 @@ function update_player!(controller::PlayerController, input::InputState, dt::Flo
     right   = Vec3d( cos(player.yaw), 0, -sin(player.yaw))
 
     move = Vec3d(0, 0, 0)
-    if is_key_pressed(input, KEY_W)
+    if is_action_pressed(map, "move_forward")
         move = move + forward
     end
-    if is_key_pressed(input, KEY_S)
+    if is_action_pressed(map, "move_backward")
         move = move - forward
     end
-    if is_key_pressed(input, KEY_D)
+    if is_action_pressed(map, "move_right")
         move = move + right
     end
-    if is_key_pressed(input, KEY_A)
+    if is_action_pressed(map, "move_left")
         move = move - right
     end
 
@@ -161,18 +182,18 @@ function update_player!(controller::PlayerController, input::InputState, dt::Flo
             end
         end
 
-        # Jump: set upward velocity when grounded and space pressed
-        if is_key_pressed(input, KEY_SPACE) && rb.grounded
+        # Jump: set upward velocity when grounded and jump just pressed
+        if is_action_just_pressed(map, "jump") && rb.grounded
             rb.velocity = Vec3d(rb.velocity[1], 5.0, rb.velocity[3])
         end
 
         vertical_delta = Vec3d(0, rb.velocity[2] * dt, 0)
     else
         # Fallback: no physics, fly mode (original behavior)
-        if is_key_pressed(input, KEY_SPACE)
+        if is_action_pressed(map, "jump")
             vertical_delta = Vec3d(0, speed * dt, 0)
         end
-        if is_key_pressed(input, KEY_LCTRL)
+        if is_action_pressed(map, "crouch")
             vertical_delta = Vec3d(0, -speed * dt, 0)
         end
     end
