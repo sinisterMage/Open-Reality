@@ -36,7 +36,16 @@ end
 
 s = scene([
     # Player
-    create_player(position=Vec3d(0, 5, 20)),
+    create_player(position=Vec3d(0, 2, 20)),
+
+    # Floor
+    entity([
+        cube_mesh(),
+        MaterialComponent(color=RGB{Float32}(0.3, 0.3, 0.35), metallic=0.0f0, roughness=0.8f0),
+        transform(position=Vec3d(0, -0.5, 0), scale=Vec3d(50, 0.5, 50)),
+        ColliderComponent(shape=AABBShape(Vec3f(50.0f0, 0.5f0, 50.0f0))),
+        RigidBodyComponent(body_type=BODY_STATIC)
+    ]),
 
     # Sun
     entity([

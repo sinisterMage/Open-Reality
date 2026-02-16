@@ -87,20 +87,27 @@ end
 Read connected gamepad axes and buttons via GLFW raw joystick API.
 Call once per frame after `begin_frame!()`.
 """
+const _GLFW_JOYSTICKS = [
+    GLFW.JOYSTICK_1,  GLFW.JOYSTICK_2,  GLFW.JOYSTICK_3,  GLFW.JOYSTICK_4,
+    GLFW.JOYSTICK_5,  GLFW.JOYSTICK_6,  GLFW.JOYSTICK_7,  GLFW.JOYSTICK_8,
+    GLFW.JOYSTICK_9,  GLFW.JOYSTICK_10, GLFW.JOYSTICK_11, GLFW.JOYSTICK_12,
+    GLFW.JOYSTICK_13, GLFW.JOYSTICK_14, GLFW.JOYSTICK_15, GLFW.JOYSTICK_16,
+]
+
 function poll_gamepads!(input::InputState)
-    for jid in 0:15  # GLFW joystick IDs 0–15
-        if GLFW.JoystickPresent(jid)
-            axes = GLFW.GetJoystickAxes(jid)
+    for (idx, joy) in enumerate(_GLFW_JOYSTICKS)
+        if GLFW.JoystickPresent(joy)
+            axes = GLFW.GetJoystickAxes(joy)
             if axes !== nothing
-                input.gamepad_axes[jid + 1] = Float32[Float32(a) for a in axes]
+                input.gamepad_axes[idx] = Float32[Float32(a) for a in axes]
             end
-            buttons = GLFW.GetJoystickButtons(jid)
+            buttons = GLFW.GetJoystickButtons(joy)
             if buttons !== nothing
-                input.gamepad_buttons[jid + 1] = Bool[b == GLFW.PRESS for b in buttons]
+                input.gamepad_buttons[idx] = Bool[b != 0 for b in buttons]
             end
         else
-            delete!(input.gamepad_axes, jid + 1)
-            delete!(input.gamepad_buttons, jid + 1)
+            delete!(input.gamepad_axes, idx)
+            delete!(input.gamepad_buttons, idx)
         end
     end
     return nothing
