@@ -191,15 +191,16 @@ if !Sys.isapple()
 end
 
 # WebGPU backend (all platforms, requires compiled Rust FFI library)
-const _WEBGPU_LIB_PATH = joinpath(@__DIR__, "..", "openreality-wgpu", "target", "release",
-    Sys.iswindows() ? "openreality_wgpu.dll" :
-    Sys.isapple() ? "libopenreality_wgpu.dylib" :
-    "libopenreality_wgpu.so")
-const _WEBGPU_LIB_DEBUG_PATH = joinpath(@__DIR__, "..", "openreality-wgpu", "target", "debug",
-    Sys.iswindows() ? "openreality_wgpu.dll" :
-    Sys.isapple() ? "libopenreality_wgpu.dylib" :
-    "libopenreality_wgpu.so")
-if isfile(_WEBGPU_LIB_PATH) || isfile(_WEBGPU_LIB_DEBUG_PATH)
+const _WEBGPU_LIB_NAME = Sys.iswindows() ? "openreality_wgpu.dll" :
+    Sys.isapple() ? "libopenreality_wgpu.dylib" : "libopenreality_wgpu.so"
+# Check workspace root target (cargo workspace) and crate-local target
+const _WEBGPU_LIB_CANDIDATES = [
+    joinpath(@__DIR__, "..", "target", "release", _WEBGPU_LIB_NAME),
+    joinpath(@__DIR__, "..", "openreality-wgpu", "target", "release", _WEBGPU_LIB_NAME),
+    joinpath(@__DIR__, "..", "target", "debug", _WEBGPU_LIB_NAME),
+    joinpath(@__DIR__, "..", "openreality-wgpu", "target", "debug", _WEBGPU_LIB_NAME),
+]
+if any(isfile, _WEBGPU_LIB_CANDIDATES)
     include("backend/webgpu/webgpu_types.jl")
     include("backend/webgpu/webgpu_ffi.jl")
     include("backend/webgpu/webgpu_backend.jl")

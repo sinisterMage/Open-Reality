@@ -13,6 +13,8 @@ pub struct PerFrameUniforms {
     pub _pad1: f32,
     pub _pad2: f32,
     pub _pad3: f32,
+    /// Padding to 256-byte alignment for WebGPU minUniformBufferOffsetAlignment.
+    pub _alignment_pad: [f32; 8],
 }
 
 /// Material uniform data — matches GPU bind group 1, binding 0.

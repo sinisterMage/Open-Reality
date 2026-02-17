@@ -1,4 +1,6 @@
-// Final present pass — tone mapping + gamma correction.
+// Final present pass — blit post-processed result to swapchain.
+// Bloom composite already handles tone mapping + gamma correction,
+// so this pass just copies the final result.
 
 struct PresentParams {
     bloom_threshold: f32,
@@ -19,21 +21,8 @@ struct FragmentInput {
     @location(0) uv: vec2<f32>,
 };
 
-fn aces(x: vec3<f32>) -> vec3<f32> {
-    let a = 2.51;
-    let b = 0.03;
-    let c = 2.43;
-    let d = 0.59;
-    let e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
-}
-
 @fragment
 fn fs_main(in: FragmentInput) -> @location(0) vec4<f32> {
-    let hdr = textureSample(scene_texture, tex_sampler, in.uv).rgb;
-    // ACES tone mapping
-    var mapped = aces(hdr);
-    // Gamma correction
-    mapped = pow(mapped, vec3<f32>(1.0 / params.gamma));
-    return vec4<f32>(mapped, 1.0);
+    let color = textureSample(scene_texture, tex_sampler, in.uv).rgb;
+    return vec4<f32>(color, 1.0);
 }

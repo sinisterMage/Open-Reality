@@ -1,5 +1,5 @@
 use crate::handle::HandleStore;
-use std::sync::Arc;
+use crate::render_targets;
 
 /// GPU mesh with vertex and index buffers.
 pub struct GPUMesh {
@@ -101,6 +101,93 @@ pub struct TAAPass {
     pub first_frame: bool,
 }
 
+/// The full deferred rendering pipeline — all render pipelines, targets, and shared resources.
+pub struct DeferredPipeline {
+    // Render pipelines
+    pub gbuffer_pipeline: wgpu::RenderPipeline,
+    pub lighting_pipeline: wgpu::RenderPipeline,
+    pub shadow_pipeline: wgpu::RenderPipeline,
+    pub forward_pipeline: wgpu::RenderPipeline,
+    pub present_pipeline: wgpu::RenderPipeline,
+    pub particle_pipeline: wgpu::RenderPipeline,
+    pub ui_pipeline: wgpu::RenderPipeline,
+    pub terrain_pipeline: wgpu::RenderPipeline,
+
+    // Effect pipelines
+    pub ssao_pipeline: wgpu::RenderPipeline,
+    pub ssao_blur_pipeline: wgpu::RenderPipeline,
+    pub ssr_pipeline: wgpu::RenderPipeline,
+    pub taa_pipeline: wgpu::RenderPipeline,
+    pub bloom_extract_pipeline: wgpu::RenderPipeline,
+    pub bloom_blur_pipeline: wgpu::RenderPipeline,
+    pub bloom_composite_pipeline: wgpu::RenderPipeline,
+    pub fxaa_pipeline: wgpu::RenderPipeline,
+
+    // Render targets
+    pub gbuffer: GBuffer,
+    pub lighting_target: RenderTarget,
+    pub ssao_targets: render_targets::SSAOTargets,
+    pub ssr_target: RenderTarget,
+    pub taa_targets: render_targets::TAATargets,
+    pub bloom_targets: render_targets::BloomTargets,
+    pub dof_targets: Option<render_targets::DOFTargets>,
+    pub mblur_targets: Option<render_targets::MotionBlurTargets>,
+
+    // Post-process intermediate targets (for ping-pong)
+    pub pp_target_a: RenderTarget,
+    pub pp_target_b: RenderTarget,
+
+    // Default resources
+    pub default_texture: wgpu::Texture,
+    pub default_texture_view: wgpu::TextureView,
+    pub ssao_noise_texture: wgpu::Texture,
+    pub ssao_noise_view: wgpu::TextureView,
+    pub fullscreen_quad_vbo: wgpu::Buffer,
+
+    // Bind group layouts
+    pub lighting_bgl: wgpu::BindGroupLayout,
+    pub light_data_bgl: wgpu::BindGroupLayout,
+    pub per_object_bgl: wgpu::BindGroupLayout,
+    pub particle_bgl: wgpu::BindGroupLayout,
+    pub ui_bgl: wgpu::BindGroupLayout,
+    pub terrain_bgl: wgpu::BindGroupLayout,
+    pub present_bgl: wgpu::BindGroupLayout,
+    pub forward_light_shadow_bgl: wgpu::BindGroupLayout,
+
+    // Effect bind group layouts
+    pub ssao_bgl: wgpu::BindGroupLayout,
+    pub ssao_blur_bgl: wgpu::BindGroupLayout,
+    pub ssr_bgl: wgpu::BindGroupLayout,
+    pub taa_bgl: wgpu::BindGroupLayout,
+    pub bloom_extract_bgl: wgpu::BindGroupLayout,
+    pub bloom_blur_bgl: wgpu::BindGroupLayout,
+    pub bloom_composite_bgl: wgpu::BindGroupLayout,
+    pub fxaa_bgl: wgpu::BindGroupLayout,
+
+    // Uniform buffers for effects
+    pub ssao_params_buffer: wgpu::Buffer,
+    pub ssr_params_buffer: wgpu::Buffer,
+    pub taa_params_buffer: wgpu::Buffer,
+    pub pp_params_buffer: wgpu::Buffer,
+    pub shadow_uniform_buffer: wgpu::Buffer,
+    pub particle_uniform_buffer: wgpu::Buffer,
+    pub ui_uniform_buffer: wgpu::Buffer,
+    pub terrain_params_buffer: wgpu::Buffer,
+
+    // Samplers
+    pub depth_sampler: wgpu::Sampler,
+    pub shadow_comparison_sampler: wgpu::Sampler,
+
+    // Dynamic vertex buffers for streaming data
+    pub particle_vbo: wgpu::Buffer,
+    pub particle_vbo_size: u64,
+    pub ui_vbo: wgpu::Buffer,
+    pub ui_vbo_size: u64,
+
+    // TAA state
+    pub taa_first_frame: bool,
+}
+
 /// Main backend state — owns all wgpu resources.
 pub struct WGPUBackendState {
     pub instance: wgpu::Instance,
@@ -135,6 +222,9 @@ pub struct WGPUBackendState {
     pub material_bind_group_layout: wgpu::BindGroupLayout,
     pub light_buffer: wgpu::Buffer,
     pub default_sampler: wgpu::Sampler,
+
+    // Deferred rendering pipeline (created on demand)
+    pub deferred: Option<DeferredPipeline>,
 
     // Error state
     pub last_error: Option<String>,
@@ -365,6 +455,7 @@ impl WGPUBackendState {
             material_bind_group_layout,
             light_buffer,
             default_sampler,
+            deferred: None,
             last_error: None,
         })
     }
@@ -485,8 +576,6 @@ impl WGPUBackendState {
         height: u32,
         channels: u32,
     ) -> u64 {
-        use wgpu::util::DeviceExt;
-
         // Convert to RGBA if needed
         let rgba_data: Vec<u8>;
         let data = if channels == 4 {
@@ -573,5 +662,320 @@ impl WGPUBackendState {
     /// Destroy a texture by handle.
     pub fn destroy_texture(&mut self, handle: u64) {
         self.textures.remove(handle);
+    }
+
+    /// Create the full deferred rendering pipeline (all pipelines and targets).
+    pub fn create_deferred_pipeline(&mut self) -> Result<(), String> {
+        use crate::pipeline;
+        use openreality_gpu_shared::uniforms::*;
+
+        let device = &self.device;
+        let queue = &self.queue;
+        let w = self.width;
+        let h = self.height;
+        let surface_format = self.surface_config.format;
+
+        // Per-object bind group layout
+        let per_object_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Per-Object BGL"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        // Create all bind group layouts
+        let lighting_bgl = pipeline::create_lighting_bind_group_layout(device);
+        let light_data_bgl = pipeline::create_light_data_bind_group_layout(device);
+        let particle_bgl = pipeline::create_particle_bgl(device);
+        let ui_bgl = pipeline::create_ui_bgl(device);
+        let terrain_bgl = pipeline::create_terrain_bgl(device);
+        let present_bgl = pipeline::create_present_bgl(device);
+        let forward_light_shadow_bgl = pipeline::create_forward_light_shadow_bgl(device);
+
+        // Effect bind group layouts — dedicated layouts for shaders with non-standard binding patterns
+        let ssao_bgl = pipeline::create_ssao_bind_group_layout(device);
+        let ssao_blur_bgl = pipeline::create_effect_bind_group_layout(device, "SSAO Blur BGL", 1, false);
+        let ssr_bgl = pipeline::create_ssr_bind_group_layout(device);
+        let taa_bgl = pipeline::create_taa_bind_group_layout(device);
+        let bloom_extract_bgl = pipeline::create_effect_bind_group_layout(device, "Bloom Extract BGL", 1, false);
+        let bloom_blur_bgl = pipeline::create_effect_bind_group_layout(device, "Bloom Blur BGL", 1, false);
+        let bloom_composite_bgl = pipeline::create_effect_bind_group_layout(device, "Bloom Composite BGL", 2, false);
+        let fxaa_bgl = pipeline::create_fxaa_bind_group_layout(device);
+
+        // Create render pipelines (with logging to diagnose driver crashes)
+        log::info!("Creating G-Buffer pipeline...");
+        let gbuffer_pipeline = pipeline::create_gbuffer_pipeline(
+            device,
+            &self.per_frame_bind_group_layout,
+            &self.material_bind_group_layout,
+            &per_object_bgl,
+        );
+
+        log::info!("Creating shadow pipeline...");
+        let shadow_pipeline = pipeline::create_shadow_pipeline(
+            device,
+            &self.per_frame_bind_group_layout,
+            &per_object_bgl,
+        );
+
+        log::info!("Creating lighting pipeline...");
+        let lighting_pipeline = pipeline::create_lighting_pipeline(
+            device,
+            &lighting_bgl,
+            &light_data_bgl,
+        );
+
+        log::info!("Creating forward pipeline...");
+        let forward_pipeline = pipeline::create_forward_pipeline(
+            device,
+            &self.per_frame_bind_group_layout,
+            &self.material_bind_group_layout,
+            &per_object_bgl,
+            &forward_light_shadow_bgl,
+        );
+
+        log::info!("Creating present pipeline...");
+        let present_pipeline = pipeline::create_present_pipeline(
+            device,
+            &present_bgl,
+            surface_format,
+        );
+
+        log::info!("Creating particle pipeline...");
+        let particle_pipeline = pipeline::create_particle_pipeline(device, &particle_bgl, surface_format);
+        log::info!("Creating UI pipeline...");
+        let ui_pipeline = pipeline::create_ui_pipeline(device, &ui_bgl, surface_format);
+        log::info!("Creating terrain pipeline...");
+        let terrain_pipeline = pipeline::create_terrain_pipeline(device, &self.per_frame_bind_group_layout, &terrain_bgl);
+
+        // Effect pipelines
+        use openreality_gpu_shared::shaders;
+        log::info!("Creating SSAO pipeline...");
+        let ssao_pipeline = pipeline::create_fullscreen_effect_pipeline(
+            device, "SSAO Pipeline", shaders::SSAO_FRAG, "fs_main", &ssao_bgl, render_targets::R16_FORMAT,
+        );
+        log::info!("Creating SSAO blur pipeline...");
+        let ssao_blur_pipeline = pipeline::create_fullscreen_effect_pipeline(
+            device, "SSAO Blur Pipeline", shaders::SSAO_BLUR_FRAG, "fs_main", &ssao_blur_bgl, render_targets::R16_FORMAT,
+        );
+        log::info!("Creating SSR pipeline...");
+        let ssr_pipeline = pipeline::create_fullscreen_effect_pipeline(
+            device, "SSR Pipeline", shaders::SSR_FRAG, "fs_main", &ssr_bgl, render_targets::HDR_FORMAT,
+        );
+        log::info!("Creating TAA pipeline...");
+        let taa_pipeline = pipeline::create_fullscreen_effect_pipeline(
+            device, "TAA Pipeline", shaders::TAA_FRAG, "fs_main", &taa_bgl, render_targets::HDR_FORMAT,
+        );
+        log::info!("Creating bloom extract pipeline...");
+        let bloom_extract_pipeline = pipeline::create_fullscreen_effect_pipeline(
+            device, "Bloom Extract Pipeline", shaders::BLOOM_EXTRACT_FRAG, "fs_main", &bloom_extract_bgl, render_targets::HDR_FORMAT,
+        );
+        log::info!("Creating bloom blur pipeline...");
+        let bloom_blur_pipeline = pipeline::create_fullscreen_effect_pipeline(
+            device, "Bloom Blur Pipeline", shaders::BLOOM_BLUR_FRAG, "fs_main", &bloom_blur_bgl, render_targets::HDR_FORMAT,
+        );
+        log::info!("Creating bloom composite pipeline...");
+        let bloom_composite_pipeline = pipeline::create_fullscreen_effect_pipeline(
+            device, "Bloom Composite Pipeline", shaders::BLOOM_COMPOSITE_FRAG, "fs_main", &bloom_composite_bgl, render_targets::HDR_FORMAT,
+        );
+        log::info!("Creating FXAA pipeline...");
+        let fxaa_pipeline = pipeline::create_fullscreen_effect_pipeline(
+            device, "FXAA Pipeline", shaders::FXAA_FRAG, "fs_main", &fxaa_bgl, render_targets::HDR_FORMAT,
+        );
+        log::info!("All pipelines created successfully.");
+
+        // Create render targets
+        let gbuffer = render_targets::create_gbuffer(device, w, h);
+        let lighting_target = render_targets::create_hdr_target(device, w, h, "Lighting Target", true);
+        let ssao_targets = render_targets::create_ssao_targets(device, w, h);
+        let ssr_target = render_targets::create_ssr_target(device, w, h);
+        let taa_targets = render_targets::create_taa_targets(device, w, h);
+        let bloom_targets = render_targets::create_bloom_targets(device, w, h);
+        let pp_target_a = render_targets::create_hdr_target(device, w, h, "PP Target A", false);
+        let pp_target_b = render_targets::create_hdr_target(device, w, h, "PP Target B", false);
+
+        // Default resources
+        let (default_texture, default_texture_view) = render_targets::create_default_texture(device, queue);
+        let (ssao_noise_texture, ssao_noise_view) = render_targets::create_ssao_noise_texture(device, queue);
+        let fullscreen_quad_vbo = render_targets::create_fullscreen_quad_vbo(device);
+
+        // Samplers
+        let depth_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Depth Sampler"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let shadow_comparison_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Shadow Comparison Sampler"),
+            compare: Some(wgpu::CompareFunction::LessEqual),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        // Uniform buffers for effects
+        let ssao_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SSAO Params"),
+            size: std::mem::size_of::<SSAOParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let ssr_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SSR Params"),
+            size: std::mem::size_of::<SSRParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let taa_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("TAA Params"),
+            size: std::mem::size_of::<TAAParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let pp_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("PostProcess Params"),
+            size: std::mem::size_of::<PostProcessParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let shadow_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Shadow Uniforms"),
+            size: std::mem::size_of::<ShadowUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Particle/UI uniform buffers (view/proj for particles, projection for UI)
+        let particle_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Particle Uniforms"),
+            size: 128, // 2 * mat4x4<f32>
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let ui_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("UI Uniforms"),
+            size: 80, // mat4x4 + 4 ints
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let terrain_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Terrain Params"),
+            size: 32, // TerrainParams
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Dynamic vertex buffers (start with reasonable default size, resize as needed)
+        let initial_particle_vbo_size = 1024 * 9 * 4; // 1024 vertices * 9 floats * 4 bytes
+        let particle_vbo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Particle VBO"),
+            size: initial_particle_vbo_size,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let initial_ui_vbo_size = 4096 * 8 * 4; // 4096 vertices * 8 floats * 4 bytes
+        let ui_vbo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("UI VBO"),
+            size: initial_ui_vbo_size,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        self.deferred = Some(DeferredPipeline {
+            gbuffer_pipeline,
+            lighting_pipeline,
+            shadow_pipeline,
+            forward_pipeline,
+            present_pipeline,
+            particle_pipeline,
+            ui_pipeline,
+            terrain_pipeline,
+            ssao_pipeline,
+            ssao_blur_pipeline,
+            ssr_pipeline,
+            taa_pipeline,
+            bloom_extract_pipeline,
+            bloom_blur_pipeline,
+            bloom_composite_pipeline,
+            fxaa_pipeline,
+            gbuffer,
+            lighting_target,
+            ssao_targets,
+            ssr_target,
+            taa_targets,
+            bloom_targets,
+            dof_targets: None,
+            mblur_targets: None,
+            pp_target_a,
+            pp_target_b,
+            default_texture,
+            default_texture_view,
+            ssao_noise_texture,
+            ssao_noise_view,
+            fullscreen_quad_vbo,
+            lighting_bgl,
+            light_data_bgl,
+            per_object_bgl,
+            particle_bgl,
+            ui_bgl,
+            terrain_bgl,
+            present_bgl,
+            forward_light_shadow_bgl,
+            ssao_bgl,
+            ssao_blur_bgl,
+            ssr_bgl,
+            taa_bgl,
+            bloom_extract_bgl,
+            bloom_blur_bgl,
+            bloom_composite_bgl,
+            fxaa_bgl,
+            ssao_params_buffer,
+            ssr_params_buffer,
+            taa_params_buffer,
+            pp_params_buffer,
+            shadow_uniform_buffer,
+            particle_uniform_buffer,
+            ui_uniform_buffer,
+            terrain_params_buffer,
+            depth_sampler,
+            shadow_comparison_sampler,
+            particle_vbo,
+            particle_vbo_size: initial_particle_vbo_size,
+            ui_vbo,
+            ui_vbo_size: initial_ui_vbo_size,
+            taa_first_frame: true,
+        });
+
+        log::info!("Deferred pipeline created ({}x{})", w, h);
+        Ok(())
+    }
+
+    /// Resize deferred pipeline render targets (called on window resize).
+    pub fn resize_deferred_pipeline(&mut self, width: u32, height: u32) {
+        if let Some(ref mut dp) = self.deferred {
+            let device = &self.device;
+
+            dp.gbuffer = render_targets::create_gbuffer(device, width, height);
+            dp.lighting_target = render_targets::create_hdr_target(device, width, height, "Lighting Target", true);
+            dp.ssao_targets = render_targets::create_ssao_targets(device, width, height);
+            dp.ssr_target = render_targets::create_ssr_target(device, width, height);
+            dp.taa_targets = render_targets::create_taa_targets(device, width, height);
+            dp.bloom_targets = render_targets::create_bloom_targets(device, width, height);
+            dp.pp_target_a = render_targets::create_hdr_target(device, width, height, "PP Target A", false);
+            dp.pp_target_b = render_targets::create_hdr_target(device, width, height, "PP Target B", false);
+            dp.taa_first_frame = true;
+
+            log::info!("Deferred pipeline resized to {}x{}", width, height);
+        }
     }
 }

@@ -119,6 +119,24 @@ struct WebGPUIBLEnvironment <: AbstractIBLEnvironment
     handle::UInt64
 end
 
+"""
+    WebGPUDOFPass <: AbstractDOFPass
+
+WebGPU depth-of-field pass.
+"""
+struct WebGPUDOFPass <: AbstractDOFPass
+    handle::UInt64
+end
+
+"""
+    WebGPUMotionBlurPass <: AbstractMotionBlurPass
+
+WebGPU motion blur pass.
+"""
+struct WebGPUMotionBlurPass <: AbstractMotionBlurPass
+    handle::UInt64
+end
+
 # ==================================================================
 # Resource caches (Julia-side, map EntityID to handle)
 # ==================================================================

@@ -29,12 +29,16 @@ function run_render_loop!(scene::Scene;
     # Initialize audio system
     init_audio!()
 
-    # Initialize particle renderer
-    init_particle_renderer!()
+    # Initialize particle renderer (OpenGL only — other backends handle particles in render_frame!)
+    if backend isa OpenGLBackend
+        init_particle_renderer!()
+    end
 
     # Initialize UI renderer if callback provided
     if ui !== nothing
-        init_ui_renderer!()
+        if backend isa OpenGLBackend
+            init_ui_renderer!()
+        end
         _UI_CONTEXT[] = UIContext()
         _UI_CALLBACK[] = ui
     end
@@ -98,7 +102,7 @@ function run_render_loop!(scene::Scene;
                 end
 
                 # Initialize font atlas on first frame (needs OpenGL context)
-                if isempty(ctx.font_atlas.glyphs) && isempty(ctx.font_path)
+                if backend isa OpenGLBackend && isempty(ctx.font_atlas.glyphs) && isempty(ctx.font_path)
                     ctx.font_atlas = get_or_create_font_atlas!("", 32)
                 end
             end
@@ -144,14 +148,18 @@ function run_render_loop!(scene::Scene;
         end
     finally
         if _UI_CONTEXT[] !== nothing
-            shutdown_ui_renderer!()
+            if backend isa OpenGLBackend
+                shutdown_ui_renderer!()
+            end
             _UI_CONTEXT[] = nothing
             _UI_CALLBACK[] = nothing
         end
-        shutdown_particle_renderer!()
+        if backend isa OpenGLBackend
+            shutdown_particle_renderer!()
+            reset_terrain_gpu_caches!()
+        end
         reset_particle_pools!()
         reset_terrain_cache!()
-        reset_terrain_gpu_caches!()
         shutdown_audio!()
         shutdown!(backend)
     end

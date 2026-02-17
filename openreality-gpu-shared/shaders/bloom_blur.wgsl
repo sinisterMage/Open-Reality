@@ -1,4 +1,5 @@
 // Bloom Gaussian blur pass (separable, 5-tap).
+// Fully unrolled to avoid array<f32, N> constructor which can crash some NVIDIA drivers.
 
 struct PostProcessParams {
     bloom_threshold: f32,
@@ -19,28 +20,46 @@ struct FragmentInput {
     @location(0) uv: vec2<f32>,
 };
 
+// Gaussian weights
+const W0: f32 = 0.227027;
+const W1: f32 = 0.1945946;
+const W2: f32 = 0.1216216;
+const W3: f32 = 0.054054;
+const W4: f32 = 0.016216;
+
 @fragment
 fn fs_main(in: FragmentInput) -> @location(0) vec4<f32> {
     let tex_size = vec2<f32>(textureDimensions(input_texture, 0));
     let texel_size = 1.0 / tex_size;
 
-    // Gaussian weights (5-tap)
-    let weights = array<f32, 5>(0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
-
-    var result = textureSample(input_texture, tex_sampler, in.uv).rgb * weights[0];
+    var result = textureSample(input_texture, tex_sampler, in.uv).rgb * W0;
 
     if params.horizontal != 0 {
-        for (var i = 1; i < 5; i++) {
-            let offset = vec2<f32>(texel_size.x * f32(i), 0.0);
-            result += textureSample(input_texture, tex_sampler, in.uv + offset).rgb * weights[i];
-            result += textureSample(input_texture, tex_sampler, in.uv - offset).rgb * weights[i];
-        }
+        let dx1 = vec2<f32>(texel_size.x, 0.0);
+        let dx2 = vec2<f32>(texel_size.x * 2.0, 0.0);
+        let dx3 = vec2<f32>(texel_size.x * 3.0, 0.0);
+        let dx4 = vec2<f32>(texel_size.x * 4.0, 0.0);
+        result += (textureSample(input_texture, tex_sampler, in.uv + dx1).rgb +
+                   textureSample(input_texture, tex_sampler, in.uv - dx1).rgb) * W1;
+        result += (textureSample(input_texture, tex_sampler, in.uv + dx2).rgb +
+                   textureSample(input_texture, tex_sampler, in.uv - dx2).rgb) * W2;
+        result += (textureSample(input_texture, tex_sampler, in.uv + dx3).rgb +
+                   textureSample(input_texture, tex_sampler, in.uv - dx3).rgb) * W3;
+        result += (textureSample(input_texture, tex_sampler, in.uv + dx4).rgb +
+                   textureSample(input_texture, tex_sampler, in.uv - dx4).rgb) * W4;
     } else {
-        for (var i = 1; i < 5; i++) {
-            let offset = vec2<f32>(0.0, texel_size.y * f32(i));
-            result += textureSample(input_texture, tex_sampler, in.uv + offset).rgb * weights[i];
-            result += textureSample(input_texture, tex_sampler, in.uv - offset).rgb * weights[i];
-        }
+        let dy1 = vec2<f32>(0.0, texel_size.y);
+        let dy2 = vec2<f32>(0.0, texel_size.y * 2.0);
+        let dy3 = vec2<f32>(0.0, texel_size.y * 3.0);
+        let dy4 = vec2<f32>(0.0, texel_size.y * 4.0);
+        result += (textureSample(input_texture, tex_sampler, in.uv + dy1).rgb +
+                   textureSample(input_texture, tex_sampler, in.uv - dy1).rgb) * W1;
+        result += (textureSample(input_texture, tex_sampler, in.uv + dy2).rgb +
+                   textureSample(input_texture, tex_sampler, in.uv - dy2).rgb) * W2;
+        result += (textureSample(input_texture, tex_sampler, in.uv + dy3).rgb +
+                   textureSample(input_texture, tex_sampler, in.uv - dy3).rgb) * W3;
+        result += (textureSample(input_texture, tex_sampler, in.uv + dy4).rgb +
+                   textureSample(input_texture, tex_sampler, in.uv - dy4).rgb) * W4;
     }
 
     return vec4<f32>(result, 1.0);
