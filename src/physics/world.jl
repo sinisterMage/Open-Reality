@@ -13,6 +13,7 @@ mutable struct PhysicsWorld
     solver_bodies::Dict{EntityID, SolverBody}
     constraints::Vector{JointConstraint}
     accumulator::Float64
+    collision_cache::CollisionEventCache
 end
 
 function PhysicsWorld(; config::PhysicsWorldConfig = PhysicsWorldConfig())
@@ -21,7 +22,8 @@ function PhysicsWorld(; config::PhysicsWorldConfig = PhysicsWorldConfig())
                  ContactCache(),
                  Dict{EntityID, SolverBody}(),
                  JointConstraint[],
-                 0.0)
+                 0.0,
+                 CollisionEventCache())
 end
 
 # Global singleton (lazily initialized)
@@ -46,6 +48,104 @@ Reset the physics world (useful when resetting the scene).
 """
 function reset_physics_world!()
     _PHYSICS_WORLD[] = nothing
+end
+
+"""
+    update_collision_callbacks!(world::PhysicsWorld)
+
+Detect collision enter/stay/exit events and fire registered callbacks.
+Called each physics step after triggers.
+"""
+function update_collision_callbacks!(world::PhysicsWorld)
+    cache = world.collision_cache
+
+    enter_pairs = setdiff(cache.current_pairs, cache.prev_pairs)
+    stay_pairs  = intersect(cache.current_pairs, cache.prev_pairs)
+    exit_pairs  = setdiff(cache.prev_pairs, cache.current_pairs)
+
+    # --- Enter events ---
+    for key in enter_pairs
+        entity_a, entity_b = key
+        manifold = get(cache.current_manifolds, key, nothing)
+
+        cb_a = get_component(entity_a, CollisionCallbackComponent)
+        if cb_a !== nothing && cb_a.on_collision_enter !== nothing
+            try
+                cb_a.on_collision_enter(entity_a, entity_b, manifold)
+            catch e
+                @warn "CollisionCallbackComponent error" exception=e
+            end
+        end
+
+        cb_b = get_component(entity_b, CollisionCallbackComponent)
+        if cb_b !== nothing && cb_b.on_collision_enter !== nothing
+            try
+                cb_b.on_collision_enter(entity_b, entity_a, manifold)
+            catch e
+                @warn "CollisionCallbackComponent error" exception=e
+            end
+        end
+    end
+
+    # --- Stay events ---
+    for key in stay_pairs
+        entity_a, entity_b = key
+        manifold = get(cache.current_manifolds, key, nothing)
+
+        cb_a = get_component(entity_a, CollisionCallbackComponent)
+        if cb_a !== nothing && cb_a.on_collision_stay !== nothing
+            try
+                cb_a.on_collision_stay(entity_a, entity_b, manifold)
+            catch e
+                @warn "CollisionCallbackComponent error" exception=e
+            end
+        end
+
+        cb_b = get_component(entity_b, CollisionCallbackComponent)
+        if cb_b !== nothing && cb_b.on_collision_stay !== nothing
+            try
+                cb_b.on_collision_stay(entity_b, entity_a, manifold)
+            catch e
+                @warn "CollisionCallbackComponent error" exception=e
+            end
+        end
+    end
+
+    # --- Exit events (skip if both bodies are sleeping) ---
+    for key in exit_pairs
+        entity_a, entity_b = key
+
+        rb_a = get_component(entity_a, RigidBodyComponent)
+        rb_b = get_component(entity_b, RigidBodyComponent)
+        if rb_a !== nothing && rb_b !== nothing && rb_a.sleeping && rb_b.sleeping
+            continue
+        end
+
+        manifold = get(cache.current_manifolds, key, nothing)
+
+        cb_a = get_component(entity_a, CollisionCallbackComponent)
+        if cb_a !== nothing && cb_a.on_collision_exit !== nothing
+            try
+                cb_a.on_collision_exit(entity_a, entity_b, manifold)
+            catch e
+                @warn "CollisionCallbackComponent error" exception=e
+            end
+        end
+
+        cb_b = get_component(entity_b, CollisionCallbackComponent)
+        if cb_b !== nothing && cb_b.on_collision_exit !== nothing
+            try
+                cb_b.on_collision_exit(entity_b, entity_a, manifold)
+            catch e
+                @warn "CollisionCallbackComponent error" exception=e
+            end
+        end
+    end
+
+    # Cycle the cache
+    cache.prev_pairs = copy(cache.current_pairs)
+    empty!(cache.current_pairs)
+    empty!(cache.current_manifolds)
 end
 
 """
@@ -130,6 +230,15 @@ function fixed_step!(world::PhysicsWorld, dt::Float64)
 
     # Update contact cache (warm-starting)
     update_cache!(world.contact_cache, manifolds)
+
+    # Populate collision event cache for enter/stay/exit detection
+    empty!(world.collision_cache.current_pairs)
+    empty!(world.collision_cache.current_manifolds)
+    for manifold in manifolds
+        key = _canonical_key(manifold.entity_a, manifold.entity_b)
+        push!(world.collision_cache.current_pairs, key)
+        world.collision_cache.current_manifolds[key] = manifold
+    end
 
     # --- Phase 5: Solve velocity constraints ---
     prepare_solver_bodies!(world.solver_bodies)
@@ -245,6 +354,9 @@ function fixed_step!(world::PhysicsWorld, dt::Float64)
 
     # --- Phase 8: Trigger detection ---
     update_triggers!()
+
+    # --- Phase 8b: Collision callbacks ---
+    update_collision_callbacks!(world)
 
     # --- Phase 9: Island-based sleeping ---
     update_islands!(world, dt)

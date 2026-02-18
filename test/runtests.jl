@@ -3751,4 +3751,385 @@ using StaticArrays
             @test t.width == 256
         end
     end
+
+    @testset "Engine Reset" begin
+        @testset "reset_engine_state! clears ECS and physics" begin
+            reset_component_stores!()
+            reset_entity_counter!()
+            eid = create_entity_id()
+            add_component!(eid, TransformComponent())
+            @test component_count(TransformComponent) == 1
+
+            reset_engine_state!()
+
+            @test component_count(TransformComponent) == 0
+            @test OpenReality.ENTITY_COUNTER.next_id == 1
+            @test OpenReality._PHYSICS_WORLD[] === nothing
+        end
+
+        @testset "reset_engine_state! is idempotent" begin
+            reset_engine_state!()
+            @test (reset_engine_state!(); true)
+        end
+
+        @testset "clear_audio_sources! is a no-op when uninitialized" begin
+            reset_audio_state!()
+            state = OpenReality.get_audio_state()
+            state.sources[EntityID(1)] = UInt32(99)
+            @test_nowarn clear_audio_sources!()
+            @test !isempty(OpenReality.get_audio_state().sources)
+        end
+
+        @testset "clear_audio_sources! empties sources dict" begin
+            reset_audio_state!()
+            state = OpenReality.get_audio_state()
+            state.initialized = true
+            state.sources[EntityID(1)] = UInt32(99)
+            clear_audio_sources!()
+            @test isempty(OpenReality.get_audio_state().sources)
+        end
+    end
+
+    @testset "ScriptComponent" begin
+        @testset "Default construction" begin
+            reset_engine_state!()
+            sc = ScriptComponent()
+            @test sc.on_start === nothing
+            @test sc.on_update === nothing
+            @test sc.on_destroy === nothing
+            @test sc._started == false
+        end
+
+        @testset "on_start fires exactly once" begin
+            reset_engine_state!()
+            start_count = Ref(0)
+            update_count = Ref(0)
+            eid = create_entity_id()
+            add_component!(eid, ScriptComponent(
+                on_start = (_) -> start_count[] += 1,
+                on_update = (_, _) -> update_count[] += 1
+            ))
+            update_scripts!(0.016)
+            update_scripts!(0.016)
+            @test start_count[] == 1
+            @test update_count[] == 2
+        end
+
+        @testset "Error isolation" begin
+            reset_engine_state!()
+            counter = Ref(0)
+            eid1 = create_entity_id()
+            add_component!(eid1, ScriptComponent(
+                on_update = (_, _) -> error("boom")
+            ))
+            eid2 = create_entity_id()
+            add_component!(eid2, ScriptComponent(
+                on_update = (_, _) -> counter[] += 1
+            ))
+            update_scripts!(0.016)
+            @test counter[] == 1
+        end
+
+        @testset "Snapshot protection" begin
+            reset_engine_state!()
+            eid = create_entity_id()
+            add_component!(eid, ScriptComponent(
+                on_update = (_, _) -> begin
+                    new_eid = create_entity_id()
+                    add_component!(new_eid, ScriptComponent(
+                        on_update = (_, _) -> nothing
+                    ))
+                end
+            ))
+            @test_nowarn update_scripts!(0.016)
+        end
+
+        @testset "destroy_entity! fires on_destroy before removal" begin
+            reset_engine_state!()
+            destroy_count = Ref(0)
+            eid = create_entity_id()
+            add_component!(eid, ScriptComponent(
+                on_destroy = (_) -> destroy_count[] += 1
+            ))
+            s = Scene()
+            s = add_entity(s, eid)
+            s = destroy_entity!(s, eid)
+            @test destroy_count[] == 1
+            @test has_component(eid, ScriptComponent) == false
+        end
+
+        @testset "destroy_entity! fires on_destroy for descendants" begin
+            reset_engine_state!()
+            child_destroy_count = Ref(0)
+            parent_eid = create_entity_id()
+            child_eid = create_entity_id()
+            add_component!(child_eid, ScriptComponent(
+                on_destroy = (_) -> child_destroy_count[] += 1
+            ))
+            s = Scene()
+            s = add_entity(s, parent_eid)
+            s = add_entity(s, child_eid, parent_eid)
+            s = destroy_entity!(s, parent_eid)
+            @test child_destroy_count[] == 1
+        end
+
+        @testset "remove_entity does NOT fire on_destroy" begin
+            reset_engine_state!()
+            destroy_count = Ref(0)
+            eid = create_entity_id()
+            add_component!(eid, ScriptComponent(
+                on_destroy = (_) -> destroy_count[] += 1
+            ))
+            s = Scene()
+            s = add_entity(s, eid)
+            s = remove_entity(s, eid)
+            @test destroy_count[] == 0
+        end
+    end
+
+    @testset "CollisionCallbackComponent" begin
+        @testset "default construction" begin
+            cc = CollisionCallbackComponent()
+            @test cc.on_collision_enter === nothing
+            @test cc.on_collision_stay === nothing
+            @test cc.on_collision_exit === nothing
+        end
+
+        @testset "enter detection" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            reset_physics_world!()
+
+            e1 = create_entity_id()
+            e2 = create_entity_id()
+
+            add_component!(e1, transform(position=Vec3d(0, 0, 0)))
+            add_component!(e1, ColliderComponent(shape=SphereShape(0.5f0)))
+            add_component!(e1, RigidBodyComponent())
+
+            add_component!(e2, transform(position=Vec3d(0, 0, 0)))
+            add_component!(e2, ColliderComponent(shape=SphereShape(0.5f0)))
+            add_component!(e2, RigidBodyComponent())
+
+            enter_count = Ref(0)
+            add_component!(e1, CollisionCallbackComponent(
+                on_collision_enter = (self, other, manifold) -> (enter_count[] += 1)
+            ))
+
+            world = get_physics_world()
+            key = e1 < e2 ? (e1, e2) : (e2, e1)
+            push!(world.collision_cache.current_pairs, key)
+
+            OpenReality.update_collision_callbacks!(world)
+            @test enter_count[] == 1
+        end
+
+        @testset "stay detection" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            reset_physics_world!()
+
+            e1 = create_entity_id()
+            e2 = create_entity_id()
+
+            add_component!(e1, transform(position=Vec3d(0, 0, 0)))
+            add_component!(e1, ColliderComponent(shape=SphereShape(0.5f0)))
+            add_component!(e1, RigidBodyComponent())
+
+            add_component!(e2, transform(position=Vec3d(0, 0, 0)))
+            add_component!(e2, ColliderComponent(shape=SphereShape(0.5f0)))
+            add_component!(e2, RigidBodyComponent())
+
+            stay_count = Ref(0)
+            add_component!(e1, CollisionCallbackComponent(
+                on_collision_stay = (self, other, manifold) -> (stay_count[] += 1)
+            ))
+
+            world = get_physics_world()
+            key = e1 < e2 ? (e1, e2) : (e2, e1)
+            push!(world.collision_cache.current_pairs, key)
+            push!(world.collision_cache.prev_pairs, key)
+
+            OpenReality.update_collision_callbacks!(world)
+            @test stay_count[] == 1
+        end
+
+        @testset "exit detection" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            reset_physics_world!()
+
+            e1 = create_entity_id()
+            e2 = create_entity_id()
+
+            add_component!(e1, transform(position=Vec3d(0, 0, 0)))
+            add_component!(e1, ColliderComponent(shape=SphereShape(0.5f0)))
+            add_component!(e1, RigidBodyComponent())
+
+            add_component!(e2, transform(position=Vec3d(0, 0, 0)))
+            add_component!(e2, ColliderComponent(shape=SphereShape(0.5f0)))
+            add_component!(e2, RigidBodyComponent())
+
+            exit_count = Ref(0)
+            add_component!(e1, CollisionCallbackComponent(
+                on_collision_exit = (self, other, manifold) -> (exit_count[] += 1)
+            ))
+
+            world = get_physics_world()
+            key = e1 < e2 ? (e1, e2) : (e2, e1)
+            push!(world.collision_cache.prev_pairs, key)
+
+            OpenReality.update_collision_callbacks!(world)
+            @test exit_count[] == 1
+        end
+
+        @testset "sleeping suppression" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            reset_physics_world!()
+
+            e1 = create_entity_id()
+            e2 = create_entity_id()
+
+            add_component!(e1, transform(position=Vec3d(0, 0, 0)))
+            add_component!(e1, ColliderComponent(shape=SphereShape(0.5f0)))
+            add_component!(e1, RigidBodyComponent(sleeping=true))
+
+            add_component!(e2, transform(position=Vec3d(0, 0, 0)))
+            add_component!(e2, ColliderComponent(shape=SphereShape(0.5f0)))
+            add_component!(e2, RigidBodyComponent(sleeping=true))
+
+            exit_count = Ref(0)
+            add_component!(e1, CollisionCallbackComponent(
+                on_collision_exit = (self, other, manifold) -> (exit_count[] += 1)
+            ))
+
+            world = get_physics_world()
+            key = e1 < e2 ? (e1, e2) : (e2, e1)
+            push!(world.collision_cache.prev_pairs, key)
+
+            OpenReality.update_collision_callbacks!(world)
+            @test exit_count[] == 0
+        end
+
+        @testset "callback error isolation" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            reset_physics_world!()
+
+            e1 = create_entity_id()
+            e2 = create_entity_id()
+
+            add_component!(e1, transform(position=Vec3d(0, 0, 0)))
+            add_component!(e1, ColliderComponent(shape=SphereShape(0.5f0)))
+            add_component!(e1, RigidBodyComponent())
+
+            add_component!(e2, transform(position=Vec3d(0, 0, 0)))
+            add_component!(e2, ColliderComponent(shape=SphereShape(0.5f0)))
+            add_component!(e2, RigidBodyComponent())
+
+            second_fired = Ref(false)
+            add_component!(e1, CollisionCallbackComponent(
+                on_collision_enter = (self, other, manifold) -> error("test error")
+            ))
+            add_component!(e2, CollisionCallbackComponent(
+                on_collision_enter = (self, other, manifold) -> (second_fired[] = true)
+            ))
+
+            world = get_physics_world()
+            key = e1 < e2 ? (e1, e2) : (e2, e1)
+            push!(world.collision_cache.current_pairs, key)
+
+            @test_warn "CollisionCallbackComponent error" OpenReality.update_collision_callbacks!(world)
+            @test second_fired[] == true
+        end
+
+        @testset "integration: enter fires on collision" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            reset_physics_world!()
+            OpenReality.reset_trigger_state!()
+
+            # Dynamic sphere above static floor
+            sphere_eid = create_entity_id()
+            add_component!(sphere_eid, transform(position=Vec3d(0, 1, 0)))
+            add_component!(sphere_eid, ColliderComponent(shape=SphereShape(0.5f0)))
+            add_component!(sphere_eid, RigidBodyComponent(mass=1.0))
+            OpenReality.initialize_rigidbody_inertia!(sphere_eid)
+
+            floor_eid = create_entity_id()
+            add_component!(floor_eid, transform(position=Vec3d(0, 0, 0)))
+            add_component!(floor_eid, ColliderComponent(shape=AABBShape(Vec3f(10, 0.1, 10))))
+            add_component!(floor_eid, RigidBodyComponent(body_type=BODY_STATIC, mass=0.0))
+
+            enter_count = Ref(0)
+            add_component!(sphere_eid, CollisionCallbackComponent(
+                on_collision_enter = (self, other, manifold) -> (enter_count[] += 1)
+            ))
+
+            world = get_physics_world()
+            for _ in 1:20
+                OpenReality.step!(world, 0.1)
+            end
+            @test enter_count[] >= 1
+        end
+    end
+
+    @testset "Render Loop Wiring" begin
+        @testset "on_update return value convention" begin
+            @test ([] isa Vector) == true
+            @test (nothing isa Vector) == false
+            @test (scene() isa Vector) == false
+        end
+
+        @testset "update_scripts! callable in full module context" begin
+            reset_engine_state!()
+            counter = Ref(0)
+            eid = create_entity_id()
+            add_component!(eid, ScriptComponent(on_update=(id, dt) -> counter[] += 1))
+            update_scripts!(0.016)
+            @test counter[] == 1
+        end
+
+        @testset "destroy_entity! is exported" begin
+            @test isdefined(OpenReality, :destroy_entity!)
+        end
+
+        @testset "reset_engine_state! is exported" begin
+            @test isdefined(OpenReality, :reset_engine_state!)
+        end
+
+        @testset "clear_audio_sources! is exported" begin
+            @test isdefined(OpenReality, :clear_audio_sources!)
+        end
+
+        @testset "EntityDef is side-effect-free, scene() is side-effectful" begin
+            reset_engine_state!()
+            @test component_count(TransformComponent) == 0
+            defs = [entity([TransformComponent()])]
+            @test component_count(TransformComponent) == 0
+            s = scene(defs)
+            @test component_count(TransformComponent) > 0
+            reset_engine_state!()
+        end
+
+        @testset "Scene switch: on_destroy fires before reset" begin
+            reset_engine_state!()
+            destroy_order = String[]
+            s = scene([entity([TransformComponent(), ScriptComponent(on_destroy = id -> push!(destroy_order, "destroyed"))])])
+            # Simulate the render loop's on_destroy snapshot
+            script_entities = entities_with_component(ScriptComponent)
+            for eid in script_entities
+                comp = get_component(eid, ScriptComponent)
+                if comp !== nothing && comp.on_destroy !== nothing
+                    comp.on_destroy(eid)
+                end
+            end
+            @test "destroyed" in destroy_order
+            reset_engine_state!()
+            @test component_count(TransformComponent) == 0
+            @test component_count(ScriptComponent) == 0
+            reset_engine_state!()
+        end
+    end
 end

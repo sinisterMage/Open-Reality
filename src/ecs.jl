@@ -322,3 +322,23 @@ function iterate_components(f::Function, ::Type{T}) where T <: Component
     end
     return nothing
 end
+
+"""
+    reset_engine_state!()
+
+Reset all engine globals for scene switching. Clears ECS stores, entity counter,
+physics world, trigger state, particle pools, terrain cache, LOD cache, and
+world transform cache. Audio device/context are intentionally excluded — use
+`clear_audio_sources!()` separately if needed.
+"""
+function reset_engine_state!()
+    reset_component_stores!()
+    reset_entity_counter!()
+    reset_physics_world!()
+    reset_trigger_state!()
+    reset_particle_pools!()
+    reset_terrain_cache!()
+    reset_lod_cache!()
+    clear_world_transform_cache!()
+    return nothing
+end

@@ -210,6 +210,29 @@ function reset_audio_state!()
     return nothing
 end
 
+"""
+    clear_audio_sources!()
+
+Stop and delete all OpenAL sources bound to entities, leaving buffers and
+the device/context intact. Safe to call across scene switches.
+"""
+function clear_audio_sources!()
+    state = get_audio_state()
+    if !state.initialized
+        return nothing
+    end
+
+    if !isempty(state.sources)
+        source_ids = collect(values(state.sources))
+        for sid in source_ids
+            al_source_stop(sid)
+        end
+        al_delete_sources(source_ids)
+        empty!(state.sources)
+    end
+    return nothing
+end
+
 # ---- WAV loader ----
 
 """

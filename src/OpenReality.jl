@@ -57,6 +57,7 @@ include("components/audio.jl")
 include("components/skeleton.jl")
 include("components/particle_system.jl")
 include("components/terrain.jl")
+include("components/script.jl")
 
 # Physics engine (after rigidbody — solver/world use RigidBodyComponent)
 include("physics/inertia.jl")
@@ -67,6 +68,7 @@ include("physics/contact.jl")
 include("physics/solver.jl")
 include("physics/constraints.jl")
 include("physics/triggers.jl")
+include("physics/collision_callbacks.jl")
 include("physics/raycast.jl")
 include("physics/ccd.jl")
 include("physics/islands.jl")
@@ -88,6 +90,7 @@ include("systems/animation.jl")
 include("systems/skinning.jl")
 include("systems/audio.jl")
 include("systems/particles.jl")
+include("systems/scripts.jl")
 
 # UI system (after components and ECS — uses types)
 include("ui/types.jl")
@@ -226,14 +229,14 @@ export EntityID, World, create_entity!, create_entity_id
 export Component, ComponentStore
 export add_component!, get_component, has_component, remove_component!
 export collect_components, entities_with_component, first_entity_with_component, component_count, iterate_components
-export register_component_type, reset_entity_counter!, reset_component_stores!
+export register_component_type, reset_entity_counter!, reset_component_stores!, reset_engine_state!
 
 # Export State
 export State, state
 
 # Export Scene and Scene Graph
 export Scene, scene, entity, EntityDef
-export add_entity, remove_entity
+export add_entity, remove_entity, destroy_entity!
 export get_children, get_parent, has_entity, is_root
 export traverse_scene, traverse_entity
 export traverse_scene_with_depth, traverse_entity_with_depth
@@ -282,8 +285,14 @@ export SimulationIsland, build_islands, update_islands!
 export JointConstraint, JointComponent
 export BallSocketJoint, DistanceJoint, HingeJoint, FixedJoint, SliderJoint
 
+# Export Scripts
+export ScriptComponent, update_scripts!
+
 # Export Triggers
 export TriggerComponent
+
+# Export Collision Callbacks
+export CollisionCallbackComponent, CollisionEventCache, update_collision_callbacks!
 
 # Export Animation
 export InterpolationMode, INTERP_STEP, INTERP_LINEAR, INTERP_CUBICSPLINE
@@ -297,7 +306,7 @@ export update_skinned_meshes!, MAX_BONES
 # Export Audio
 export AudioListenerComponent, AudioSourceComponent
 export AudioConfig, update_audio!
-export init_audio!, shutdown_audio!, reset_audio_state!
+export init_audio!, shutdown_audio!, reset_audio_state!, clear_audio_sources!
 export load_wav, get_or_load_buffer!
 
 # Export UI
@@ -446,7 +455,7 @@ export load_model, load_obj, load_gltf
 export export_scene
 
 """
-    render(scene::Scene; backend=OpenGLBackend(), width=1280, height=720, title="OpenReality", post_process=nothing, ui=nothing)
+    render(scene::Scene; backend=OpenGLBackend(), width=1280, height=720, title="OpenReality", post_process=nothing, ui=nothing, on_update=nothing, on_scene_switch=nothing)
 
 Start the PBR render loop for the given scene.
 Opens a window and renders until closed.
@@ -460,14 +469,34 @@ render(scene, ui = ctx -> begin
     ui_text(ctx, "Hello!", x=10, y=10, size=32)
 end)
 ```
+
+Pass `on_update` to run logic each frame after systems update. Return a `Vector{EntityDef}`
+to switch scenes; return `nothing` to continue. The engine resets all globals and builds the
+new scene after reset:
+```julia
+render(scene, on_update = (s, dt) -> begin
+    if game_over()
+        return load_game_over_scene_defs()   # triggers scene switch
+    end
+    return nothing
+end)
+```
+
+Pass `on_scene_switch` as a callback `(old_scene::Scene, new_defs::Vector{EntityDef}) -> nothing`
+to customise cleanup during a scene switch (default calls
+`reset_engine_state!()` and `clear_audio_sources!()`).
 """
 function render(scene::Scene;
                 backend::AbstractBackend = OpenGLBackend(),
                 width::Int = 1280, height::Int = 720,
                 title::String = "OpenReality",
                 post_process::Union{PostProcessConfig, Nothing} = nothing,
-                ui::Union{Function, Nothing} = nothing)
-    run_render_loop!(scene, backend=backend, width=width, height=height, title=title, post_process=post_process, ui=ui)
+                ui::Union{Function, Nothing} = nothing,
+                on_update::Union{Function, Nothing} = nothing,
+                on_scene_switch::Union{Function, Nothing} = nothing)
+    run_render_loop!(scene, backend=backend, width=width, height=height, title=title,
+                     post_process=post_process, ui=ui,
+                     on_update=on_update, on_scene_switch=on_scene_switch)
 end
 
 export render

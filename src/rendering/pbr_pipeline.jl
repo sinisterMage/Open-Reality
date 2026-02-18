@@ -5,8 +5,22 @@
 const _UI_CALLBACK = Ref{Union{Function, Nothing}}(nothing)
 const _UI_CONTEXT = Ref{Union{UIContext, Nothing}}(nothing)
 
+function _init_player_controller(scene::Scene, backend::AbstractBackend)
+    result = find_player_and_camera(scene)
+    if result !== nothing
+        player_id, camera_id = result
+        player_comp = get_component(player_id, PlayerComponent)
+        player_input_map = player_comp !== nothing ? player_comp.input_map : nothing
+        controller = PlayerController(player_id, camera_id; input_map=player_input_map)
+        backend_capture_cursor!(backend)
+        @info "Player controller active — WASD/gamepad to move, mouse/right stick to look, Shift/LB to sprint, Escape to release cursor"
+        return controller
+    end
+    return nothing
+end
+
 """
-    run_render_loop!(scene::Scene; backend=OpenGLBackend(), width=1280, height=720, title="OpenReality", ui=nothing)
+    run_render_loop!(scene::Scene; backend=OpenGLBackend(), width=1280, height=720, title="OpenReality", ui=nothing, on_update=nothing, on_scene_switch=nothing)
 
 Main render loop. Creates a window, initializes the backend, and renders the scene
 until the window is closed.
@@ -16,15 +30,26 @@ WASD movement, mouse look, Space/Ctrl for up/down, Shift to sprint, Escape to
 release cursor.
 
 Pass a `ui` callback `ctx::UIContext -> nothing` to render immediate-mode UI each frame.
+
+Pass `on_update` as a callback `(scene, dt) -> result` called each frame after systems
+update. Return a `Vector{EntityDef}` to trigger a scene switch; return `nothing` to continue.
+The engine will reset all globals and build the new scene after reset, ensuring ECS is clean.
+
+Pass `on_scene_switch` as a callback `(old_scene, new_defs::Vector{EntityDef}) -> nothing`
+to customise scene-switch cleanup (default: `reset_engine_state!()` + `clear_audio_sources!()`).
 """
-function run_render_loop!(scene::Scene;
+function run_render_loop!(initial_scene::Scene;
                           backend::AbstractBackend = OpenGLBackend(),
                           width::Int = 1280,
                           height::Int = 720,
                           title::String = "OpenReality",
                           post_process::Union{PostProcessConfig, Nothing} = nothing,
-                          ui::Union{Function, Nothing} = nothing)
+                          ui::Union{Function, Nothing} = nothing,
+                          on_update::Union{Function, Nothing} = nothing,
+                          on_scene_switch::Union{Function, Nothing} = nothing)
     initialize!(backend, width=width, height=height, title=title)
+
+    current_scene = initial_scene
 
     # Initialize audio system
     init_audio!()
@@ -54,16 +79,7 @@ function run_render_loop!(scene::Scene;
     end
 
     # Auto-detect player and set up FPS controller
-    controller = nothing
-    result = find_player_and_camera(scene)
-    if result !== nothing
-        player_id, camera_id = result
-        player_comp = get_component(player_id, PlayerComponent)
-        player_input_map = player_comp !== nothing ? player_comp.input_map : nothing
-        controller = PlayerController(player_id, camera_id; input_map=player_input_map)
-        backend_capture_cursor!(backend)
-        @info "Player controller active — WASD/gamepad to move, mouse/right stick to look, Shift/LB to sprint, Escape to release cursor"
-    end
+    controller = _init_player_controller(current_scene, backend)
 
     last_time = backend_get_time(backend)
     prev_mouse_down = false
@@ -136,6 +152,9 @@ function run_render_loop!(scene::Scene;
             # Physics step (collision detection, gravity, resolution)
             update_physics!(dt)
 
+            # Script step (per-entity script callbacks)
+            update_scripts!(dt)
+
             # Audio step (sync listener/source positions with transforms)
             update_audio!(dt)
 
@@ -153,8 +172,40 @@ function run_render_loop!(scene::Scene;
                 update_terrain!(_cam_pos, _frustum)
             end
 
+            # on_update callback — return Vector{EntityDef} to trigger scene switch
+            if on_update !== nothing
+                result = on_update(current_scene, dt)
+                if result isa Vector
+                    new_defs = result
+                    # Snapshot on_destroy callbacks BEFORE reset
+                    script_entities = entities_with_component(ScriptComponent)
+                    for eid in script_entities
+                        comp = get_component(eid, ScriptComponent)
+                        if comp !== nothing && comp.on_destroy !== nothing
+                            try
+                                comp.on_destroy(eid)
+                            catch e
+                                @warn "ScriptComponent on_destroy error during scene switch" exception=e
+                            end
+                        end
+                    end
+                    # Reset or delegate to custom hook
+                    if on_scene_switch !== nothing
+                        on_scene_switch(current_scene, new_defs)
+                    else
+                        reset_engine_state!()
+                        clear_audio_sources!()
+                    end
+                    # Build the new scene AFTER reset and switch
+                    new_scene = scene(new_defs)
+                    current_scene = new_scene
+                    controller = _init_player_controller(current_scene, backend)
+                    continue   # skip render_frame! this frame
+                end
+            end
+
             # render_frame! handles 3D rendering + UI + swap_buffers
-            render_frame!(backend, scene)
+            render_frame!(backend, current_scene)
         end
     finally
         if _UI_CONTEXT[] !== nothing

@@ -102,6 +102,32 @@ function remove_entity(scene::Scene, entity_id::EntityID)::Scene
 end
 
 """
+    destroy_entity!(scene::Scene, entity_id::EntityID)::Scene
+
+Remove an entity and all its descendants from the scene, firing `on_destroy`
+callbacks on any `ScriptComponent` before removal.
+
+Returns a new Scene (via `remove_entity`).
+"""
+function destroy_entity!(scene::Scene, entity_id::EntityID)::Scene
+    descendants = Set{EntityID}()
+    collect_descendants!(descendants, scene, entity_id)
+
+    for eid in descendants
+        comp = get_component(eid, ScriptComponent)
+        if comp !== nothing && comp.on_destroy !== nothing
+            try
+                comp.on_destroy(eid)
+            catch e
+                @warn "ScriptComponent on_destroy error" exception=e
+            end
+        end
+    end
+
+    return remove_entity(scene, entity_id)
+end
+
+"""
     collect_descendants!(result::Set{EntityID}, scene::Scene, entity_id::EntityID)
 
 Helper function to collect an entity and all its descendants into a set.
