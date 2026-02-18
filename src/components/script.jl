@@ -4,9 +4,12 @@
     ScriptComponent <: Component
 
 Attaches lifecycle callbacks to an entity. The callbacks are:
-- `on_start(entity_id)` — called once on the first `update_scripts!` tick
-- `on_update(entity_id, dt)` — called every `update_scripts!` tick
-- `on_destroy(entity_id)` — called when `destroy_entity!` removes the entity
+- `on_start(entity_id, ctx)` — called once on the first `update_scripts!` tick
+- `on_update(entity_id, dt, ctx)` — called every `update_scripts!` tick
+- `on_destroy(entity_id, ctx)` — called when `destroy_entity!` removes the entity;
+  `ctx` is a real `GameContext` when destroyed via `despawn!` → `apply_mutations!`,
+  and `nothing` when called from `destroy_entity!` without an explicit `ctx` kwarg
+  (e.g. during scene switches)
 """
 mutable struct ScriptComponent <: Component
     on_start::Union{Function, Nothing}

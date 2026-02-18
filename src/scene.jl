@@ -102,14 +102,17 @@ function remove_entity(scene::Scene, entity_id::EntityID)::Scene
 end
 
 """
-    destroy_entity!(scene::Scene, entity_id::EntityID)::Scene
+    destroy_entity!(scene::Scene, entity_id::EntityID; ctx=nothing)::Scene
 
 Remove an entity and all its descendants from the scene, firing `on_destroy`
 callbacks on any `ScriptComponent` before removal.
 
+Pass `ctx` to forward a `GameContext` to `on_destroy` callbacks. When omitted
+(or `nothing`), `on_destroy` receives `nothing` as its second argument.
+
 Returns a new Scene (via `remove_entity`).
 """
-function destroy_entity!(scene::Scene, entity_id::EntityID)::Scene
+function destroy_entity!(scene::Scene, entity_id::EntityID; ctx=nothing)::Scene
     descendants = Set{EntityID}()
     collect_descendants!(descendants, scene, entity_id)
 
@@ -117,7 +120,7 @@ function destroy_entity!(scene::Scene, entity_id::EntityID)::Scene
         comp = get_component(eid, ScriptComponent)
         if comp !== nothing && comp.on_destroy !== nothing
             try
-                comp.on_destroy(eid)
+                comp.on_destroy(eid, ctx)
             catch e
                 @warn "ScriptComponent on_destroy error" exception=e
             end

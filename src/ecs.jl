@@ -327,9 +327,9 @@ end
     reset_engine_state!()
 
 Reset all engine globals for scene switching. Clears ECS stores, entity counter,
-physics world, trigger state, particle pools, terrain cache, LOD cache, and
-world transform cache. Audio device/context are intentionally excluded — use
-`clear_audio_sources!()` separately if needed.
+physics world, trigger state, particle pools, terrain cache, LOD cache,
+world transform cache, and asset manager cache. Audio device/context are
+intentionally excluded — use `clear_audio_sources!()` separately if needed.
 """
 function reset_engine_state!()
     reset_component_stores!()
@@ -340,6 +340,8 @@ function reset_engine_state!()
     reset_terrain_cache!()
     reset_lod_cache!()
     clear_world_transform_cache!()
+    reset_asset_manager!()
+    reset_event_bus!()
     # AnimationBlendTreeComponent: no global stores — state is per-component,
     # cleared automatically by reset_component_stores!() above.
     return nothing

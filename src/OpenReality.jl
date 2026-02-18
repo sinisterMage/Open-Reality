@@ -99,6 +99,12 @@ include("systems/scripts.jl")
 # Game State Machine
 include("game/state_machine.jl")
 include("game/game_manager.jl")
+include("game/prefab.jl")
+include("game/context.jl")
+include("game/event_bus.jl")
+
+# Debug utilities (ENV-gated, zero overhead when OPENREALITY_DEBUG = false)
+include("debug/debug_draw.jl")
 
 # UI system (after components and ECS — uses types)
 include("ui/types.jl")
@@ -228,6 +234,7 @@ include("rendering/pbr_pipeline.jl")
 include("loading/obj_loader.jl")
 include("loading/gltf_loader.jl")
 include("loading/loader.jl")
+include("loading/asset_manager.jl")
 
 # Scene export (ORSB format for WASM web deployment)
 include("export/scene_export.jl")
@@ -468,6 +475,7 @@ export update_camera_controllers!
 
 # Export Model Loading
 export load_model, load_obj, load_gltf
+export AssetManager, get_asset_manager, reset_asset_manager!, get_model, preload!
 
 # Export Scene Export (ORSB)
 export export_scene
@@ -519,8 +527,20 @@ end
 
 export render
 
+# Export Game Context
+export GameContext, spawn!, despawn!, apply_mutations!
+
+# Export Prefab
+export Prefab, instantiate
+
+# Export Event Bus
+export GameEvent, EventBus, get_event_bus, reset_event_bus!, subscribe!, emit!, unsubscribe!
+
 # Export Game State Machine
 export GameState, StateTransition, GameStateMachine
 export add_state!, on_enter!, on_update!, on_exit!, get_ui_callback
+
+# Export DebugDraw
+export OPENREALITY_DEBUG, debug_line!, debug_box!, debug_sphere!, flush_debug_draw!
 
 end  # module OpenReality

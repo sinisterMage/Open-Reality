@@ -940,6 +940,105 @@ function copy_depth_buffer!(src_fbo::GLuint, dst_fbo::GLuint, width::Int, height
     glBindFramebuffer(GL_FRAMEBUFFER, GLuint(0))
 end
 
+# ---- Debug draw GPU state (lazy-initialized) ----
+
+if OPENREALITY_DEBUG
+    const _DEBUG_LINE_VAO = Ref{GLuint}(GLuint(0))
+    const _DEBUG_LINE_VBO = Ref{GLuint}(GLuint(0))
+    const _DEBUG_LINE_SHADER = Ref{Union{ShaderProgram, Nothing}}(nothing)
+end
+
+const _DEBUG_VERT_SRC = """
+#version 330 core
+layout(location=0) in vec3 a_Pos;
+layout(location=1) in vec3 a_Color;
+uniform mat4 u_ViewProj;
+out vec3 v_Color;
+void main() {
+    gl_Position = u_ViewProj * vec4(a_Pos, 1.0);
+    v_Color = a_Color;
+}
+"""
+
+const _DEBUG_FRAG_SRC = """
+#version 330 core
+in vec3 v_Color;
+out vec4 FragColor;
+void main() {
+    FragColor = vec4(v_Color, 1.0);
+}
+"""
+
+function render_debug_draw!(backend::OpenGLBackend, view::Mat4f, proj::Mat4f)
+    if OPENREALITY_DEBUG
+        # Lazy-initialize shader
+        if _DEBUG_LINE_SHADER[] === nothing
+            _DEBUG_LINE_SHADER[] = create_shader_program(_DEBUG_VERT_SRC, _DEBUG_FRAG_SRC)
+        end
+
+        # Lazy-initialize VAO/VBO
+        if _DEBUG_LINE_VAO[] == GLuint(0)
+            vao_ref = Ref{GLuint}(GLuint(0))
+            glGenVertexArrays(1, vao_ref)
+            _DEBUG_LINE_VAO[] = vao_ref[]
+
+            vbo_ref = Ref{GLuint}(GLuint(0))
+            glGenBuffers(1, vbo_ref)
+            _DEBUG_LINE_VBO[] = vbo_ref[]
+        end
+
+        if isempty(_DEBUG_LINES)
+            return nothing
+        end
+
+        # Build flat Float32 array: [x, y, z, r, g, b] per vertex, 2 vertices per line
+        n = length(_DEBUG_LINES)
+        data = Vector{Float32}(undef, n * 12)
+        idx = 1
+        for line in _DEBUG_LINES
+            data[idx]     = line.start_pos[1]
+            data[idx + 1] = line.start_pos[2]
+            data[idx + 2] = line.start_pos[3]
+            data[idx + 3] = line.color.r
+            data[idx + 4] = line.color.g
+            data[idx + 5] = line.color.b
+            data[idx + 6] = line.end_pos[1]
+            data[idx + 7] = line.end_pos[2]
+            data[idx + 8] = line.end_pos[3]
+            data[idx + 9] = line.color.r
+            data[idx + 10] = line.color.g
+            data[idx + 11] = line.color.b
+            idx += 12
+        end
+
+        glBindVertexArray(_DEBUG_LINE_VAO[])
+        glBindBuffer(GL_ARRAY_BUFFER, _DEBUG_LINE_VBO[])
+        glBufferData(GL_ARRAY_BUFFER, sizeof(data), data, GL_DYNAMIC_DRAW)
+
+        stride = GLsizei(6 * sizeof(Float32))
+        # Position: location 0
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, Ptr{Cvoid}(0))
+        # Color: location 1
+        glEnableVertexAttribArray(1)
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, Ptr{Cvoid}(3 * sizeof(Float32)))
+
+        shader = _DEBUG_LINE_SHADER[]
+        glUseProgram(shader.id)
+        view_proj = proj * view
+        set_uniform!(shader, "u_ViewProj", view_proj)
+
+        glDisable(GL_DEPTH_TEST)
+        glLineWidth(2.0f0)
+        glDrawArrays(GL_LINES, 0, GLsizei(2 * n))
+        glEnable(GL_DEPTH_TEST)
+        glLineWidth(1.0f0)
+
+        glBindVertexArray(GLuint(0))
+    end
+    return nothing
+end
+
 # ---- Main render frame ----
 
 function render_frame!(backend::OpenGLBackend, scene::Scene)
@@ -1387,6 +1486,8 @@ function render_frame!(backend::OpenGLBackend, scene::Scene)
         _UI_CALLBACK[](ctx)
         render_ui!(ctx)
     end
+
+    render_debug_draw!(backend, view, proj)
 
     swap_buffers!(backend.window)
     return nothing

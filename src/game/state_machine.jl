@@ -20,6 +20,6 @@ GameStateMachine(initial_state::Symbol, initial_scene_defs::Vector) =
 
 # Default dispatch implementations — users only override what they need
 on_enter!(state::GameState, sc::Scene) = nothing
-on_update!(state::GameState, sc::Scene, dt::Float64) = nothing
+on_update!(state::GameState, sc::Scene, dt::Float64, ctx::GameContext) = nothing
 on_exit!(state::GameState, sc::Scene) = nothing
 get_ui_callback(state::GameState) = nothing

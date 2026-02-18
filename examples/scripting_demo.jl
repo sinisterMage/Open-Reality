@@ -31,8 +31,8 @@ const frame_count       = Ref(0)
 function make_bobbing_script(base_y::Float64; speed::Float64=3.0, amplitude::Float64=0.5)
     time_acc = Ref(0.0)
     ScriptComponent(
-        on_start = (eid) -> println("  [Script] Collectible $eid spawned at y=$base_y"),
-        on_update = (eid, dt) -> begin
+        on_start = (eid, ctx) -> println("  [Script] Collectible $eid spawned at y=$base_y"),
+        on_update = (eid, dt, ctx) -> begin
             time_acc[] += dt
             tc = get_component(eid, TransformComponent)
             tc === nothing && return
@@ -40,7 +40,7 @@ function make_bobbing_script(base_y::Float64; speed::Float64=3.0, amplitude::Flo
             new_y = base_y + amplitude * sin(speed * time_acc[])
             tc.position[] = Vec3d(pos[1], new_y, pos[3])
         end,
-        on_destroy = (eid) -> begin
+        on_destroy = (eid, ctx) -> begin
             println("  [Script] Collectible $eid destroyed!")
         end
     )
@@ -48,14 +48,14 @@ end
 
 function make_spin_script(rotation_speed::Float64=1.0)
     ScriptComponent(
-        on_update = (eid, dt) -> begin
+        on_update = (eid, dt, ctx) -> begin
             tc = get_component(eid, TransformComponent)
             tc === nothing && return
             angle = rotation_speed * dt
             rot_delta = Quaterniond(cos(angle / 2), 0.0, sin(angle / 2), 0.0)
             tc.rotation[] = tc.rotation[] * rot_delta
         end,
-        on_destroy = (eid) -> println("  [Script] Spinning box $eid removed")
+        on_destroy = (eid, ctx) -> println("  [Script] Spinning box $eid removed")
     )
 end
 
@@ -150,15 +150,15 @@ end
 
 function make_pedestal_script(label::String; speed::Float64=0.8)
     ScriptComponent(
-        on_start = (eid) -> println("  [Script] Pedestal '$label' (entity $eid) initialized"),
-        on_update = (eid, dt) -> begin
+        on_start = (eid, ctx) -> println("  [Script] Pedestal '$label' (entity $eid) initialized"),
+        on_update = (eid, dt, ctx) -> begin
             tc = get_component(eid, TransformComponent)
             tc === nothing && return
             angle = speed * dt
             rot_delta = Quaterniond(cos(angle / 2), 0.0, sin(angle / 2), 0.0)
             tc.rotation[] = tc.rotation[] * rot_delta
         end,
-        on_destroy = (eid) -> println("  [Script] Pedestal '$label' (entity $eid) teardown")
+        on_destroy = (eid, ctx) -> println("  [Script] Pedestal '$label' (entity $eid) teardown")
     )
 end
 
@@ -253,8 +253,8 @@ function build_gallery_defs()
                 additive=true
             ),
             ScriptComponent(
-                on_start = (eid) -> println("  [Script] Gallery sparkles active"),
-                on_destroy = (eid) -> println("  [Script] Gallery sparkles deactivated")
+                on_start = (eid, ctx) -> println("  [Script] Gallery sparkles active"),
+                on_destroy = (eid, ctx) -> println("  [Script] Gallery sparkles deactivated")
             )
         ]),
 
@@ -269,15 +269,15 @@ function build_gallery_defs()
             ),
             transform(position=Vec3d(0, 2, -4)),
             ScriptComponent(
-                on_start = (eid) -> println("  [Script] Sentinel sphere $eid watching..."),
-                on_update = (eid, dt) -> begin
+                on_start = (eid, ctx) -> println("  [Script] Sentinel sphere $eid watching..."),
+                on_update = (eid, dt, ctx) -> begin
                     bob_time[] += dt
                     tc = get_component(eid, TransformComponent)
                     tc === nothing && return
                     pos = tc.position[]
                     tc.position[] = Vec3d(pos[1], 2.0 + 0.4 * sin(bob_time[] * 2.0), pos[3])
                 end,
-                on_destroy = (eid) -> println("  [Script] Sentinel sphere $eid deactivated")
+                on_destroy = (eid, ctx) -> println("  [Script] Sentinel sphere $eid deactivated")
             )
         ]),
     ]
@@ -308,14 +308,14 @@ function OpenReality.on_enter!(state::ArenaState, sc::Scene)
     println("  [FSM] Entered Arena state")
 end
 
-function OpenReality.on_update!(state::ArenaState, sc::Scene, dt::Float64)
+function OpenReality.on_update!(state::ArenaState, sc::Scene, dt::Float64, ctx::GameContext)
     frame_count[] += 1
 
     # Process deferred entity destructions (queued by collision callbacks)
     for eid in state.entities_to_destroy
         if has_entity(sc, eid)
             state.destroyed_count += 1
-            destroy_entity!(sc, eid)
+            despawn!(ctx, eid)
         end
     end
     empty!(state.entities_to_destroy)
@@ -345,7 +345,7 @@ function OpenReality.on_enter!(state::GalleryState, sc::Scene)
     println("  [FSM] Entered Gallery state")
 end
 
-function OpenReality.on_update!(state::GalleryState, sc::Scene, dt::Float64)
+function OpenReality.on_update!(state::GalleryState, sc::Scene, dt::Float64, ctx::GameContext)
     frame_count[] += 1
 
     # Decrement timer

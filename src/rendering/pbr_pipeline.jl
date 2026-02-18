@@ -12,7 +12,7 @@ function _execute_scene_switch!(backend::AbstractBackend, new_defs::Vector, on_s
         comp = get_component(eid, ScriptComponent)
         if comp !== nothing && comp.on_destroy !== nothing
             try
-                comp.on_destroy(eid)
+                comp.on_destroy(eid, nothing)  # No GameContext during scene switch; on_destroy receives nothing
             catch e
                 @warn "ScriptComponent on_destroy error during scene switch" exception=e
             end
@@ -119,39 +119,40 @@ function run_render_loop!(initial_scene::Scene;
 
             # Snapshot input state for edge detection (just_pressed / just_released)
             begin_frame!(backend_get_input(backend))
+            ctx = GameContext(current_scene, backend_get_input(backend))
 
             # Clear per-frame caches
             clear_world_transform_cache!()
 
             # Update UI input state
             if _UI_CONTEXT[] !== nothing && _UI_CALLBACK[] !== nothing
-                ctx = _UI_CONTEXT[]
+                ui_ctx = _UI_CONTEXT[]
                 input = backend_get_input(backend)
                 mx, my = get_mouse_position(input)
                 mouse_down_now = 0 in input.mouse_buttons  # GLFW.MOUSE_BUTTON_LEFT = 0
-                ctx.mouse_x = mx
-                ctx.mouse_y = my
-                ctx.mouse_clicked = mouse_down_now && !prev_mouse_down
-                ctx.mouse_down = mouse_down_now
+                ui_ctx.mouse_x = mx
+                ui_ctx.mouse_y = my
+                ui_ctx.mouse_clicked = mouse_down_now && !prev_mouse_down
+                ui_ctx.mouse_down = mouse_down_now
                 prev_mouse_down = mouse_down_now
 
                 # Update screen dimensions
                 if hasproperty(backend, :window)
-                    ctx.width = backend.window.width
-                    ctx.height = backend.window.height
+                    ui_ctx.width = backend.window.width
+                    ui_ctx.height = backend.window.height
                 end
 
                 # Initialize font atlas on first frame (needs OpenGL context)
-                if backend isa OpenGLBackend && isempty(ctx.font_atlas.glyphs) && isempty(ctx.font_path)
-                    ctx.font_atlas = get_or_create_font_atlas!("", 32)
+                if backend isa OpenGLBackend && isempty(ui_ctx.font_atlas.glyphs) && isempty(ui_ctx.font_path)
+                    ui_ctx.font_atlas = get_or_create_font_atlas!("", 32)
                 end
 
                 # Sync keyboard and scroll state from input into UI context
-                ctx.typed_chars = copy(input.typed_chars)
-                ctx.keys_pressed = copy(input.keys_pressed)
-                ctx.prev_keys_pressed = copy(input.prev_keys)
-                ctx.scroll_x = input.scroll_delta[1]
-                ctx.scroll_y = input.scroll_delta[2]
+                ui_ctx.typed_chars = copy(input.typed_chars)
+                ui_ctx.keys_pressed = copy(input.keys_pressed)
+                ui_ctx.prev_keys_pressed = copy(input.prev_keys)
+                ui_ctx.scroll_x = input.scroll_delta[1]
+                ui_ctx.scroll_y = input.scroll_delta[2]
             end
 
             # Update player
@@ -181,7 +182,7 @@ function run_render_loop!(initial_scene::Scene;
             update_physics!(dt)
 
             # Script step (per-entity script callbacks)
-            update_scripts!(dt)
+            update_scripts!(dt, ctx)
 
             # Audio step (sync listener/source positions with transforms)
             update_audio!(dt)
@@ -202,7 +203,7 @@ function run_render_loop!(initial_scene::Scene;
 
             # on_update callback — return Vector{EntityDef} to trigger scene switch
             if on_update !== nothing
-                result = on_update(current_scene, dt)
+                result = on_update(current_scene, dt, ctx)
                 if result isa Vector
                     current_scene = _execute_scene_switch!(backend, result, on_scene_switch)
                     controller = _init_player_controller(current_scene, backend)
@@ -210,8 +211,11 @@ function run_render_loop!(initial_scene::Scene;
                 end
             end
 
+            current_scene = apply_mutations!(ctx, current_scene)
+
             # render_frame! handles 3D rendering + UI + swap_buffers
             render_frame!(backend, current_scene)
+            flush_debug_draw!()
         end
     finally
         if _UI_CONTEXT[] !== nothing
@@ -306,39 +310,40 @@ function run_render_loop!(fsm::GameStateMachine;
 
             # Snapshot input state for edge detection (just_pressed / just_released)
             begin_frame!(backend_get_input(backend))
+            ctx = GameContext(current_scene, backend_get_input(backend))
 
             # Clear per-frame caches
             clear_world_transform_cache!()
 
             # Update UI input state
             if _UI_CONTEXT[] !== nothing
-                ctx = _UI_CONTEXT[]
+                ui_ctx = _UI_CONTEXT[]
                 input = backend_get_input(backend)
                 mx, my = get_mouse_position(input)
                 mouse_down_now = 0 in input.mouse_buttons  # GLFW.MOUSE_BUTTON_LEFT = 0
-                ctx.mouse_x = mx
-                ctx.mouse_y = my
-                ctx.mouse_clicked = mouse_down_now && !prev_mouse_down
-                ctx.mouse_down = mouse_down_now
+                ui_ctx.mouse_x = mx
+                ui_ctx.mouse_y = my
+                ui_ctx.mouse_clicked = mouse_down_now && !prev_mouse_down
+                ui_ctx.mouse_down = mouse_down_now
                 prev_mouse_down = mouse_down_now
 
                 # Update screen dimensions
                 if hasproperty(backend, :window)
-                    ctx.width = backend.window.width
-                    ctx.height = backend.window.height
+                    ui_ctx.width = backend.window.width
+                    ui_ctx.height = backend.window.height
                 end
 
                 # Initialize font atlas on first frame (needs OpenGL context)
-                if backend isa OpenGLBackend && isempty(ctx.font_atlas.glyphs) && isempty(ctx.font_path)
-                    ctx.font_atlas = get_or_create_font_atlas!("", 32)
+                if backend isa OpenGLBackend && isempty(ui_ctx.font_atlas.glyphs) && isempty(ui_ctx.font_path)
+                    ui_ctx.font_atlas = get_or_create_font_atlas!("", 32)
                 end
 
                 # Sync keyboard and scroll state from input into UI context
-                ctx.typed_chars = copy(input.typed_chars)
-                ctx.keys_pressed = copy(input.keys_pressed)
-                ctx.prev_keys_pressed = copy(input.prev_keys)
-                ctx.scroll_x = input.scroll_delta[1]
-                ctx.scroll_y = input.scroll_delta[2]
+                ui_ctx.typed_chars = copy(input.typed_chars)
+                ui_ctx.keys_pressed = copy(input.keys_pressed)
+                ui_ctx.prev_keys_pressed = copy(input.prev_keys)
+                ui_ctx.scroll_x = input.scroll_delta[1]
+                ui_ctx.scroll_y = input.scroll_delta[2]
             end
 
             # Update player
@@ -368,7 +373,7 @@ function run_render_loop!(fsm::GameStateMachine;
             update_physics!(dt)
 
             # Script step (per-entity script callbacks)
-            update_scripts!(dt)
+            update_scripts!(dt, ctx)
 
             # Audio step (sync listener/source positions with transforms)
             update_audio!(dt)
@@ -390,7 +395,7 @@ function run_render_loop!(fsm::GameStateMachine;
             # FSM on_update! — return StateTransition to switch states
             transition = nothing
             try
-                transition = on_update!(current_state, current_scene, Float64(dt))
+                transition = on_update!(current_state, current_scene, Float64(dt), ctx)
             catch e
                 @warn "on_update! error for state $current_state_name" exception=e
             end
@@ -420,8 +425,14 @@ function run_render_loop!(fsm::GameStateMachine;
                     @warn "on_enter! error for state $current_state_name" exception=e
                 end
 
+                # Apply queued mutations if the scene was not replaced
+                if transition.new_scene_defs === nothing
+                    current_scene = apply_mutations!(ctx, current_scene)
+                end
                 continue  # skip render this frame
             end
+
+            current_scene = apply_mutations!(ctx, current_scene)
 
             # Wire UI callback from current state (falls back to ui kwarg)
             ui_cb = get_ui_callback(current_state)
@@ -433,6 +444,7 @@ function run_render_loop!(fsm::GameStateMachine;
 
             # render_frame! handles 3D rendering + UI + swap_buffers
             render_frame!(backend, current_scene)
+            flush_debug_draw!()
         end
     finally
         if _UI_CONTEXT[] !== nothing

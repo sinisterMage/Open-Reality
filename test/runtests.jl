@@ -3806,11 +3806,12 @@ using StaticArrays
             update_count = Ref(0)
             eid = create_entity_id()
             add_component!(eid, ScriptComponent(
-                on_start = (_) -> start_count[] += 1,
-                on_update = (_, _) -> update_count[] += 1
+                on_start = (_, _) -> start_count[] += 1,
+                on_update = (_, _, _) -> update_count[] += 1
             ))
-            update_scripts!(0.016)
-            update_scripts!(0.016)
+            ctx = GameContext(Scene(), InputState())
+            update_scripts!(0.016, ctx)
+            update_scripts!(0.016, ctx)
             @test start_count[] == 1
             @test update_count[] == 2
         end
@@ -3820,13 +3821,14 @@ using StaticArrays
             counter = Ref(0)
             eid1 = create_entity_id()
             add_component!(eid1, ScriptComponent(
-                on_update = (_, _) -> error("boom")
+                on_update = (_, _, _) -> error("boom")
             ))
             eid2 = create_entity_id()
             add_component!(eid2, ScriptComponent(
-                on_update = (_, _) -> counter[] += 1
+                on_update = (_, _, _) -> counter[] += 1
             ))
-            update_scripts!(0.016)
+            ctx = GameContext(Scene(), InputState())
+            update_scripts!(0.016, ctx)
             @test counter[] == 1
         end
 
@@ -3834,14 +3836,15 @@ using StaticArrays
             reset_engine_state!()
             eid = create_entity_id()
             add_component!(eid, ScriptComponent(
-                on_update = (_, _) -> begin
+                on_update = (_, _, _) -> begin
                     new_eid = create_entity_id()
                     add_component!(new_eid, ScriptComponent(
-                        on_update = (_, _) -> nothing
+                        on_update = (_, _, _) -> nothing
                     ))
                 end
             ))
-            @test_nowarn update_scripts!(0.016)
+            ctx = GameContext(Scene(), InputState())
+            @test_nowarn update_scripts!(0.016, ctx)
         end
 
         @testset "destroy_entity! fires on_destroy before removal" begin
@@ -3849,7 +3852,7 @@ using StaticArrays
             destroy_count = Ref(0)
             eid = create_entity_id()
             add_component!(eid, ScriptComponent(
-                on_destroy = (_) -> destroy_count[] += 1
+                on_destroy = (_, _) -> destroy_count[] += 1
             ))
             s = Scene()
             s = add_entity(s, eid)
@@ -3864,7 +3867,7 @@ using StaticArrays
             parent_eid = create_entity_id()
             child_eid = create_entity_id()
             add_component!(child_eid, ScriptComponent(
-                on_destroy = (_) -> child_destroy_count[] += 1
+                on_destroy = (_, _) -> child_destroy_count[] += 1
             ))
             s = Scene()
             s = add_entity(s, parent_eid)
@@ -3878,12 +3881,24 @@ using StaticArrays
             destroy_count = Ref(0)
             eid = create_entity_id()
             add_component!(eid, ScriptComponent(
-                on_destroy = (_) -> destroy_count[] += 1
+                on_destroy = (_, _) -> destroy_count[] += 1
             ))
             s = Scene()
             s = add_entity(s, eid)
             s = remove_entity(s, eid)
             @test destroy_count[] == 0
+        end
+
+        @testset "on_update receives GameContext" begin
+            reset_engine_state!()
+            received_ctx = Ref{Any}(nothing)
+            eid = create_entity_id()
+            add_component!(eid, ScriptComponent(
+                on_update = (_, _, c) -> (received_ctx[] = c)
+            ))
+            ctx = GameContext(Scene(), InputState())
+            update_scripts!(0.016, ctx)
+            @test received_ctx[] isa GameContext
         end
     end
 
@@ -4116,13 +4131,13 @@ using StaticArrays
         @testset "Scene switch: on_destroy fires before reset" begin
             reset_engine_state!()
             destroy_order = String[]
-            s = scene([entity([TransformComponent(), ScriptComponent(on_destroy = id -> push!(destroy_order, "destroyed"))])])
+            s = scene([entity([TransformComponent(), ScriptComponent(on_destroy = (id, ctx) -> push!(destroy_order, "destroyed"))])])
             # Simulate the render loop's on_destroy snapshot
             script_entities = entities_with_component(ScriptComponent)
             for eid in script_entities
                 comp = get_component(eid, ScriptComponent)
                 if comp !== nothing && comp.on_destroy !== nothing
-                    comp.on_destroy(eid)
+                    comp.on_destroy(eid, nothing)
                 end
             end
             @test "destroyed" in destroy_order
@@ -4365,7 +4380,8 @@ using StaticArrays
             s = scene([])
             st = NoOpState()
             @test on_enter!(st, s) === nothing
-            @test on_update!(st, s, 0.0) === nothing
+            ctx = GameContext(s, InputState())
+            @test on_update!(st, s, 0.0, ctx) === nothing
             @test on_exit!(st, s) === nothing
             @test get_ui_callback(st) === nothing
             reset_engine_state!()
@@ -4466,6 +4482,317 @@ using StaticArrays
             @test fsm.initial_state == :start
             @test fsm.initial_scene_defs === defs
             @test isempty(fsm.states)
+        end
+    end
+
+    @testset "GameContext" begin
+        reset_entity_counter!()
+        reset_component_stores!()
+
+        @testset "spawn! returns non-zero EntityID" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            s = Scene()
+            ctx = GameContext(s, InputState())
+            edef = entity([TransformComponent()])
+            eid = spawn!(ctx, edef)
+            @test eid > EntityID(0)
+        end
+
+        @testset "spawned entity not in scene before apply_mutations!" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            s = Scene()
+            ctx = GameContext(s, InputState())
+            edef = entity([TransformComponent()])
+            eid = spawn!(ctx, edef)
+            @test has_entity(ctx.scene, eid) == false
+        end
+
+        @testset "spawned entity in scene after apply_mutations!" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            s = Scene()
+            ctx = GameContext(s, InputState())
+            edef = entity([TransformComponent()])
+            eid = spawn!(ctx, edef)
+            new_scene = apply_mutations!(ctx, ctx.scene)
+            @test has_entity(new_scene, eid) == true
+        end
+
+        @testset "spawned entity has components after apply_mutations!" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            s = Scene()
+            ctx = GameContext(s, InputState())
+            edef = entity([TransformComponent()])
+            eid = spawn!(ctx, edef)
+            apply_mutations!(ctx, ctx.scene)
+            @test has_component(eid, TransformComponent) == true
+        end
+
+        @testset "despawn removes entity from scene" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            s = scene([entity([TransformComponent()])])
+            eid = s.entities[1]
+            ctx = GameContext(s, InputState())
+            despawn!(ctx, eid)
+            new_scene = apply_mutations!(ctx, ctx.scene)
+            @test has_entity(new_scene, eid) == false
+        end
+
+        @testset "despawn removes entity components from ECS" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            s = scene([entity([TransformComponent()])])
+            eid = s.entities[1]
+            ctx = GameContext(s, InputState())
+            despawn!(ctx, eid)
+            apply_mutations!(ctx, ctx.scene)
+            @test has_component(eid, TransformComponent) == false
+        end
+
+        @testset "apply_mutations! on empty queues preserves entity count" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            s = scene([entity([TransformComponent()])])
+            initial_count = entity_count(s)
+            ctx = GameContext(s, InputState())
+            new_scene = apply_mutations!(ctx, ctx.scene)
+            @test entity_count(new_scene) == initial_count
+        end
+
+        @testset "two spawn! calls return different EntityIDs" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            s = Scene()
+            ctx = GameContext(s, InputState())
+            eid1 = spawn!(ctx, entity([TransformComponent()]))
+            eid2 = spawn!(ctx, entity([TransformComponent()]))
+            @test eid1 != eid2
+        end
+    end
+
+    @testset "EventBus" begin
+        struct TestEvent <: GameEvent; value::Int end
+        struct OtherEvent <: GameEvent; msg::String end
+
+        reset_event_bus!()
+
+        @testset "subscribe! and emit!" begin
+            reset_event_bus!()
+            received = Ref(0)
+            cb = e -> (received[] = e.value)
+            subscribe!(TestEvent, cb)
+            emit!(TestEvent(42))
+            @test received[] == 42
+        end
+
+        @testset "multiple listeners called in order" begin
+            reset_event_bus!()
+            order = Int[]
+            subscribe!(TestEvent, _ -> push!(order, 1))
+            subscribe!(TestEvent, _ -> push!(order, 2))
+            emit!(TestEvent(0))
+            @test order == [1, 2]
+        end
+
+        @testset "unsubscribe! removes listener" begin
+            reset_event_bus!()
+            called = Ref(false)
+            cb = _ -> (called[] = true)
+            subscribe!(TestEvent, cb)
+            unsubscribe!(TestEvent, cb)
+            emit!(TestEvent(0))
+            @test called[] == false
+        end
+
+        @testset "throwing listener does not block others" begin
+            reset_event_bus!()
+            flag = Ref(false)
+            subscribe!(TestEvent, _ -> error("boom"))
+            subscribe!(TestEvent, _ -> (flag[] = true))
+            emit!(TestEvent(0))
+            @test flag[] == true
+        end
+
+        @testset "reset_event_bus! clears all subscriptions" begin
+            reset_event_bus!()
+            called = Ref(false)
+            subscribe!(TestEvent, _ -> (called[] = true))
+            reset_event_bus!()
+            emit!(TestEvent(0))
+            @test called[] == false
+        end
+
+        @testset "reset_engine_state! clears event bus" begin
+            reset_event_bus!()
+            called = Ref(false)
+            subscribe!(TestEvent, _ -> (called[] = true))
+            reset_engine_state!()
+            emit!(TestEvent(0))
+            @test called[] == false
+        end
+
+        @testset "different event types do not cross-fire" begin
+            reset_event_bus!()
+            called = Ref(false)
+            subscribe!(OtherEvent, _ -> (called[] = true))
+            emit!(TestEvent(1))
+            @test called[] == false
+        end
+    end
+
+    @testset "AssetManager" begin
+        reset_asset_manager!()
+
+        @testset "reset_asset_manager! clears cache" begin
+            am = get_asset_manager()
+            am.model_cache["dummy"] = [entity([TransformComponent()])]
+            reset_asset_manager!()
+            @test isempty(get_asset_manager().model_cache)
+        end
+
+        @testset "singleton identity" begin
+            reset_asset_manager!()
+            am1 = get_asset_manager()
+            am2 = get_asset_manager()
+            @test am1 === am2
+        end
+
+        @testset "reset_engine_state! resets asset manager" begin
+            am = get_asset_manager()
+            am.model_cache["dummy"] = [entity([TransformComponent()])]
+            reset_engine_state!()
+            @test isempty(get_asset_manager().model_cache)
+        end
+
+        @testset "get_model returns deep copy from cache" begin
+            reset_asset_manager!()
+            am = get_asset_manager()
+            am.model_cache["test_path"] = [entity([TransformComponent()])]
+            result = get_model("test_path")
+            @test result == am.model_cache["test_path"]
+            @test result !== am.model_cache["test_path"]
+        end
+    end
+
+    @testset "Prefab" begin
+        reset_entity_counter!()
+        reset_component_stores!()
+
+        @testset "instantiate calls factory with correct kwargs" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            pf = Prefab(; position=Vec3d(0,0,0)) do (; position)
+                entity([TransformComponent(; position)])
+            end
+            edef = instantiate(pf; position=Vec3d(1, 2, 3))
+            @test edef.components[1] isa TransformComponent
+            @test edef.components[1].position[] == Vec3d(1, 2, 3)
+        end
+
+        @testset "spawn!(ctx, prefab) returns a valid EntityID" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            pf = Prefab(; position=Vec3d(0,0,0)) do (; position)
+                entity([TransformComponent(; position)])
+            end
+            s = Scene()
+            ctx = GameContext(s, InputState())
+            eid = spawn!(ctx, pf)
+            @test eid > EntityID(0)
+            @test typeof(eid) == EntityID
+        end
+
+        @testset "two spawns from same prefab produce different EntityIDs" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            pf = Prefab(; position=Vec3d(0,0,0)) do (; position)
+                entity([TransformComponent(; position)])
+            end
+            s = Scene()
+            ctx = GameContext(s, InputState())
+            eid1 = spawn!(ctx, pf)
+            eid2 = spawn!(ctx, pf)
+            @test eid1 != eid2
+        end
+
+        @testset "after apply_mutations! both entities exist in scene" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            pf = Prefab(; position=Vec3d(0,0,0)) do (; position)
+                entity([TransformComponent(; position)])
+            end
+            s = Scene()
+            ctx = GameContext(s, InputState())
+            eid1 = spawn!(ctx, pf)
+            eid2 = spawn!(ctx, pf)
+            new_scene = apply_mutations!(ctx, ctx.scene)
+            @test has_entity(new_scene, eid1)
+            @test has_entity(new_scene, eid2)
+        end
+
+        @testset "override kwargs reflected in spawned entity components" begin
+            reset_entity_counter!()
+            reset_component_stores!()
+            pf = Prefab(; position=Vec3d(0,0,0)) do (; position)
+                entity([TransformComponent(; position)])
+            end
+            s = Scene()
+            ctx = GameContext(s, InputState())
+            eid1 = spawn!(ctx, pf; position=Vec3d(1, 2, 3))
+            eid2 = spawn!(ctx, pf; position=Vec3d(4, 5, 6))
+            new_scene = apply_mutations!(ctx, ctx.scene)
+            t1 = get_component(eid1, TransformComponent)
+            t2 = get_component(eid2, TransformComponent)
+            @test t1.position[] == Vec3d(1, 2, 3)
+            @test t2.position[] == Vec3d(4, 5, 6)
+            @test t1.position[] != t2.position[]
+        end
+    end
+
+    @testset "DebugDraw" begin
+        @testset "flush_debug_draw! is always callable without error" begin
+            @test_nowarn flush_debug_draw!()
+        end
+
+        if OPENREALITY_DEBUG
+            @testset "debug_line! adds one entry to _DEBUG_LINES" begin
+                flush_debug_draw!()
+                debug_line!(Vec3f(0,0,0), Vec3f(1,0,0))
+                @test length(OpenReality._DEBUG_LINES) == 1
+                flush_debug_draw!()
+            end
+
+            @testset "debug_box! adds exactly 12 entries to _DEBUG_LINES" begin
+                flush_debug_draw!()
+                debug_box!(Vec3f(0,0,0), Vec3f(1,1,1))
+                @test length(OpenReality._DEBUG_LINES) == 12
+                flush_debug_draw!()
+            end
+
+            @testset "flush_debug_draw! empties the buffer" begin
+                debug_box!(Vec3f(0,0,0), Vec3f(1,1,1))
+                flush_debug_draw!()
+                @test isempty(OpenReality._DEBUG_LINES)
+            end
+
+            @testset "debug_sphere! adds exactly 48 entries to _DEBUG_LINES" begin
+                flush_debug_draw!()
+                debug_sphere!(Vec3f(0,0,0), 1.0f0)
+                @test length(OpenReality._DEBUG_LINES) == 48
+                flush_debug_draw!()
+            end
+        else
+            @testset "debug_line! is a no-op when OPENREALITY_DEBUG = false" begin
+                @test_nowarn debug_line!(Vec3f(0,0,0), Vec3f(1,0,0))
+            end
+
+            @testset "debug_box! is a no-op when OPENREALITY_DEBUG = false" begin
+                @test_nowarn debug_box!(Vec3f(0,0,0), Vec3f(1,1,1))
+            end
         end
     end
 end
