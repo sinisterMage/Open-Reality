@@ -19,12 +19,18 @@ mutable struct InputState
     prev_mouse_buttons::Set{Int}
     prev_gamepad_buttons::Dict{Int, Vector{Bool}}
 
+    # Per-frame accumulated input events
+    typed_chars::Vector{Char}
+    scroll_delta::Tuple{Float64, Float64}
+
     InputState() = new(
         Set{Int}(), (0.0, 0.0), Set{Int}(),
         Dict{Int, Vector{Float32}}(),
         Dict{Int, Vector{Bool}}(),
         Set{Int}(), Set{Int}(),
-        Dict{Int, Vector{Bool}}()
+        Dict{Int, Vector{Bool}}(),
+        Char[],
+        (0.0, 0.0)
     )
 end
 
@@ -78,6 +84,8 @@ function begin_frame!(input::InputState)
     for (jid, buttons) in input.gamepad_buttons
         input.prev_gamepad_buttons[jid] = copy(buttons)
     end
+    empty!(input.typed_chars)
+    input.scroll_delta = (0.0, 0.0)
     return nothing
 end
 
@@ -137,6 +145,14 @@ function setup_input_callbacks!(window::Window, input::InputState)
         elseif action == GLFW.RELEASE
             delete!(input.mouse_buttons, Int(button))
         end
+    end)
+
+    GLFW.SetCharCallback(window.handle, (_, codepoint) -> begin
+        push!(input.typed_chars, Char(codepoint))
+    end)
+
+    GLFW.SetScrollCallback(window.handle, (_, xoffset, yoffset) -> begin
+        input.scroll_delta = (input.scroll_delta[1] + xoffset, input.scroll_delta[2] + yoffset)
     end)
 
     return nothing

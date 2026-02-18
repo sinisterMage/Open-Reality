@@ -11,7 +11,11 @@ struct UIDrawCommand
     vertex_count::Int     # Number of vertices (each vertex = 8 floats)
     texture_id::UInt32    # 0 = solid color, >0 = texture/font atlas
     is_font::Bool         # True if texture is a font atlas (single-channel)
+    clip_rect::Union{Nothing, NTuple{4, Int32}}  # Scissor rect (x, y, w, h) or nothing
 end
+
+UIDrawCommand(vertex_offset, vertex_count, texture_id, is_font) =
+    UIDrawCommand(vertex_offset, vertex_count, texture_id, is_font, nothing)
 
 """
     GlyphInfo
@@ -47,6 +51,27 @@ mutable struct FontAtlas
 end
 
 """
+    LayoutContainer
+
+Describes a layout region that auto-positions child widgets in a row or column.
+Pushed/popped via layout functions; children advance the cursor automatically.
+"""
+mutable struct LayoutContainer
+    origin_x::Float32
+    origin_y::Float32
+    cursor_x::Float32
+    cursor_y::Float32
+    direction::Symbol           # :row or :column
+    padding::Float32
+    spacing::Float32
+    row_height::Float32         # max child height seen (:row mode)
+    col_width::Float32          # max child width seen (:column mode)
+    anchor::Union{Symbol, Nothing}  # :top_left, :top_right, :bottom_left, :bottom_right, :center, or nothing
+    margin_x::Float32
+    margin_y::Float32
+end
+
+"""
     UIContext
 
 Frame-scoped state for immediate-mode UI rendering.
@@ -74,12 +99,50 @@ mutable struct UIContext
     # Image texture cache
     image_textures::Dict{String, UInt32}
 
+    # Layout system
+    layout_stack::Vector{LayoutContainer}
+    clip_stack::Vector{NTuple{4, Int32}}
+
+    # Keyboard / focus state
+    focused_widget_id::Union{String, Nothing}
+    has_keyboard_focus::Bool
+    typed_chars::Vector{Char}
+    keys_pressed::Set{Int}
+    prev_keys_pressed::Set{Int}
+
+    # Scroll input
+    scroll_x::Float64
+    scroll_y::Float64
+
+    # Overlay layer
+    in_overlay::Bool
+    overlay_vertices::Vector{Float32}
+    overlay_draw_commands::Vector{UIDrawCommand}
+
+    # Persistent per-widget state
+    scroll_offsets::Dict{String, Float32}
+    drag_offsets::Dict{String, Float32}
+
     UIContext() = new(
         Float32[], UIDrawCommand[],
         FontAtlas(), "",
         0.0, 0.0, false, false,
         1280, 720,
-        Dict{String, UInt32}()
+        Dict{String, UInt32}(),
+        LayoutContainer[],
+        NTuple{4,Int32}[],
+        nothing,
+        false,
+        Char[],
+        Set{Int}(),
+        Set{Int}(),
+        0.0,
+        0.0,
+        false,
+        Float32[],
+        UIDrawCommand[],
+        Dict{String, Float32}(),
+        Dict{String, Float32}()
     )
 end
 
@@ -111,5 +174,11 @@ Reset UI context for a new frame.
 function clear_ui!(ctx::UIContext)
     empty!(ctx.vertices)
     empty!(ctx.draw_commands)
+    empty!(ctx.overlay_vertices)
+    empty!(ctx.overlay_draw_commands)
+    empty!(ctx.layout_stack)
+    empty!(ctx.clip_stack)
+    ctx.in_overlay = false
+    ctx.has_keyboard_focus = false
     return nothing
 end

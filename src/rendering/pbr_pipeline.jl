@@ -105,16 +105,26 @@ function run_render_loop!(scene::Scene;
                 if backend isa OpenGLBackend && isempty(ctx.font_atlas.glyphs) && isempty(ctx.font_path)
                     ctx.font_atlas = get_or_create_font_atlas!("", 32)
                 end
+
+                # Sync keyboard and scroll state from input into UI context
+                ctx.typed_chars = copy(input.typed_chars)
+                ctx.keys_pressed = copy(input.keys_pressed)
+                ctx.prev_keys_pressed = copy(input.prev_keys)
+                ctx.scroll_x = input.scroll_delta[1]
+                ctx.scroll_y = input.scroll_delta[2]
             end
 
             # Update player
             if controller !== nothing
-                # Escape toggles cursor capture
+                # Escape toggles cursor capture (always active regardless of UI focus)
                 if backend_is_key_pressed(backend, KEY_ESCAPE)
                     backend_release_cursor!(backend)
                 end
 
-                update_player!(controller, backend_get_input(backend), dt)
+                # Suppress player movement when UI has keyboard focus
+                if !(_UI_CONTEXT[] !== nothing && _UI_CONTEXT[].has_keyboard_focus)
+                    update_player!(controller, backend_get_input(backend), dt)
+                end
             end
 
             # Animation step

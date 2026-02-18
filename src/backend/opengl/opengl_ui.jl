@@ -160,7 +160,7 @@ function render_ui!(ctx::UIContext)
         return
     end
 
-    if isempty(ctx.draw_commands)
+    if isempty(ctx.draw_commands) && isempty(ctx.overlay_draw_commands)
         return
     end
 
@@ -183,8 +183,21 @@ function render_ui!(ctx::UIContext)
     glBindBuffer(GL_ARRAY_BUFFER, renderer.vbo)
     glBufferData(GL_ARRAY_BUFFER, sizeof(ctx.vertices), ctx.vertices, GL_DYNAMIC_DRAW)
 
-    # Execute draw commands
+    # Execute draw commands (scissor-aware)
+    prev_clip = nothing
     for cmd in ctx.draw_commands
+        if cmd.clip_rect != prev_clip
+            if cmd.clip_rect === nothing
+                glDisable(GL_SCISSOR_TEST)
+            else
+                cx, cy, cw, ch = cmd.clip_rect
+                gl_y = Int32(ctx.height) - cy - ch
+                glEnable(GL_SCISSOR_TEST)
+                glScissor(cx, gl_y, cw, ch)
+            end
+            prev_clip = cmd.clip_rect
+        end
+
         if cmd.texture_id != UInt32(0)
             glActiveTexture(GL_TEXTURE0)
             glBindTexture(GL_TEXTURE_2D, cmd.texture_id)
@@ -198,6 +211,45 @@ function render_ui!(ctx::UIContext)
 
         vertex_start = cmd.vertex_offset ÷ 8  # 8 floats per vertex
         glDrawArrays(GL_TRIANGLES, vertex_start, cmd.vertex_count)
+    end
+
+    # Reset scissor state before overlay pass
+    glDisable(GL_SCISSOR_TEST)
+
+    # Overlay flush — render overlay geometry (tooltips, dropdowns, etc.) on top
+    if !isempty(ctx.overlay_vertices)
+        glBufferData(GL_ARRAY_BUFFER, sizeof(ctx.overlay_vertices), ctx.overlay_vertices, GL_DYNAMIC_DRAW)
+
+        prev_clip = nothing
+        for cmd in ctx.overlay_draw_commands
+            if cmd.clip_rect != prev_clip
+                if cmd.clip_rect === nothing
+                    glDisable(GL_SCISSOR_TEST)
+                else
+                    cx, cy, cw, ch = cmd.clip_rect
+                    gl_y = Int32(ctx.height) - cy - ch
+                    glEnable(GL_SCISSOR_TEST)
+                    glScissor(cx, gl_y, cw, ch)
+                end
+                prev_clip = cmd.clip_rect
+            end
+
+            if cmd.texture_id != UInt32(0)
+                glActiveTexture(GL_TEXTURE0)
+                glBindTexture(GL_TEXTURE_2D, cmd.texture_id)
+                set_uniform!(sp, "u_HasTexture", Int32(1))
+                set_uniform!(sp, "u_IsFont", cmd.is_font ? Int32(1) : Int32(0))
+                set_uniform!(sp, "u_Texture", Int32(0))
+            else
+                set_uniform!(sp, "u_HasTexture", Int32(0))
+                set_uniform!(sp, "u_IsFont", Int32(0))
+            end
+
+            vertex_start = cmd.vertex_offset ÷ 8  # 8 floats per vertex
+            glDrawArrays(GL_TRIANGLES, vertex_start, cmd.vertex_count)
+        end
+
+        glDisable(GL_SCISSOR_TEST)
     end
 
     # Restore state

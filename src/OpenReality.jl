@@ -301,9 +301,12 @@ export init_audio!, shutdown_audio!, reset_audio_state!
 export load_wav, get_or_load_buffer!
 
 # Export UI
-export UIContext, UIDrawCommand, FontAtlas, GlyphInfo
+export UIContext, UIDrawCommand, FontAtlas, GlyphInfo, LayoutContainer
 export orthographic_matrix, clear_ui!, measure_text
-export ui_rect, ui_text, ui_button, ui_progress_bar, ui_image
+export ui_rect, ui_text, ui_button, ui_progress_bar, ui_image,
+       ui_row, ui_column, ui_anchor, ui_begin_overlay,
+       ui_slider, ui_checkbox, ui_text_input, ui_dropdown,
+       ui_scrollable_panel, ui_tooltip
 export init_ui_renderer!, shutdown_ui_renderer!, render_ui!, reset_ui_renderer!
 export get_or_create_font_atlas!, reset_font_cache!
 

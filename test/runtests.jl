@@ -2752,6 +2752,251 @@ using StaticArrays
             @test renderer.initialized == false
             @test renderer.shader === nothing
         end
+
+        # ── Group 1: InputState new fields ──────────────────────────────────
+
+        @testset "InputState typed_chars reset" begin
+            input = InputState()
+            push!(input.typed_chars, 'a')
+            push!(input.typed_chars, 'b')
+            @test length(input.typed_chars) == 2
+            begin_frame!(input)
+            @test isempty(input.typed_chars)
+        end
+
+        # ── Group 2: LayoutContainer construction ───────────────────────────
+
+        @testset "LayoutContainer construction" begin
+            lc = LayoutContainer(
+                10f0, 20f0,       # origin_x, origin_y
+                10f0, 20f0,       # cursor_x, cursor_y
+                :row,
+                4f0, 8f0,         # padding, spacing
+                0f0, 0f0,         # row_height, col_width
+                nothing, 0f0, 0f0  # anchor, margin_x, margin_y
+            )
+            @test lc.origin_x == 10f0
+            @test lc.origin_y == 20f0
+            @test lc.direction === :row
+            @test lc.padding == 4f0
+            @test lc.spacing == 8f0
+            @test lc.anchor === nothing
+            @test lc.margin_x == 0f0
+            @test lc.margin_y == 0f0
+        end
+
+        # ── Group 3: Layout cursor advancement ──────────────────────────────
+
+        @testset "ui_row cursor advancement" begin
+            ctx = UIContext()
+            ui_row(ctx, x=10, y=20, spacing=8) do
+                ui_rect(ctx, width=50, height=30)
+                ui_rect(ctx, width=40, height=25)
+            end
+            vertices = ctx.vertices
+            # First rect at origin (10, 20)
+            @test vertices[1] == 10.0f0
+            @test vertices[2] == 20.0f0
+            # Second rect x should be: 10 + 50 + 8 = 68, y stays 20
+            @test vertices[49] == 68.0f0
+            @test vertices[50] == 20.0f0
+        end
+
+        @testset "ui_column cursor advancement" begin
+            ctx = UIContext()
+            ui_column(ctx, x=10, y=20, spacing=4) do
+                ui_rect(ctx, width=50, height=20)
+                ui_rect(ctx, width=40, height=25)
+            end
+            vertices = ctx.vertices
+            # First rect at origin (10, 20)
+            @test vertices[1] == 10.0f0
+            @test vertices[2] == 20.0f0
+            # Second rect x stays 10, y should be: 20 + 20 + 4 = 44
+            @test vertices[49] == 10.0f0
+            @test vertices[50] == 44.0f0
+        end
+
+        @testset "ui_anchor top_right origin" begin
+            ctx = UIContext()
+            ctx.width = 800
+            ctx.height = 600
+            ui_anchor(ctx, anchor=:top_right, margin_x=10, margin_y=15f0) do
+                ui_rect(ctx, width=50, height=30)
+            end
+            vertices = ctx.vertices
+            # x should be: 800 - 10 = 790, y should be: 15
+            @test vertices[1] == 790.0f0
+            @test vertices[2] == 15.0f0
+        end
+
+        @testset "nested layout" begin
+            ctx = UIContext()
+            ui_row(ctx, x=0, y=0, spacing=5) do
+                ui_rect(ctx, width=100, height=20)
+                ui_column(ctx, spacing=3) do
+                    ui_rect(ctx, width=60, height=15)
+                end
+            end
+            vertices = ctx.vertices
+            # First rect at (0, 0)
+            @test vertices[1] == 0.0f0
+            @test vertices[2] == 0.0f0
+            # Second rect x should be: 0 + 100 + 5 = 105, y stays 0
+            @test vertices[49] == 105.0f0
+            @test vertices[50] == 0.0f0
+        end
+
+        @testset "InputState scroll_delta reset" begin
+            input = InputState()
+            input.scroll_delta = (1.5, -2.0)
+            begin_frame!(input)
+            @test input.scroll_delta == (0.0, 0.0)
+        end
+
+        @testset "ui_anchor bottom_left origin" begin
+            ctx = UIContext()
+            ctx.width = 800
+            ctx.height = 600
+            ui_anchor(ctx, anchor=:bottom_left, margin_x=5, margin_y=10) do
+                ui_rect(ctx, width=50, height=20)
+            end
+            @test ctx.vertices[1] == 5.0f0
+            @test ctx.vertices[2] == 590.0f0
+        end
+
+        @testset "ui_slider vertex count" begin
+            ctx = UIContext()
+            result = ui_slider(ctx, 0.5f0, id="s", width=200, height=24, min_val=0f0, max_val=1f0)
+            @test length(ctx.vertices) == 144
+            @test result == 0.5f0
+        end
+
+        @testset "ui_slider value clamped" begin
+            ctx = UIContext()
+            @test ui_slider(ctx, 2.0f0, id="s", min_val=0f0, max_val=1f0) == 1.0f0
+            @test ui_slider(ctx, -1.0f0, id="s2", min_val=0f0, max_val=1f0) == 0.0f0
+        end
+
+        @testset "ui_checkbox toggle on click" begin
+            ctx = UIContext()
+            ctx.mouse_x = 10.0
+            ctx.mouse_y = 10.0
+            ctx.mouse_clicked = true
+            @test ui_checkbox(ctx, false, id="c", x=0, y=0, size=24) == true
+        end
+
+        @testset "ui_checkbox no toggle off click" begin
+            ctx = UIContext()
+            ctx.mouse_x = 200.0
+            ctx.mouse_y = 200.0
+            ctx.mouse_clicked = true
+            @test ui_checkbox(ctx, true, id="c", x=0, y=0, size=24) == true
+        end
+
+        @testset "ui_text_input char append" begin
+            ctx = UIContext()
+            ctx.focused_widget_id = "t"
+            ctx.typed_chars = ['!']
+            @test ui_text_input(ctx, "hello", id="t", x=0, y=0, width=200, height=32) == "hello!"
+        end
+
+        @testset "ui_text_input backspace" begin
+            ctx = UIContext()
+            ctx.focused_widget_id = "t"
+            ctx.keys_pressed = Set{Int}([259])
+            ctx.prev_keys_pressed = Set{Int}()
+            @test ui_text_input(ctx, "hello", id="t", x=0, y=0, width=200, height=32) == "hell"
+        end
+
+        @testset "ui_text_input focus claim" begin
+            ctx = UIContext()
+            ctx.mouse_x = 50.0
+            ctx.mouse_y = 16.0
+            ctx.mouse_clicked = true
+            ui_text_input(ctx, "text", id="myfield", x=0, y=0, width=200, height=32)
+            @test ctx.focused_widget_id == "myfield"
+            @test ctx.has_keyboard_focus == true
+        end
+
+        @testset "ui_dropdown vertex count" begin
+            ctx = UIContext()
+            result = ui_dropdown(ctx, 1, ["A","B","C"], id="d", x=0, y=0, width=160, height=32)
+            @test result == 1
+            @test length(ctx.draw_commands) >= 1
+        end
+
+        @testset "ui_scrollable_panel clip rect" begin
+            ctx = UIContext()
+            ui_scrollable_panel(ctx, id="p", x=10, y=20, width=200, height=100) do
+                ui_rect(ctx, width=200, height=30)
+            end
+            clipped = filter(c -> c.clip_rect !== nothing, ctx.draw_commands)
+            @test !isempty(clipped)
+            @test clipped[1].clip_rect == (Int32(10), Int32(20), Int32(200), Int32(100))
+        end
+
+        @testset "ui_scrollable_panel scroll advance" begin
+            ctx = UIContext()
+            ctx.scroll_y = -3.0
+            ctx.mouse_x = 50.0
+            ctx.mouse_y = 50.0
+            ui_scrollable_panel(ctx, id="p", x=0, y=0, width=200, height=100, scroll_speed=10f0) do
+                ui_rect(ctx, width=200, height=200)
+            end
+            @test get(ctx.scroll_offsets, "p", 0f0) > 0f0
+        end
+
+        @testset "ui_tooltip vertex count" begin
+            ctx = UIContext()
+            ctx.font_atlas.font_size = 16.0f0
+            ctx.font_atlas.line_height = 19.2f0
+            ctx.font_atlas.glyphs['H'] = GlyphInfo(10.0f0, 0f0, 12f0, 8f0, 12f0, 0f0, 0f0, 0f0, 0f0)
+            ctx.font_atlas.glyphs['i'] = GlyphInfo(5.0f0, 0f0, 12f0, 4f0, 12f0, 0f0, 0f0, 0f0, 0f0)
+            ui_tooltip(ctx, "Hi", x=100, y=100)
+            @test length(ctx.overlay_draw_commands) >= 1
+        end
+
+        @testset "ui_begin_overlay routing" begin
+            ctx = UIContext()
+            ui_begin_overlay(ctx) do
+                ui_rect(ctx, x=0, y=0, width=50, height=50)
+            end
+            @test isempty(ctx.draw_commands)
+            @test length(ctx.overlay_draw_commands) == 1
+            @test ctx.in_overlay == false
+        end
+
+        @testset "batching respects clip boundary" begin
+            ctx = UIContext()
+            push!(ctx.clip_stack, (Int32(0), Int32(0), Int32(100), Int32(100)))
+            ui_rect(ctx, x=0, y=0, width=50, height=50)
+            pop!(ctx.clip_stack)
+            ui_rect(ctx, x=60, y=0, width=50, height=50)
+            @test length(ctx.draw_commands) == 2
+        end
+
+        @testset "batching merges same clip" begin
+            ctx = UIContext()
+            push!(ctx.clip_stack, (Int32(0), Int32(0), Int32(200), Int32(200)))
+            ui_rect(ctx, x=0, y=0, width=50, height=50)
+            ui_rect(ctx, x=60, y=0, width=50, height=50)
+            pop!(ctx.clip_stack)
+            @test length(ctx.draw_commands) == 1
+            @test ctx.draw_commands[1].vertex_count == 12
+        end
+
+        @testset "overlay ignores clip stack" begin
+            ctx = UIContext()
+            push!(ctx.clip_stack, (Int32(0), Int32(0), Int32(200), Int32(200)))
+            ui_rect(ctx, x=0, y=0, width=50, height=50)
+            @test ctx.draw_commands[1].clip_rect !== nothing
+            ui_begin_overlay(ctx) do
+                ui_rect(ctx, x=10, y=10, width=30, height=30)
+            end
+            @test ctx.overlay_draw_commands[1].clip_rect === nothing
+        end
+
     end
 
     @testset "Skeletal Animation" begin
