@@ -371,6 +371,7 @@ function reset_engine_state!()
     reset_lod_cache!()
     clear_world_transform_cache!()
     reset_asset_manager!()
+    reset_async_loader!()
     reset_event_bus!()
     # AnimationBlendTreeComponent: no global stores — state is per-component,
     # cleared automatically by reset_component_stores!() above.

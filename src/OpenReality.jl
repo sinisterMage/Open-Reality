@@ -48,6 +48,9 @@ include("components/primitives.jl")
 include("components/lod.jl")
 include("components/collider.jl")
 
+# Threading infrastructure (after ECS + transform/collider components — snapshot functions need them)
+include("threading.jl")
+
 # Physics types + shapes (before rigidbody — rigidbody uses CCDMode; shapes extends ColliderShape)
 include("physics/types.jl")
 include("physics/shapes.jl")
@@ -74,6 +77,7 @@ include("physics/collision_callbacks.jl")
 include("physics/raycast.jl")
 include("physics/ccd.jl")
 include("physics/islands.jl")
+include("physics/guards.jl")
 include("physics/world.jl")
 
 # Windowing (before backend — backend needs Window and InputState)
@@ -235,12 +239,16 @@ include("loading/obj_loader.jl")
 include("loading/gltf_loader.jl")
 include("loading/loader.jl")
 include("loading/asset_manager.jl")
+include("loading/async_loader.jl")
 
 # Scene export (ORSB format for WASM web deployment)
 include("export/scene_export.jl")
 
 # Save/load serialization system
 include("serialization/save_load.jl")
+
+# Export Threading
+export use_threading, threading_enabled
 
 # Export ECS
 export EntityID, World, create_entity!, create_entity_id
@@ -434,7 +442,7 @@ export get_instance_buffer!, reset_instance_buffer!
 
 # Export Frame Preparation
 export FrameLightData, EntityRenderData, TransparentEntityData, FrameData
-export collect_lights, prepare_frame
+export collect_lights, prepare_frame, prepare_frame_parallel
 
 # Export Rendering
 export RenderPipeline, execute!
@@ -480,6 +488,8 @@ export update_camera_controllers!
 # Export Model Loading
 export load_model, load_obj, load_gltf
 export AssetManager, get_asset_manager, reset_asset_manager!, get_model, preload!
+export AsyncAssetLoader, AsyncLoadResult, load_model_async, poll_async_loads!
+export get_async_loader, reset_async_loader!, shutdown_async_loader!
 
 # Export Scene Export (ORSB)
 export export_scene

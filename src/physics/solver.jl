@@ -215,8 +215,9 @@ function write_back_velocities!(bodies::Dict{EntityID, SolverBody})
         body.body_type == BODY_DYNAMIC || continue
         rb = get_component(eid, RigidBodyComponent)
         rb === nothing && continue
-        rb.velocity = body.velocity
-        rb.angular_velocity = body.angular_velocity
+        # NaN guard: only write back valid velocities
+        rb.velocity = is_valid_vec3(body.velocity) ? body.velocity : Vec3d(0, 0, 0)
+        rb.angular_velocity = is_valid_vec3(body.angular_velocity) ? body.angular_velocity : Vec3d(0, 0, 0)
     end
 end
 
@@ -258,8 +259,11 @@ Apply an impulse to two bodies at the contact point.
 """
 @inline function _apply_impulse!(body_a::SolverBody, body_b::SolverBody,
                                   impulse::Vec3d, ra::Vec3d, rb::Vec3d)
+    # NaN guard: skip degenerate impulses to prevent corruption
+    is_valid_vec3(impulse) || return nothing
     body_a.velocity = body_a.velocity - impulse * body_a.inv_mass
     body_a.angular_velocity = body_a.angular_velocity - body_a.inv_inertia_world * vec3d_cross(ra, impulse)
     body_b.velocity = body_b.velocity + impulse * body_b.inv_mass
     body_b.angular_velocity = body_b.angular_velocity + body_b.inv_inertia_world * vec3d_cross(rb, impulse)
+    return nothing
 end

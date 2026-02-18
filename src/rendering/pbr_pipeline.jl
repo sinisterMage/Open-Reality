@@ -184,6 +184,19 @@ function run_render_loop!(initial_scene::Scene;
             # Clear per-frame caches
             clear_world_transform_cache!()
 
+            # Poll async asset loads — spawn completed models via GameContext
+            if _ASYNC_LOADER[] !== nothing
+                for result in poll_async_loads!(_ASYNC_LOADER[])
+                    if result.entities !== nothing
+                        for edef in result.entities
+                            spawn!(ctx, edef)
+                        end
+                    else
+                        @warn "Async load failed" path=result.path error=result.error
+                    end
+                end
+            end
+
             # Update UI input state
             if _UI_CONTEXT[] !== nothing && _UI_CALLBACK[] !== nothing
                 ui_ctx = _UI_CONTEXT[]
@@ -294,6 +307,7 @@ function run_render_loop!(initial_scene::Scene;
         end
         reset_particle_pools!()
         reset_terrain_cache!()
+        reset_async_loader!()
         shutdown_audio!()
         cleanup_all_gpu_resources!(backend)
         shutdown!(backend)
@@ -378,6 +392,19 @@ function run_render_loop!(fsm::GameStateMachine;
 
             # Clear per-frame caches
             clear_world_transform_cache!()
+
+            # Poll async asset loads — spawn completed models via GameContext
+            if _ASYNC_LOADER[] !== nothing
+                for result in poll_async_loads!(_ASYNC_LOADER[])
+                    if result.entities !== nothing
+                        for edef in result.entities
+                            spawn!(ctx, edef)
+                        end
+                    else
+                        @warn "Async load failed" path=result.path error=result.error
+                    end
+                end
+            end
 
             # Update UI input state
             if _UI_CONTEXT[] !== nothing
@@ -527,6 +554,7 @@ function run_render_loop!(fsm::GameStateMachine;
         end
         reset_particle_pools!()
         reset_terrain_cache!()
+        reset_async_loader!()
         shutdown_audio!()
         cleanup_all_gpu_resources!(backend)
         shutdown!(backend)

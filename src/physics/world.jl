@@ -51,6 +51,32 @@ function reset_physics_world!()
 end
 
 """
+    _narrowphase_parallel(candidate_pairs, transform_snap, collider_snap) -> Vector{ContactManifold}
+
+Parallel narrowphase: each collision pair is tested independently using
+snapshot data. Results are written to per-index slots (no contention).
+"""
+function _narrowphase_parallel(candidate_pairs::Vector{CollisionPair},
+                                transform_snap::Dict{EntityID, TransformSnapshot},
+                                collider_snap::Dict{EntityID, ColliderComponent})
+    n = length(candidate_pairs)
+    results = Vector{Union{ContactManifold, Nothing}}(nothing, n)
+    Threads.@threads for i in 1:n
+        pair = candidate_pairs[i]
+        ta = get(transform_snap, pair.entity_a, nothing)
+        tb = get(transform_snap, pair.entity_b, nothing)
+        ca = get(collider_snap, pair.entity_a, nothing)
+        cb = get(collider_snap, pair.entity_b, nothing)
+        (ta === nothing || tb === nothing || ca === nothing || cb === nothing) && continue
+        results[i] = _collide_shapes(
+            ca.shape, ta.position, ta.rotation, ta.scale, ca.offset,
+            cb.shape, tb.position, tb.rotation, tb.scale, cb.offset,
+            pair.entity_a, pair.entity_b)
+    end
+    return ContactManifold[r for r in results if r !== nothing]
+end
+
+"""
     update_collision_callbacks!(world::PhysicsWorld)
 
 Detect collision enter/stay/exit events and fire registered callbacks.
@@ -202,6 +228,8 @@ function fixed_step!(world::PhysicsWorld, dt::Float64)
             # Damping
             rb.velocity = rb.velocity * (1.0 - rb.linear_damping * dt)
             rb.angular_velocity = rb.angular_velocity * (1.0 - rb.angular_damping * dt)
+            # NaN guard: clamp velocities to prevent simulation explosion
+            clamp_velocity!(rb)
         end
     end
 
@@ -220,12 +248,21 @@ function fixed_step!(world::PhysicsWorld, dt::Float64)
     candidate_pairs = query_pairs(world.broadphase)
 
     # --- Phase 4: Narrowphase ---
-    manifolds = ContactManifold[]
-    for pair in candidate_pairs
-        manifold = collide(pair.entity_a, pair.entity_b)
-        if manifold !== nothing
-            push!(manifolds, manifold)
+    manifolds = if threading_enabled()
+        # Parallel path: snapshot component data then test pairs on worker threads
+        transform_snap = snapshot_transforms()
+        collider_snap = snapshot_components(ColliderComponent)
+        _narrowphase_parallel(candidate_pairs, transform_snap, collider_snap)
+    else
+        # Serial path (original)
+        _manifolds = ContactManifold[]
+        for pair in candidate_pairs
+            manifold = collide(pair.entity_a, pair.entity_b)
+            if manifold !== nothing
+                push!(_manifolds, manifold)
+            end
         end
+        _manifolds
     end
 
     # Update contact cache (warm-starting)

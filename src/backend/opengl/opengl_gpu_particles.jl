@@ -300,16 +300,16 @@ const vec2 QUAD_UVS[6] = vec2[6](
     vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0)
 );
 
-vec3 unpack_color(uint packed) {
-    float r = float((packed >> 21u) & 0x7FFu) / 2047.0;
-    float g = float((packed >> 10u) & 0x7FFu) / 2047.0;
-    float b = float(packed & 0x3FFu) / 1023.0;
+vec3 unpack_color(uint val) {
+    float r = float((val >> 21u) & 0x7FFu) / 2047.0;
+    float g = float((val >> 10u) & 0x7FFu) / 2047.0;
+    float b = float(val & 0x3FFu) / 1023.0;
     return vec3(r, g, b);
 }
 
-void unpack_alpha(uint packed, out float start_a, out float end_a) {
-    start_a = float((packed >> 16u) & 0xFFFFu) / 65535.0;
-    end_a = float(packed & 0xFFFFu) / 65535.0;
+void unpack_alpha(uint val, out float start_a, out float end_a) {
+    start_a = float((val >> 16u) & 0xFFFFu) / 65535.0;
+    end_a = float(val & 0xFFFFu) / 65535.0;
 }
 
 void main() {

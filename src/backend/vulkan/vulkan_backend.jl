@@ -499,8 +499,10 @@ function render_frame!(backend::VulkanBackend, scene::Scene)
     # Reset the transient descriptor pool for this frame
     unwrap(reset_descriptor_pool(backend.device, backend.transient_pools[frame_idx]))
 
-    # Prepare frame data (backend-agnostic)
-    frame_data = prepare_frame(scene, backend.bounds_cache)
+    # Prepare frame data (backend-agnostic, parallel when threading enabled)
+    frame_data = threading_enabled() ?
+        prepare_frame_parallel(scene, backend.bounds_cache) :
+        prepare_frame(scene, backend.bounds_cache)
     if frame_data === nothing
         # No camera — submit empty frame
         _submit_empty_frame!(backend, frame_idx, image_index)
