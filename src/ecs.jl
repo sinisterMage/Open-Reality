@@ -340,5 +340,7 @@ function reset_engine_state!()
     reset_terrain_cache!()
     reset_lod_cache!()
     clear_world_transform_cache!()
+    # AnimationBlendTreeComponent: no global stores — state is per-component,
+    # cleared automatically by reset_component_stores!() above.
     return nothing
 end

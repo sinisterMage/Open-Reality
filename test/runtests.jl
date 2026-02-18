@@ -4132,4 +4132,340 @@ using StaticArrays
             reset_engine_state!()
         end
     end
+
+    @testset "Animation Blend Trees" begin
+        @testset "Blend1DNode weight at midpoint" begin
+            reset_engine_state!()
+
+            # Create two target entities with transforms
+            target_a = create_entity_id()
+            target_b = create_entity_id()
+            add_component!(target_a, transform(position=Vec3d(0, 0, 0)))
+            add_component!(target_b, transform(position=Vec3d(0, 0, 0)))
+
+            # Clip A: position at (1,0,0)
+            clip_a = AnimationClip("walk", [
+                AnimationChannel(target_a, :position, Float32[0.0, 1.0], Any[Vec3d(1.0, 0.0, 0.0), Vec3d(1.0, 0.0, 0.0)], INTERP_LINEAR)
+            ], 1.0f0)
+
+            # Clip B: position at (3,0,0)
+            clip_b = AnimationClip("run", [
+                AnimationChannel(target_a, :position, Float32[0.0, 1.0], Any[Vec3d(3.0, 0.0, 0.0), Vec3d(3.0, 0.0, 0.0)], INTERP_LINEAR)
+            ], 1.0f0)
+
+            node = Blend1DNode("speed", Float32[0.0, 1.0], BlendNode[ClipNode(clip_a), ClipNode(clip_b)])
+            params = Dict{String, Float32}("speed" => 0.5f0)
+            bool_params = Dict{String, Bool}()
+            triggers = Set{String}()
+
+            output = OpenReality.evaluate_blend_node(node, params, bool_params, triggers, 0.0)
+
+            # At speed=0.5, result should be midpoint: (2,0,0)
+            @test haskey(output, target_a)
+            pos = output[target_a][:position]::Vec3d
+            @test abs(pos[1] - 2.0) < 1e-5
+            @test abs(pos[2] - 0.0) < 1e-5
+            @test abs(pos[3] - 0.0) < 1e-5
+
+            # At speed=0.0, result should equal first clip: (1,0,0)
+            params["speed"] = 0.0f0
+            output = OpenReality.evaluate_blend_node(node, params, bool_params, triggers, 0.0)
+            @test haskey(output, target_a)
+            pos = output[target_a][:position]::Vec3d
+            @test abs(pos[1] - 1.0) < 1e-5
+            @test abs(pos[2] - 0.0) < 1e-5
+            @test abs(pos[3] - 0.0) < 1e-5
+
+            # At speed=1.0, result should equal second clip: (3,0,0)
+            params["speed"] = 1.0f0
+            output = OpenReality.evaluate_blend_node(node, params, bool_params, triggers, 0.0)
+            @test haskey(output, target_a)
+            pos = output[target_a][:position]::Vec3d
+            @test abs(pos[1] - 3.0) < 1e-5
+            @test abs(pos[2] - 0.0) < 1e-5
+            @test abs(pos[3] - 0.0) < 1e-5
+
+            reset_engine_state!()
+        end
+
+        @testset "Crossfade blend weight" begin
+            # Verify crossfade t computation
+            comp = AnimationBlendTreeComponent(
+                ClipNode(AnimationClip("idle", AnimationChannel[], 1.0f0)),
+                Dict{String, Float32}(),
+                Dict{String, Bool}(),
+                Set{String}(),
+                0.0,
+                true,
+                1.0f0,
+                0.5f0,
+                ClipNode(AnimationClip("walk", AnimationChannel[], 1.0f0))
+            )
+
+            t = clamp(comp.transition_elapsed / comp.transition_duration, 0f0, 1f0)
+            @test t == 0.5f0
+
+            comp.transition_elapsed = 0.0f0
+            t = clamp(comp.transition_elapsed / comp.transition_duration, 0f0, 1f0)
+            @test t == 0.0f0
+
+            comp.transition_elapsed = 1.0f0
+            t = clamp(comp.transition_elapsed / comp.transition_duration, 0f0, 1f0)
+            @test t == 1.0f0
+        end
+
+        @testset "Guard: update_animations! skips blend-tree entities" begin
+            reset_engine_state!()
+            eid = create_entity_id()
+            target_eid = create_entity_id()
+            add_component!(target_eid, transform(position=Vec3d(0, 0, 0)))
+
+            clip = AnimationClip("test", [
+                AnimationChannel(target_eid, :position, Float32[0.0, 1.0], Any[Vec3d(0.0, 0.0, 0.0), Vec3d(1.0, 0.0, 0.0)], INTERP_LINEAR)
+            ], 1.0f0)
+
+            anim = AnimationComponent(clips=[clip], active_clip=1, playing=true, current_time=0.0, looping=true, speed=1.0f0)
+            add_component!(eid, anim)
+
+            blend_comp = AnimationBlendTreeComponent(
+                ClipNode(AnimationClip("idle", AnimationChannel[], 1.0f0)),
+                Dict{String, Float32}(),
+                Dict{String, Bool}(),
+                Set{String}(),
+                0.0,
+                false,
+                0f0,
+                0f0,
+                nothing
+            )
+            add_component!(eid, blend_comp)
+
+            update_animations!(0.016)
+            # current_time should NOT have been advanced because the guard skips blend-tree entities
+            @test get_component(eid, AnimationComponent).current_time == 0.0
+            reset_engine_state!()
+        end
+
+        @testset "Trigger consumed after evaluation" begin
+            reset_engine_state!()
+            eid = create_entity_id()
+            add_component!(eid, transform(position=Vec3d(0, 0, 0)))
+
+            comp = AnimationBlendTreeComponent(
+                ClipNode(AnimationClip("idle", AnimationChannel[], 1.0f0)),
+                Dict{String, Float32}(),
+                Dict{String, Bool}(),
+                Set{String}(),
+                0.0,
+                false,
+                0f0,
+                0f0,
+                nothing
+            )
+            add_component!(eid, comp)
+            fire_trigger!(comp, "jump")
+            @test "jump" in comp.trigger_parameters
+
+            update_blend_tree!(0.016)
+            @test !("jump" in get_component(eid, AnimationBlendTreeComponent).trigger_parameters)
+            reset_engine_state!()
+        end
+    end
+
+    @testset "Camera Controllers" begin
+        @testset "find_active_camera with two cameras" begin
+            reset_engine_state!()
+            eid1 = create_entity_id()
+            add_component!(eid1, transform())
+            add_component!(eid1, CameraComponent(active=false))
+
+            eid2 = create_entity_id()
+            add_component!(eid2, transform())
+            add_component!(eid2, CameraComponent(active=true))
+
+            @test find_active_camera() == eid2
+            reset_engine_state!()
+        end
+
+        @testset "ThirdPersonCamera position computation" begin
+            reset_engine_state!()
+
+            # Target entity at origin
+            target_eid = create_entity_id()
+            add_component!(target_eid, transform(position=Vec3d(0, 0, 0)))
+
+            # Camera entity at origin
+            cam_eid = create_entity_id()
+            add_component!(cam_eid, transform(position=Vec3d(0, 0, 0)))
+            add_component!(cam_eid, ThirdPersonCamera(
+                target_eid,
+                5.0f0,       # distance
+                0.0,         # yaw
+                0.0,         # pitch
+                -deg2rad(89.0), # min_pitch
+                deg2rad(89.0),  # max_pitch
+                0.0f0,       # sensitivity (no mouse effect)
+                false,       # collision_enabled
+                1000.0f0,    # smoothing (high value = instant)
+                Vec3f(0, 0, 0) # offset
+            ))
+
+            input = InputState()
+            update_camera_controllers!(input, 1.0)
+
+            tc = get_component(cam_eid, TransformComponent)
+            pos = tc.position[]
+            # With yaw=0, pitch=0, distance=5, camera should be at approximately (0, 0, 5)
+            @test abs(pos[1]) < 0.1
+            @test abs(pos[2]) < 0.1
+            @test abs(pos[3] - 5.0) < 0.1
+            reset_engine_state!()
+        end
+
+        @testset "CinematicCamera path interpolation" begin
+            reset_engine_state!()
+
+            cam_eid = create_entity_id()
+            add_component!(cam_eid, transform(position=Vec3d(0, 0, 0)))
+            add_component!(cam_eid, CinematicCamera(
+                5.0f0,                                    # move_speed
+                0.003f0,                                  # sensitivity
+                [Vec3d(0, 0, 0), Vec3d(2, 0, 0)],       # path
+                [0.0f0, 1.0f0],                          # path_times
+                0.5f0,                                    # current_time
+                true,                                     # playing
+                false                                     # looping
+            ))
+
+            input = InputState()
+            update_camera_controllers!(input, 0.0)  # zero dt so time doesn't advance
+
+            tc = get_component(cam_eid, TransformComponent)
+            pos = tc.position[]
+            @test abs(pos[1] - 1.0) < 0.01
+            @test abs(pos[2]) < 0.01
+            @test abs(pos[3]) < 0.01
+            reset_engine_state!()
+        end
+
+        @testset "No-op when no controllers exist" begin
+            reset_engine_state!()
+            input = InputState()
+            @test_nowarn update_camera_controllers!(input, 0.016)
+            reset_engine_state!()
+        end
+    end
+
+    @testset "Game State Machine" begin
+        # Concrete no-op subtype for testing default implementations
+        struct NoOpState <: GameState end
+
+        @testset "Default implementations return nothing" begin
+            reset_engine_state!()
+            s = scene([])
+            st = NoOpState()
+            @test on_enter!(st, s) === nothing
+            @test on_update!(st, s, 0.0) === nothing
+            @test on_exit!(st, s) === nothing
+            @test get_ui_callback(st) === nothing
+            reset_engine_state!()
+        end
+
+        @testset "on_enter! called on initial state" begin
+            reset_engine_state!()
+            mutable struct TestEnteredState <: GameState
+                entered::Bool
+            end
+            OpenReality.on_enter!(st::TestEnteredState, sc::Scene) = (st.entered = true; nothing)
+
+            st = TestEnteredState(false)
+            s = scene([])
+            on_enter!(st, s)
+            @test st.entered == true
+            reset_engine_state!()
+        end
+
+        @testset "on_exit! called before on_enter! during transition" begin
+            reset_engine_state!()
+            call_order = String[]
+
+            mutable struct ExitState <: GameState end
+            mutable struct EnterState <: GameState end
+            OpenReality.on_exit!(st::ExitState, sc::Scene) = push!(call_order, "exit")
+            OpenReality.on_enter!(st::EnterState, sc::Scene) = push!(call_order, "enter")
+
+            s = scene([])
+            on_exit!(ExitState(), s)
+            on_enter!(EnterState(), s)
+            @test call_order == ["exit", "enter"]
+            reset_engine_state!()
+        end
+
+        @testset "StateTransition with new_scene_defs = nothing — scene unchanged" begin
+            t = StateTransition(:x, nothing)
+            @test t.target == :x
+            @test t.new_scene_defs === nothing
+        end
+
+        @testset "StateTransition convenience constructor" begin
+            t = StateTransition(:foo)
+            @test t.target == :foo
+            @test t.new_scene_defs === nothing
+        end
+
+        @testset "StateTransition with new_scene_defs" begin
+            reset_engine_state!()
+            defs = [entity([TransformComponent()])]
+            t = StateTransition(:bar, defs)
+            @test t.target == :bar
+            @test t.new_scene_defs !== nothing
+            @test length(t.new_scene_defs) == 1
+
+            # Verify scene can be built from new_defs after reset
+            reset_engine_state!()
+            @test component_count(TransformComponent) == 0
+            new_scene = scene(t.new_scene_defs)
+            @test component_count(TransformComponent) > 0
+            reset_engine_state!()
+        end
+
+        @testset "Error isolation — on_enter! throwing is catchable" begin
+            reset_engine_state!()
+            mutable struct ErrorState <: GameState end
+            OpenReality.on_enter!(st::ErrorState, sc::Scene) = error("test error")
+
+            s = scene([])
+            caught = false
+            try
+                on_enter!(ErrorState(), s)
+            catch e
+                caught = true
+                @test e isa ErrorException
+            end
+            @test caught
+            reset_engine_state!()
+        end
+
+        @testset "add_state! registers state" begin
+            fsm = GameStateMachine(:a, [])
+            @test isempty(fsm.states)
+            add_state!(fsm, :a, NoOpState())
+            @test haskey(fsm.states, :a)
+            @test fsm.states[:a] isa NoOpState
+        end
+
+        @testset "add_state! returns fsm for chaining" begin
+            fsm = GameStateMachine(:a, [])
+            result = add_state!(fsm, :a, NoOpState())
+            @test result === fsm
+        end
+
+        @testset "GameStateMachine convenience constructor" begin
+            defs = [entity([TransformComponent()])]
+            fsm = GameStateMachine(:start, defs)
+            @test fsm.initial_state == :start
+            @test fsm.initial_scene_defs === defs
+            @test isempty(fsm.states)
+        end
+    end
 end

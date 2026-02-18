@@ -1,12 +1,13 @@
-# Scripting & Scene Switching Demo
-# Demonstrates all recently added features:
+# Scripting & Scene Switching Demo (FSM version)
+# Demonstrates all recently added features using the GameStateMachine API:
 #   1. ScriptComponent      — entity lifecycle callbacks (on_start/on_update/on_destroy)
 #   2. Script System         — update_scripts! runs each frame automatically
 #   3. CollisionCallbacks    — on_collision_enter/stay/exit detection
-#   4. Scene Switching       — on_update returns Vector{EntityDef} to switch scenes
+#   4. Scene Switching       — FSM StateTransition triggers scene switch
 #   5. destroy_entity!       — removes entities at runtime, fires on_destroy
 #   6. reset_engine_state!   — clears all ECS/physics/particles during scene switch
 #   7. clear_audio_sources!  — stops OpenAL sources between scenes
+#   8. GameStateMachine      — structured state management with on_enter!/on_update!/on_exit!
 #
 # Run with:
 #   julia --project=. examples/scripting_demo.jl
@@ -17,14 +18,11 @@ using OpenReality
 # Shared State (persists across scene switches via Refs)
 # =============================================================================
 
-const collision_count   = Ref(0)
-const destroyed_count   = Ref(0)
 const scene_name        = Ref("Arena")
 const timer_seconds     = Ref(30.0)
 const switch_requested  = Ref(false)
 const total_switches    = Ref(0)
 const frame_count       = Ref(0)
-const entities_to_destroy = Ref(EntityID[])
 
 # =============================================================================
 # Scene 1: "The Arena" — collectibles, physics, collision callbacks
@@ -43,7 +41,6 @@ function make_bobbing_script(base_y::Float64; speed::Float64=3.0, amplitude::Flo
             tc.position[] = Vec3d(pos[1], new_y, pos[3])
         end,
         on_destroy = (eid) -> begin
-            destroyed_count[] += 1
             println("  [Script] Collectible $eid destroyed!")
         end
     )
@@ -62,7 +59,7 @@ function make_spin_script(rotation_speed::Float64=1.0)
     )
 end
 
-function collectible(pos::Vec3d, color::RGB{Float32}; base_y::Float64=pos[2])
+function collectible(pos::Vec3d, color::RGB{Float32}, entities_to_destroy::Vector{EntityID}, collision_count::Ref{Int}; base_y::Float64=pos[2])
     entity([
         sphere_mesh(radius=0.4f0),
         MaterialComponent(
@@ -79,7 +76,7 @@ function collectible(pos::Vec3d, color::RGB{Float32}; base_y::Float64=pos[2])
             on_collision_enter = (this_eid, other_eid, manifold) -> begin
                 collision_count[] += 1
                 println("  [Collision] Collectible $(this_eid) hit by $(other_eid)!")
-                push!(entities_to_destroy[], this_eid)
+                push!(entities_to_destroy, this_eid)
             end
         )
     ])
@@ -101,7 +98,7 @@ function spinning_box(pos::Vec3d, color::RGB{Float32}; mass=1.0, speed=1.5)
     ])
 end
 
-function build_arena_defs()
+function build_arena_defs(entities_to_destroy::Vector{EntityID}, collision_count::Ref{Int})
     [
         # --- Player ---
         create_player(position=Vec3d(0, 2.0, 12)),
@@ -137,31 +134,13 @@ function build_arena_defs()
         ]),
 
         # --- Bobbing Collectibles ---
-        collectible(Vec3d(-3, 1.5, 0),  RGB{Float32}(0.2, 0.9, 0.3)),   # green
-        collectible(Vec3d( 0, 1.5, -3), RGB{Float32}(0.9, 0.8, 0.1)),   # yellow
-        collectible(Vec3d( 3, 1.5, 2),  RGB{Float32}(0.1, 0.7, 0.9)),   # cyan
+        collectible(Vec3d(-3, 1.5, 0),  RGB{Float32}(0.2, 0.9, 0.3), entities_to_destroy, collision_count),
+        collectible(Vec3d( 0, 1.5, -3), RGB{Float32}(0.9, 0.8, 0.1), entities_to_destroy, collision_count),
+        collectible(Vec3d( 3, 1.5, 2),  RGB{Float32}(0.1, 0.7, 0.9), entities_to_destroy, collision_count),
 
         # --- Dynamic Spinning Boxes ---
         spinning_box(Vec3d(-2, 5, -2), RGB{Float32}(0.9, 0.2, 0.2), speed=2.0),
         spinning_box(Vec3d( 2, 7, -1), RGB{Float32}(0.2, 0.3, 0.9), speed=1.2),
-
-        # --- Timer Entity (invisible, drives countdown) ---
-        entity([
-            ScriptComponent(
-                on_start = (eid) -> begin
-                    timer_seconds[] = 30.0
-                    println("  [Script] Arena timer started (30s)")
-                end,
-                on_update = (eid, dt) -> begin
-                    timer_seconds[] -= dt
-                    if timer_seconds[] <= 0
-                        println("  [Script] Timer expired! Switching scene...")
-                        switch_requested[] = true
-                    end
-                end,
-                on_destroy = (eid) -> println("  [Script] Arena timer stopped")
-            )
-        ]),
     ]
 end
 
@@ -301,68 +280,102 @@ function build_gallery_defs()
                 on_destroy = (eid) -> println("  [Script] Sentinel sphere $eid deactivated")
             )
         ]),
-
-        # --- Timer Entity (invisible) ---
-        entity([
-            ScriptComponent(
-                on_start = (eid) -> begin
-                    timer_seconds[] = 30.0
-                    println("  [Script] Gallery timer started (30s)")
-                end,
-                on_update = (eid, dt) -> begin
-                    timer_seconds[] -= dt
-                    if timer_seconds[] <= 0
-                        println("  [Script] Timer expired! Switching scene...")
-                        switch_requested[] = true
-                    end
-                end,
-                on_destroy = (eid) -> println("  [Script] Gallery timer stopped")
-            )
-        ]),
     ]
 end
 
 # =============================================================================
-# Scene Switching Logic
+# Game States
 # =============================================================================
 
-function game_update(current_scene, dt)
+mutable struct ArenaState <: GameState
+    timer::Float64
+    collision_count::Int
+    destroyed_count::Int
+    entities_to_destroy::Vector{EntityID}
+end
+
+mutable struct GalleryState <: GameState
+    timer::Float64
+end
+
+function OpenReality.on_enter!(state::ArenaState, sc::Scene)
+    state.timer = 30.0
+    state.collision_count = 0
+    state.destroyed_count = 0
+    empty!(state.entities_to_destroy)
+    scene_name[] = "Arena"
+    timer_seconds[] = state.timer
+    println("  [FSM] Entered Arena state")
+end
+
+function OpenReality.on_update!(state::ArenaState, sc::Scene, dt::Float64)
     frame_count[] += 1
 
     # Process deferred entity destructions (queued by collision callbacks)
-    for eid in entities_to_destroy[]
-        if has_entity(current_scene, eid)
-            destroy_entity!(current_scene, eid)
+    for eid in state.entities_to_destroy
+        if has_entity(sc, eid)
+            state.destroyed_count += 1
+            destroy_entity!(sc, eid)
         end
     end
-    empty!(entities_to_destroy[])
+    empty!(state.entities_to_destroy)
+
+    # Decrement timer
+    state.timer -= dt
+    timer_seconds[] = state.timer
 
     # Check for scene switch request
-    if switch_requested[]
+    if switch_requested[] || state.timer <= 0
         switch_requested[] = false
         total_switches[] += 1
-
-        if scene_name[] == "Arena"
-            scene_name[] = "Gallery"
-            collision_count[] = 0
-            destroyed_count[] = 0
-            return build_gallery_defs()
-        else
-            scene_name[] = "Arena"
-            collision_count[] = 0
-            destroyed_count[] = 0
-            return build_arena_defs()
-        end
+        return StateTransition(:gallery, build_gallery_defs())
     end
 
     return nothing
 end
 
+function OpenReality.on_exit!(state::ArenaState, sc::Scene)
+    println("  [FSM] Exiting Arena state (collisions: $(state.collision_count), destroyed: $(state.destroyed_count))")
+end
+
+function OpenReality.on_enter!(state::GalleryState, sc::Scene)
+    state.timer = 30.0
+    scene_name[] = "Gallery"
+    timer_seconds[] = state.timer
+    println("  [FSM] Entered Gallery state")
+end
+
+function OpenReality.on_update!(state::GalleryState, sc::Scene, dt::Float64)
+    frame_count[] += 1
+
+    # Decrement timer
+    state.timer -= dt
+    timer_seconds[] = state.timer
+
+    # Check for scene switch request
+    if switch_requested[] || state.timer <= 0
+        switch_requested[] = false
+        total_switches[] += 1
+        arena_state = ArenaState(30.0, 0, 0, EntityID[])
+        return StateTransition(:arena, build_arena_defs(arena_state.entities_to_destroy, Ref(arena_state.collision_count)))
+    end
+
+    return nothing
+end
+
+function OpenReality.on_exit!(state::GalleryState, sc::Scene)
+    println("  [FSM] Exiting Gallery state")
+end
+
+# =============================================================================
+# Scene Switching Hook
+# =============================================================================
+
 function custom_scene_switch(old_scene, new_defs)
     println()
     println("=" ^ 50)
     println("  [Scene Switch] Leaving '$(scene_name[])'")
-    println("  [Scene Switch] Cleaning up $(entity_count(old_scene)) entities...")
+    println("  [Scene Switch] Cleaning up...")
     reset_engine_state!()
     clear_audio_sources!()
     println("  [Scene Switch] Engine state reset. Building new scene...")
@@ -385,7 +398,7 @@ ui_callback = function(ctx::UIContext)
     panel_x = 10
     panel_y = 60
     panel_w = 290
-    panel_h = 230
+    panel_h = 260
 
     ui_rect(ctx, x=panel_x, y=panel_y, width=panel_w, height=panel_h,
             color=RGB{Float32}(0.05, 0.05, 0.1), alpha=0.8f0)
@@ -400,6 +413,7 @@ ui_callback = function(ctx::UIContext)
         ("destroy_entity!",       RGB{Float32}(1.0, 0.4, 0.4)),
         ("reset_engine_state!",   RGB{Float32}(0.8, 0.6, 1.0)),
         ("clear_audio_sources!",  RGB{Float32}(0.6, 0.8, 0.9)),
+        ("GameStateMachine",      RGB{Float32}(0.9, 0.6, 0.2)),
     ]
     for (i, (name, color)) in enumerate(features)
         ui_text(ctx, "* $name", x=panel_x + 15, y=panel_y + 22 + i * 26, size=16, color=color)
@@ -419,8 +433,6 @@ ui_callback = function(ctx::UIContext)
     stats = [
         ("Scene: $(scene_name[])",                         RGB{Float32}(0.8, 0.8, 0.8)),
         ("Timer: $(round(max(timer_seconds[], 0.0), digits=1))s", timer_color),
-        ("Collisions: $(collision_count[])",               RGB{Float32}(1.0, 0.6, 0.3)),
-        ("Destroyed: $(destroyed_count[])",                RGB{Float32}(1.0, 0.4, 0.4)),
         ("Scene Switches: $(total_switches[])",            RGB{Float32}(0.4, 0.7, 1.0)),
     ]
     for (i, (text, color)) in enumerate(stats)
@@ -456,17 +468,18 @@ end
 # =============================================================================
 
 println("=" ^ 70)
-println("  OpenReality — Scripting & Scene Switching Demo")
+println("  OpenReality — Scripting & Scene Switching Demo (FSM)")
 println("=" ^ 70)
 println()
 println("  New features demonstrated:")
 println("    1. ScriptComponent      — on_start / on_update / on_destroy lifecycle")
 println("    2. Script System        — update_scripts! runs each frame automatically")
 println("    3. CollisionCallbacks   — on_collision_enter / stay / exit detection")
-println("    4. Scene Switching      — on_update returns Vector{EntityDef} to switch")
+println("    4. Scene Switching      — FSM StateTransition triggers scene switch")
 println("    5. destroy_entity!      — runtime entity removal, fires on_destroy")
 println("    6. reset_engine_state!  — central cleanup during scene switch")
 println("    7. clear_audio_sources! — safe audio teardown between scenes")
+println("    8. GameStateMachine     — structured state management")
 println()
 println("  Controls: WASD to move, mouse to look, Shift to sprint, Esc to release cursor")
 println("            Click 'Switch Scene' button or wait 30s for automatic switch")
@@ -476,12 +489,14 @@ println()
 reset_entity_counter!()
 reset_component_stores!()
 
-initial_scene = scene(build_arena_defs())
+arena = ArenaState(30.0, 0, 0, EntityID[])
+fsm = GameStateMachine(:arena, build_arena_defs(arena.entities_to_destroy, Ref(arena.collision_count)))
+add_state!(fsm, :arena, arena)
+add_state!(fsm, :gallery, GalleryState(30.0))
 
-render(initial_scene,
-    ui=ui_callback,
-    on_update=game_update,
+render(fsm,
     on_scene_switch=custom_scene_switch,
+    ui=ui_callback,
     title="OpenReality — Scripting Demo",
     post_process=PostProcessConfig(
         tone_mapping=TONEMAP_ACES,

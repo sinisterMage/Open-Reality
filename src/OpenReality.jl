@@ -42,6 +42,7 @@ include("components/transform.jl")
 include("components/mesh.jl")
 include("components/material.jl")
 include("components/camera.jl")
+include("components/camera_controller.jl")
 include("components/lights.jl")
 include("components/primitives.jl")
 include("components/lod.jl")
@@ -53,6 +54,7 @@ include("physics/shapes.jl")
 
 include("components/rigidbody.jl")
 include("components/animation.jl")
+include("components/animation_blend_tree.jl")
 include("components/audio.jl")
 include("components/skeleton.jl")
 include("components/particle_system.jl")
@@ -87,10 +89,16 @@ include("audio/openal_backend.jl")
 include("systems/player_controller.jl")
 include("systems/physics.jl")
 include("systems/animation.jl")
+include("systems/animation_blend_tree.jl")
+include("systems/camera_controller.jl")
 include("systems/skinning.jl")
 include("systems/audio.jl")
 include("systems/particles.jl")
 include("systems/scripts.jl")
+
+# Game State Machine
+include("game/state_machine.jl")
+include("game/game_manager.jl")
 
 # UI system (after components and ECS — uses types)
 include("ui/types.jl")
@@ -299,6 +307,12 @@ export InterpolationMode, INTERP_STEP, INTERP_LINEAR, INTERP_CUBICSPLINE
 export AnimationChannel, AnimationClip, AnimationComponent
 export update_animations!
 
+# Export Animation Blend Trees
+export BlendNode, ClipNode, Blend1DNode, Blend2DNode
+export AnimationBlendTreeComponent
+export update_blend_tree!, transition_to_tree!
+export set_parameter!, set_bool_parameter!, fire_trigger!
+
 # Export Skeletal Animation
 export BoneComponent, SkinnedMeshComponent, BoneIndices4
 export update_skinned_meshes!, MAX_BONES
@@ -448,6 +462,10 @@ export Mat4d
 # Export Camera Utils
 export find_active_camera, get_view_matrix, get_projection_matrix
 
+# Export Camera Controllers
+export ThirdPersonCamera, OrbitCamera, CinematicCamera
+export update_camera_controllers!
+
 # Export Model Loading
 export load_model, load_obj, load_gltf
 
@@ -500,5 +518,9 @@ function render(scene::Scene;
 end
 
 export render
+
+# Export Game State Machine
+export GameState, StateTransition, GameStateMachine
+export add_state!, on_enter!, on_update!, on_exit!, get_ui_callback
 
 end  # module OpenReality

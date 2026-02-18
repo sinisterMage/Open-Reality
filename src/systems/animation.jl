@@ -8,6 +8,7 @@ values to target entity transforms.
 """
 function update_animations!(dt::Float64)
     iterate_components(AnimationComponent) do eid, anim
+        has_component(eid, AnimationBlendTreeComponent) && return
         !anim.playing && return
         anim.active_clip < 1 && return
         anim.active_clip > length(anim.clips) && return
@@ -33,88 +34,6 @@ function update_animations!(dt::Float64)
             _apply_channel!(channel, t)
         end
     end
-end
-
-# ---- Keyframe search ----
-
-"""
-    _find_keyframe_pair(times, t) -> (idx_a, idx_b, lerp_t)
-
-Binary-search for the pair of keyframes bounding time `t`.
-Returns indices into `times` and the interpolation factor in [0,1].
-"""
-function _find_keyframe_pair(times::Vector{Float32}, t::Float32)
-    n = length(times)
-    n == 0 && return (1, 1, 0.0f0)
-
-    if t <= times[1]
-        return (1, 1, 0.0f0)
-    end
-    if t >= times[end]
-        return (n, n, 0.0f0)
-    end
-
-    # Binary search
-    lo, hi = 1, n
-    while lo < hi - 1
-        mid = (lo + hi) >> 1
-        if times[mid] <= t
-            lo = mid
-        else
-            hi = mid
-        end
-    end
-
-    dt = times[hi] - times[lo]
-    lerp_t = dt > 0.0f0 ? (t - times[lo]) / dt : 0.0f0
-    return (lo, hi, lerp_t)
-end
-
-# ---- Interpolation helpers ----
-
-function _lerp_vec3d(a::Vec3d, b::Vec3d, t::Float32)
-    ft = Float64(t)
-    return Vec3d(
-        a[1] + (b[1] - a[1]) * ft,
-        a[2] + (b[2] - a[2]) * ft,
-        a[3] + (b[3] - a[3]) * ft
-    )
-end
-
-"""
-Spherical linear interpolation for unit quaternions.
-"""
-function _slerp(a::Quaterniond, b::Quaterniond, t::Float32)
-    ft = Float64(t)
-    # Ensure shortest path
-    d = a.s * b.s + a.v1 * b.v1 + a.v2 * b.v2 + a.v3 * b.v3
-    b_adj = d < 0.0 ? Quaterniond(-b.s, -b.v1, -b.v2, -b.v3) : b
-    d = abs(d)
-
-    if d > 0.9995
-        # Near-linear fallback
-        result = Quaterniond(
-            a.s  + (b_adj.s  - a.s)  * ft,
-            a.v1 + (b_adj.v1 - a.v1) * ft,
-            a.v2 + (b_adj.v2 - a.v2) * ft,
-            a.v3 + (b_adj.v3 - a.v3) * ft
-        )
-        # Normalize
-        len = sqrt(result.s^2 + result.v1^2 + result.v2^2 + result.v3^2)
-        return Quaterniond(result.s/len, result.v1/len, result.v2/len, result.v3/len)
-    end
-
-    theta = acos(clamp(d, -1.0, 1.0))
-    sin_theta = sin(theta)
-    wa = sin((1.0 - ft) * theta) / sin_theta
-    wb = sin(ft * theta) / sin_theta
-
-    return Quaterniond(
-        wa * a.s  + wb * b_adj.s,
-        wa * a.v1 + wb * b_adj.v1,
-        wa * a.v2 + wb * b_adj.v2,
-        wa * a.v3 + wb * b_adj.v3
-    )
 end
 
 # ---- Channel application ----
