@@ -8,6 +8,10 @@ const sections = [
   { label: 'Systems', to: '/docs/systems' },
   { label: 'Physics', to: '/docs/physics' },
   { label: 'Rendering', to: '/docs/rendering' },
+  { label: 'Scripting', to: '/docs/scripting' },
+  { label: 'Gameplay', to: '/docs/gameplay' },
+  { label: 'Terrain', to: '/docs/terrain' },
+  { label: 'Audio', to: '/docs/audio' },
 ]
 </script>
 

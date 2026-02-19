@@ -933,3 +933,113 @@ Key concepts:
 - **Chunks**: The terrain is split into chunks for frustum culling and LOD selection
 - **Splatmap**: An RGBA texture where each channel controls the blend weight of a terrain layer (up to 4 layers)
 - **`uv_scale`**: Controls texture tiling frequency per layer
+
+---
+
+## ScriptComponent
+
+```julia
+# Entities with custom behavior
+entity([
+    cube_mesh(),
+    MaterialComponent(color=RGB{Float32}(0.8, 0.2, 0.2)),
+    transform(),
+    ScriptComponent(
+        on_start = (eid, ctx) -> println("Started!"),
+        on_update = (eid, dt, ctx) -> begin
+            t = get_component(eid, TransformComponent)
+            t !== nothing && (t.position[] += Vec3d(0, sin(dt) * 0.01, 0))
+        end,
+        on_destroy = (eid, ctx) -> println("Destroyed!")
+    )
+])
+```
+
+---
+
+## Game State Machine
+
+```julia
+mutable struct GameplayState <: GameState
+    score::Int
+end
+GameplayState() = GameplayState(0)
+
+function on_update!(state::GameplayState, sc::Scene, dt::Float64, ctx::GameContext)
+    # Spawn entities dynamically
+    spawn!(ctx, entity([
+        sphere_mesh(),
+        MaterialComponent(color=RGB{Float32}(rand(), rand(), rand())),
+        transform(position=Vec3d(randn()*5, 10, randn()*5)),
+        ColliderComponent(shape=SphereShape(0.5f0)),
+        RigidBodyComponent(body_type=BODY_DYNAMIC, mass=1.0)
+    ]))
+    return nothing
+end
+
+function get_ui_callback(state::GameplayState)
+    return ctx -> ui_text(ctx, 10, 10, "Score: $(state.score)", size=24)
+end
+```
+
+---
+
+## Prefab System
+
+```julia
+# Define a reusable entity template
+coin_prefab = Prefab() do (; position=Vec3d(0,0,0), color=RGB{Float32}(1,0.8,0))
+    entity([
+        sphere_mesh(),
+        MaterialComponent(color=color, metallic=0.9f0, roughness=0.1f0),
+        transform(position=position),
+        ColliderComponent(shape=SphereShape(0.3f0), is_trigger=true)
+    ])
+end
+
+# Instantiate multiple coins
+spawn!(ctx, coin_prefab, position=Vec3d(5, 1, 0))
+spawn!(ctx, coin_prefab, position=Vec3d(10, 1, 0))
+```
+
+---
+
+## Event Bus
+
+```julia
+# Define a custom event
+struct CoinCollected <: GameEvent
+    entity_id::EntityID
+    value::Int
+end
+
+# Subscribe to events
+subscribe!(CoinCollected) do event
+    println("Collected coin worth $(event.value)!")
+end
+
+# Emit from game logic
+emit!(CoinCollected(some_entity_id, 10))
+```
+
+---
+
+## Animation Blend Trees
+
+```julia
+# Create a 1D blend tree for walk/run animation
+tree = AnimationBlendTreeComponent(
+    Blend1DNode("speed", Float32[0, 0.5, 1.0], [
+        ClipNode(idle_clip),
+        ClipNode(walk_clip),
+        ClipNode(run_clip)
+    ]),
+    Dict{String, Float32}("speed" => 0.0f0),
+    Dict{String, Bool}(),
+    Set{String}(),
+    0.0, false, 0.3f0, 0.0f0, nothing
+)
+
+# Update the blend parameter at runtime
+tree.parameters["speed"] = 0.7f0  # blends between walk and run
+```

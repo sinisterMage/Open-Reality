@@ -68,18 +68,22 @@ render(s,
     title="My Game",
     post_process=PostProcessConfig(
         bloom_enabled=true,
-        tone_mapping=TONE_MAPPING_ACES
+        tone_mapping=TONEMAP_ACES
     )
 )`
 
 const systemsCode = `# The render loop runs these systems automatically:
 # 1. clear_world_transform_cache!()
-# 2. update_animations!(dt)
-# 3. update_skinned_meshes!()
-# 4. update_physics!(dt)
-# 5. update_audio!(dt)
-# 6. update_particles!(dt)
-# 7. render_frame!(backend, scene)`
+# 2. update_player!(controller, input, dt)
+# 3. update_camera_controllers!(scene, dt)
+# 4. update_animations!(dt)
+# 5. update_blend_trees!(dt)
+# 6. update_skinned_meshes!()
+# 7. update_physics!(dt)
+# 8. update_scripts!(scene, dt, ctx)
+# 9. update_audio!(dt)
+# 10. update_particles!(dt)
+# 11. render_frame!(backend, scene)`
 </script>
 
 <template>

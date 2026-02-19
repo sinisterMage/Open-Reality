@@ -59,11 +59,19 @@ const postprocessCode = `render(s,
         bloom_intensity=0.5f0,
 
         # Tone mapping
-        tone_mapping=TONE_MAPPING_ACES,  # or REINHARD, UNCHARTED2
-        exposure=1.2f0,
+        tone_mapping=TONEMAP_ACES,  # or TONEMAP_REINHARD, TONEMAP_UNCHARTED2
 
         # Anti-aliasing
-        fxaa_enabled=true
+        fxaa_enabled=true,
+
+        # Depth of field
+        dof_enabled=true,
+        dof_focus_distance=10.0f0,
+        dof_focus_range=5.0f0,
+
+        # Motion blur
+        motion_blur_enabled=true,
+        motion_blur_intensity=1.0f0
     )
 )`
 
@@ -82,7 +90,7 @@ const shadowsCode = `# Cascaded Shadow Maps are automatic when
 entity([
     DirectionalLightComponent(
         direction=Vec3f(-0.5, -1, -0.3),
-        color=Vec3f(1, 1, 1),
+        color=RGB{Float32}(1, 1, 1),
         intensity=2.0f0
     )
 ])`
@@ -90,7 +98,7 @@ entity([
 const iblCode = `# Image-based lighting for environment reflections
 entity([
     IBLComponent(
-        environment_map="skybox.hdr",
+        environment_path="skybox.hdr",
         intensity=1.0f0
     )
 ])
@@ -100,7 +108,7 @@ entity([
 #   - Pre-filtered environment map (specular)
 #   - BRDF lookup texture`
 
-const deferredCode = `# Deferred rendering pipeline (Vulkan backend):
+const deferredCode = `# Deferred rendering pipeline (all backends):
 #
 # Geometry Pass (G-Buffer):
 #   - Albedo + metallic
@@ -181,7 +189,7 @@ const shaderVariantsCode = `# Shader features are compiled on-demand:
         <span class="text-or-green">#</span> Deferred Rendering Pipeline
       </h2>
       <p class="text-or-text-dim mb-4 leading-relaxed">
-        The Vulkan backend uses a full deferred pipeline with G-Buffer rendering,
+        All backends use a full deferred pipeline with G-Buffer rendering,
         decoupling geometry from lighting for efficient multi-light scenes.
       </p>
       <CodeBlock :code="deferredCode" lang="julia" filename="deferred.jl" />
@@ -241,7 +249,7 @@ const shaderVariantsCode = `# Shader features are compiled on-demand:
       </h2>
       <p class="text-or-text-dim mb-4 leading-relaxed">
         Configure the HDR post-processing pipeline with bloom, tone mapping, and anti-aliasing.
-        Additional screen-space effects (SSAO, SSR, TAA, DOF, motion blur) are available on the Vulkan backend.
+        Additional screen-space effects (SSAO, SSR, TAA, DOF, motion blur, vignette, color grading) are available on all backends.
       </p>
       <CodeBlock :code="postprocessCode" lang="julia" filename="postprocess.jl" />
     </section>

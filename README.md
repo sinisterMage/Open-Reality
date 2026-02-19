@@ -36,6 +36,21 @@ OpenReality provides AAA-quality rendering with a clean functional API. Define s
 - glTF 2.0 and OBJ model loading
 - Built-in FPS player controller
 - Scene export to binary ORSB format for web deployment
+- Game State Machine (FSM) with scene transitions
+- GameContext for deferred entity spawning/despawning
+- ScriptComponent lifecycle (on_start, on_update, on_destroy)
+- Collision callbacks (enter, stay, exit)
+- Prefab system for reusable entity templates
+- EventBus publish-subscribe for game events
+- Camera controllers: third-person, orbit, cinematic
+- Input mapping with gamepad support
+- Animation blend trees (1D and 2D blending)
+- Depth of field, motion blur, vignette, color grading
+- Opt-in multithreading with snapshot-based parallelism
+- Instanced rendering for batched draw calls
+- AssetManager with async loading
+- Save/load game serialization
+- Debug drawing (lines, boxes, spheres)
 
 ## Quick Start
 

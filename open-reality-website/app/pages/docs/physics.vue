@@ -34,8 +34,8 @@ ConvexHullShape(points::Vector{Vec3f})
 
 # Compound (multiple shapes with local offsets)
 CompoundShape([
-    (AABBShape(), Vec3f(0, 0, 0), Quaterniond(1,0,0,0)),
-    (SphereShape(0.5f0), Vec3f(0, 1, 0), Quaterniond(1,0,0,0)),
+    CompoundChild(AABBShape(), Vec3d(0, 0, 0), Quaterniond(1,0,0,0)),
+    CompoundChild(SphereShape(0.5f0), Vec3d(0, 1, 0), Quaterniond(1,0,0,0)),
 ])
 
 # Heightmap (terrain)

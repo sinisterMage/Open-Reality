@@ -1081,3 +1081,251 @@ const Quaterniond = Quaternion{Float64}
 
 - Use `Vec3d` for positions and transforms (double precision for numerical stability)
 - Use `Vec3f` for directions, normals, and material properties (single precision for GPU)
+
+---
+
+## Game Loop
+
+### render()
+
+```julia
+# Basic scene rendering
+render(scene::Scene; backend, width, height, title, post_process, ui, on_update, on_scene_switch, shadows)
+
+# FSM-driven rendering
+render(fsm::GameStateMachine; backend, width, height, title, post_process, shadows)
+```
+
+**Parameters:**
+- `scene` — Scene to render
+- `backend` — `OpenGLBackend()`, `VulkanBackend()`, `MetalBackend()`, or `WebGPUBackend()`
+- `width`, `height` — Window dimensions (default: 1280x720)
+- `title` — Window title
+- `post_process` — `PostProcessConfig(...)` for bloom, tone mapping, etc.
+- `ui` — `function(ctx::UIContext)` callback for immediate-mode UI
+- `on_update` — `function(scene, dt, input)::Scene` called each frame
+- `on_scene_switch` — `function(new_scene)` called when FSM transitions rebuild the scene
+- `shadows` — `true`/`false` to enable/disable shadow mapping
+
+---
+
+## Game State Machine
+
+```julia
+abstract type GameState end
+
+mutable struct StateTransition
+    target::Symbol
+    new_scene_defs::Union{Vector, Nothing}
+end
+
+mutable struct GameStateMachine
+    states::Dict{Symbol, GameState}
+    initial_state::Symbol
+    initial_scene_defs::Vector
+end
+```
+
+**Overridable callbacks:**
+```julia
+on_enter!(state::GameState, sc::Scene)
+on_update!(state::GameState, sc::Scene, dt::Float64, ctx::GameContext)
+on_exit!(state::GameState, sc::Scene)
+get_ui_callback(state::GameState) -> Union{Function, Nothing}
+```
+
+Return a `StateTransition` from `on_update!` to switch states. If `new_scene_defs` is provided, the scene is rebuilt from those definitions.
+
+---
+
+## GameContext
+
+```julia
+mutable struct GameContext
+    scene::Scene
+    input::InputState
+end
+
+spawn!(ctx::GameContext, entity_def::EntityDef) -> EntityID
+spawn!(ctx::GameContext, prefab::Prefab; kwargs...) -> EntityID
+despawn!(ctx::GameContext, entity_id::EntityID)
+apply_mutations!(ctx::GameContext, scene::Scene) -> Scene
+```
+
+Deferred entity creation and removal. Mutations are collected during `on_update!` and applied atomically after the callback returns.
+
+---
+
+## ScriptComponent
+
+```julia
+ScriptComponent(;
+    on_start::Union{Function, Nothing} = nothing,
+    on_update::Union{Function, Nothing} = nothing,
+    on_destroy::Union{Function, Nothing} = nothing
+)
+```
+
+**Callback signatures:**
+- `on_start(entity_id, ctx)` — called once on first tick
+- `on_update(entity_id, dt, ctx)` — called every frame
+- `on_destroy(entity_id, ctx)` — called when entity is destroyed
+
+Error budget: after 5 consecutive errors, the script is auto-disabled.
+
+---
+
+## CollisionCallbackComponent
+
+```julia
+CollisionCallbackComponent(;
+    on_collision_enter = nothing,
+    on_collision_stay = nothing,
+    on_collision_exit = nothing
+)
+```
+
+Callbacks receive `(this_entity, other_entity, manifold)`. The `manifold` is `nothing` for exit events.
+
+---
+
+## Prefab
+
+```julia
+struct Prefab
+    factory::Function
+end
+
+instantiate(prefab::Prefab; kwargs...) -> EntityDef
+```
+
+Reusable entity templates. The factory function receives keyword arguments and returns an `EntityDef`.
+
+---
+
+## EventBus
+
+```julia
+abstract type GameEvent end
+
+subscribe!(::Type{T}, callback::Function) where T <: GameEvent
+emit!(event::T) where T <: GameEvent
+unsubscribe!(::Type{T}, callback::Function) where T <: GameEvent
+reset_event_bus!()
+```
+
+Publish-subscribe system for decoupled game events.
+
+---
+
+## Camera Controllers
+
+```julia
+# Third-person camera that orbits a target entity
+ThirdPersonCamera(target_entity, distance, ...)
+
+# Orbit camera around a fixed point
+OrbitCamera(target_position, distance, ...)
+
+# Cinematic camera with path-based movement
+CinematicCamera(move_speed, sensitivity, path, ...)
+```
+
+Updated automatically by `update_camera_controllers!()` each frame.
+
+---
+
+## Input Mapping
+
+```julia
+struct InputMap
+    bindings::Dict{String, ActionBinding}
+    states::Dict{String, ActionState}
+end
+
+bind!(map, action_name, source::InputSource) -> InputMap
+is_action_pressed(map, name) -> Bool
+is_action_just_pressed(map, name) -> Bool
+get_axis(map, name) -> Float32
+create_default_player_map() -> InputMap
+```
+
+Sources: `KeyboardKey(key)`, `MouseButton(button)`, `GamepadButton(joystick_id, button_index)`, `GamepadAxis(joystick_id, axis_index, positive)`.
+
+---
+
+## Animation Blend Trees
+
+```julia
+AnimationBlendTreeComponent(
+    root::BlendNode,
+    parameters::Dict{String, Float32},
+    ...
+)
+```
+
+Blend nodes: `ClipNode(clip)`, `Blend1DNode(parameter, thresholds, children)`, `Blend2DNode(param_x, param_y, positions, children)`.
+
+---
+
+## Post-Processing (Full Reference)
+
+```julia
+PostProcessConfig(;
+    bloom_enabled=false, bloom_threshold=1.0f0, bloom_intensity=0.3f0,
+    ssao_enabled=false, ssao_radius=0.5f0, ssao_samples=16,
+    tone_mapping=TONEMAP_REINHARD,  # TONEMAP_ACES, TONEMAP_UNCHARTED2
+    fxaa_enabled=false, gamma=2.2f0,
+    dof_enabled=false, dof_focus_distance=10.0f0, dof_focus_range=5.0f0, dof_bokeh_radius=3.0f0,
+    motion_blur_enabled=false, motion_blur_intensity=1.0f0, motion_blur_samples=8,
+    vignette_enabled=false, vignette_intensity=0.4f0, vignette_radius=0.8f0,
+    color_grading_enabled=false, color_grading_brightness=0.0f0, color_grading_contrast=1.0f0, color_grading_saturation=1.0f0
+)
+```
+
+---
+
+## Threading
+
+```julia
+use_threading(val::Bool=true)     # Enable/disable multithreading
+threading_enabled() -> Bool        # Check if threading is on
+snapshot_transforms() -> Dict{EntityID, TransformSnapshot}  # Thread-safe read
+snapshot_components(::Type{T}) -> Dict{EntityID, T}
+```
+
+Opt-in multithreading with snapshot-based reads for safe parallel access.
+
+---
+
+## Asset Management
+
+```julia
+get_model(path::String) -> Vector{EntityDef}     # Load or retrieve from cache
+preload!(path::String)                             # Warm the cache
+load_model_async(loader, path; kwargs...)           # Non-blocking load
+poll_async_loads!(loader) -> Vector{AsyncLoadResult}
+```
+
+---
+
+## Save/Load
+
+```julia
+save_game(scene::Scene, path::String)    # Serialize scene to binary file
+load_game(path::String) -> Scene          # Deserialize scene from file
+```
+
+Uses Julia's `Serialization` stdlib. Components registered as non-serializable (e.g., `ScriptComponent`) are skipped.
+
+---
+
+## Debug Drawing
+
+```julia
+debug_line!(start_pos::Vec3f, end_pos::Vec3f, color=RGB{Float32}(0,1,0))
+debug_box!(center::Vec3f, half_extents::Vec3f, color=RGB{Float32}(0,1,0))
+debug_sphere!(center::Vec3f, radius::Float32, color=RGB{Float32}(0,1,0))
+```
+
+Enabled by setting `ENV["OPENREALITY_DEBUG"] = "true"` before loading the module. No-ops otherwise.

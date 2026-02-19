@@ -117,7 +117,7 @@ const runCode = `julia --project=. examples/hello_cube.jl`
       </h2>
       <CodeBlock :code="testCode" lang="bash" filename="terminal" />
       <p class="text-or-text-dim mt-4 leading-relaxed">
-        The test suite covers ECS, scene graph, physics, rendering abstractions, audio, UI, skeletal animation, particles, and scene export. All 656 tests should pass.
+        The test suite covers ECS, scene graph, physics, rendering abstractions, audio, UI, skeletal animation, particles, and scene export. All 938 tests should pass.
       </p>
     </section>
 

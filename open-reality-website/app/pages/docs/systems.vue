@@ -8,13 +8,18 @@ useSeoMeta({
 })
 
 const pipelineCode = `# Executed automatically each frame by render():
-clear_world_transform_cache!()   # invalidate cached matrices
-update_animations!(dt)            # keyframe interpolation
-update_skinned_meshes!()          # bone matrix computation
-update_physics!(dt)               # physics simulation step
-update_audio!(dt)                 # 3D audio sync
-update_particles!(dt)             # particle emission & simulation
-render_frame!(backend, scene)     # GPU rendering`
+clear_world_transform_cache!()        # invalidate cached matrices
+update_player!(controller, input, dt) # FPS controls
+update_camera_controllers!(scene, dt) # orbit/third-person/cinematic
+update_animations!(dt)                # keyframe interpolation
+update_blend_trees!(dt)               # animation blend trees
+update_skinned_meshes!()              # bone matrix computation
+update_physics!(dt)                   # physics simulation step
+update_collision_callbacks!()         # collision event dispatch
+update_scripts!(scene, dt, ctx)       # ScriptComponent lifecycle
+update_audio!(dt)                     # 3D audio sync
+update_particles!(dt)                 # particle emission & simulation
+render_frame!(backend, scene)         # GPU rendering`
 
 const playerCode = `# Auto-detected when PlayerComponent exists in scene
 # Provides FPS-style controls:

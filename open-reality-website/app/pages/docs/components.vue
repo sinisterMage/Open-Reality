@@ -20,7 +20,7 @@ plane_mesh()
 
 # Or provide custom geometry
 MeshComponent(
-    positions=Point3f[...],
+    vertices=Point3f[...],
     indices=UInt32[...],
     normals=Vec3f[...],
     uvs=Vec2f[...]
@@ -57,20 +57,20 @@ const cameraCode = `CameraComponent(
 const lightsCode = `# Directional light (sun)
 DirectionalLightComponent(
     direction=Vec3f(0, -1, -0.5),
-    color=Vec3f(1, 1, 1),
+    color=RGB{Float32}(1, 1, 1),
     intensity=1.5f0
 )
 
 # Point light
 PointLightComponent(
-    color=Vec3f(1, 0.8, 0.6),
+    color=RGB{Float32}(1, 0.8, 0.6),
     intensity=5.0f0,
     range=20.0f0
 )
 
 # Image-based lighting
 IBLComponent(
-    environment_map="env.hdr",
+    environment_path="env.hdr",
     intensity=1.0f0
 )`
 
@@ -103,11 +103,11 @@ const animationCode = `AnimationComponent(
             target_property=:position,  # or :rotation, :scale
             times=Float32[0, 0.5, 1.0],
             values=[Vec3d(0,0,0), Vec3d(0,1,0), Vec3d(0,0,0)],
-            interpolation=LINEAR  # STEP, LINEAR, CUBICSPLINE
+            interpolation=INTERP_LINEAR  # INTERP_STEP, INTERP_LINEAR, INTERP_CUBICSPLINE
         )],
         duration=1.0f0
     )],
-    current_clip=1,
+    active_clip=1,
     playing=true,
     looping=true,
     speed=1.0f0
@@ -149,21 +149,28 @@ const particleCode = `ParticleSystemComponent(
     lifetime_max=2.0f0,
     velocity_min=Vec3f(-1, 2, -1),
     velocity_max=Vec3f(1, 5, 1),
-    gravity=Vec3f(0, -9.81, 0),
+    gravity_modifier=1.0f0,    # multiplier on (0, -9.81, 0)
     damping=0.98f0,
-    start_size=0.2f0,
+    start_size_min=0.1f0,
+    start_size_max=0.3f0,
     end_size=0.0f0,
-    start_color=Vec4f(1, 0.5, 0, 1),
-    end_color=Vec4f(1, 0, 0, 0)
+    start_color=RGB{Float32}(1, 0.5, 0),
+    end_color=RGB{Float32}(1, 0, 0),
+    start_alpha=1.0f0,
+    end_alpha=0.0f0,
+    additive=false
 )`
 
 const playerCode = `PlayerComponent(
-    speed=5.0,
-    sprint_multiplier=2.0,
-    sensitivity=0.002
+    move_speed=5.0f0,
+    sprint_multiplier=2.0f0,
+    mouse_sensitivity=0.002f0
 )
 # Enables FPS controls automatically:
-# WASD, mouse look, Space/Ctrl, Shift sprint`
+# WASD, mouse look, Space/Ctrl, Shift sprint
+
+# Or use create_player() for a ready-made entity:
+create_player(position=Vec3d(0, 2, 5))`
 
 const components = [
   { id: 'transform', title: 'TransformComponent', code: transformCode, desc: 'Position, rotation, and scale with Observable reactivity. Uses Float64 for CPU-side precision. Parent-child transform inheritance is handled automatically by the scene graph.' },

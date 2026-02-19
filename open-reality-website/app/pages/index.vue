@@ -46,7 +46,7 @@ const features = [
   {
     tag: 'CLI',
     title: 'Developer Tooling',
-    description: 'Rust TUI dashboard, Bazel monorepo management, 656 tests. Built for real development.',
+    description: 'Rust TUI dashboard, Bazel monorepo management, 938 tests. Built for real development.',
   },
 ]
 
@@ -72,8 +72,7 @@ render(s,
     post_process=PostProcessConfig(
         bloom_enabled=true,
         bloom_threshold=1.0f0,
-        tone_mapping=TONE_MAPPING_ACES,
-        exposure=1.2f0,
+        tone_mapping=TONEMAP_ACES,
         fxaa_enabled=true
     )
 )`
@@ -120,7 +119,7 @@ julia --project=. -e 'using Pkg; Pkg.test()'`
     <!-- Stats -->
     <section class="border-y border-or-border bg-or-surface">
       <div class="max-w-7xl mx-auto px-4 grid grid-cols-2 md:grid-cols-4 divide-x divide-or-border">
-        <StatBadge value="656" label="Tests Passing" />
+        <StatBadge value="938" label="Tests Passing" />
         <StatBadge value="4" label="Render Backends" />
         <StatBadge value="ECS" label="Architecture" />
         <StatBadge value="PBR" label="Full Pipeline" />

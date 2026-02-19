@@ -665,3 +665,118 @@ Make sure every visible entity has both a `MeshComponent` (or a primitive like `
 - [API Reference](api-reference.md) — full documentation of every component, function, and type
 - [Architecture](architecture.md) — how the engine works internally
 - [Examples](examples.md) — annotated code samples for common patterns
+
+---
+
+## Tutorial 12: Scripting with ScriptComponent
+
+Add custom behavior to entities using lifecycle callbacks.
+
+```julia
+using OpenReality
+
+# A rotating cube script
+s = scene([
+    create_player(position=Vec3d(0, 2, 5)),
+    entity([DirectionalLightComponent(direction=Vec3f(0, -1, -0.5), intensity=2.0f0)]),
+    entity([
+        cube_mesh(),
+        MaterialComponent(color=RGB{Float32}(0.2, 0.6, 1.0)),
+        transform(),
+        ScriptComponent(
+            on_start = (eid, ctx) -> println("Entity $eid started!"),
+            on_update = (eid, dt, ctx) -> begin
+                t = get_component(eid, TransformComponent)
+                if t !== nothing
+                    current = t.rotation[]
+                    rot = Quaterniond(cos(dt), 0, sin(dt), 0)
+                    t.rotation[] = current * rot
+                end
+            end
+        )
+    ])
+])
+
+render(s)
+```
+
+---
+
+## Tutorial 13: Game States with FSM
+
+Use `GameStateMachine` for multi-state games with scene transitions.
+
+```julia
+using OpenReality
+
+mutable struct MenuState <: GameState end
+mutable struct PlayState <: GameState end
+
+function on_enter!(state::MenuState, sc::Scene)
+    println("Entered menu")
+end
+
+function on_update!(state::MenuState, sc::Scene, dt::Float64, ctx::GameContext)
+    if ctx.input.keys_pressed[Int(GLFW.KEY_ENTER)+1]
+        return StateTransition(:play, [
+            create_player(position=Vec3d(0, 2, 5)),
+            entity([DirectionalLightComponent(direction=Vec3f(0, -1, -0.5), intensity=2.0f0)]),
+            entity([cube_mesh(), MaterialComponent(), transform()])
+        ])
+    end
+    return nothing
+end
+
+function get_ui_callback(state::MenuState)
+    return ctx -> ui_text(ctx, 400, 300, "Press ENTER to play", size=32)
+end
+
+function on_update!(state::PlayState, sc::Scene, dt::Float64, ctx::GameContext)
+    return nothing
+end
+
+menu_scene = [entity([CameraComponent(fov=60.0), transform(position=Vec3d(0, 2, 5))])]
+
+fsm = GameStateMachine(:menu, menu_scene)
+fsm.states[:menu] = MenuState()
+fsm.states[:play] = PlayState()
+
+render(fsm)
+```
+
+---
+
+## Tutorial 14: Camera Controllers
+
+Use third-person, orbit, or cinematic cameras instead of the default FPS controller.
+
+```julia
+using OpenReality
+
+# Third-person camera following a target entity
+s = scene([
+    # Target entity
+    entity([
+        cube_mesh(),
+        MaterialComponent(color=RGB{Float32}(0.2, 0.8, 0.2)),
+        transform()
+    ]),
+    # Camera with controller (target_entity resolved after scene creation)
+    entity([
+        CameraComponent(fov=60.0),
+        OrbitCamera(
+            target_position=Vec3d(0, 0, 0),
+            distance=10.0f0,
+            yaw=0.0, pitch=-0.3,
+            zoom_speed=2.0f0,
+            pan_speed=1.0f0,
+            smoothing=0.1f0
+        ),
+        transform(position=Vec3d(0, 5, 10))
+    ]),
+    entity([DirectionalLightComponent(direction=Vec3f(0, -1, -0.5), intensity=2.0f0)]),
+    entity([plane_mesh(), MaterialComponent(), transform()])
+])
+
+render(s)
+```

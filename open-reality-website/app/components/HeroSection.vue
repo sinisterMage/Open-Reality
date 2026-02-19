@@ -36,7 +36,7 @@ render(s, backend=VulkanBackend())`
         <div>
           <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-or-border text-or-text-dim text-xs font-mono mb-6">
             <span class="w-2 h-2 rounded-full bg-or-green animate-pulse" />
-            v0.1 &mdash; 656 tests passing
+            v0.1 &mdash; 938 tests passing
           </div>
 
           <h1 class="text-4xl sm:text-5xl lg:text-6xl font-bold font-mono leading-tight">

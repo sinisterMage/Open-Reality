@@ -83,8 +83,11 @@ The scene graph is **immutable and functional**. Every operation that modifies t
 ```julia
 struct Scene
     entities::Vector{EntityID}
-    hierarchy::Dict{EntityID, Vector{EntityID}}
-    root_entities::Vector{EntityID}
+    hierarchy::Dict{EntityID, Vector{EntityID}}  # parent → children
+    root_entities::Vector{EntityID}              # entities with no parent
+    entity_set::Set{EntityID}                    # O(1) entity membership
+    parent_map::Dict{EntityID, EntityID}         # child → parent, O(1) lookup
+    root_set::Set{EntityID}                      # O(1) root membership
 end
 ```
 
@@ -118,9 +121,13 @@ Parent-child relationships are stored in `hierarchy::Dict{EntityID, Vector{Entit
 
 2. System Updates (sequential)
    ├─ update_player!(controller, input, dt)
+   ├─ update_camera_controllers!(scene, dt)
    ├─ update_animations!(dt)
+   ├─ update_blend_trees!(dt)
    ├─ update_skinned_meshes!()
    ├─ update_physics!(dt)
+   ├─ update_collision_callbacks!()
+   ├─ update_scripts!(scene, dt, ctx)
    ├─ update_audio!(dt)
    ├─ update_particles!(dt)
    └─ update_terrain_lod!(scene)
@@ -454,30 +461,44 @@ src/
 ├── ecs.jl                      # Entity Component System
 ├── scene.jl                    # Immutable scene graph
 ├── state.jl                    # Reactive state (Observable alias)
+├── threading.jl                # Opt-in multithreading (TransformSnapshot)
 │
 ├── components/
 │   ├── transform.jl            # TransformComponent (Observable-based)
 │   ├── mesh.jl                 # MeshComponent
 │   ├── material.jl             # MaterialComponent (PBR)
 │   ├── camera.jl               # CameraComponent
+│   ├── camera_controller.jl    # ThirdPersonCamera, OrbitCamera, CinematicCamera
 │   ├── lights.jl               # PointLight, DirectionalLight, IBL
 │   ├── collider.jl             # ColliderComponent, AABBShape, SphereShape, ...
 │   ├── rigidbody.jl            # RigidBodyComponent, BodyType, CCDMode
 │   ├── animation.jl            # AnimationComponent, AnimationClip
+│   ├── animation_blend_tree.jl # AnimationBlendTreeComponent
 │   ├── skeleton.jl             # BoneComponent, SkinnedMeshComponent
 │   ├── audio.jl                # AudioListenerComponent, AudioSourceComponent
 │   ├── particle_system.jl      # ParticleSystemComponent
 │   ├── lod.jl                  # LODComponent, LODLevel, LODTransitionMode
 │   ├── terrain.jl              # TerrainComponent, HeightmapSource, TerrainLayer
 │   ├── primitives.jl           # cube_mesh, sphere_mesh, plane_mesh
-│   └── player.jl               # PlayerComponent, create_player
+│   ├── player.jl               # PlayerComponent, create_player
+│   ├── script.jl               # ScriptComponent (on_start/on_update/on_destroy)
+│   ├── collision_callbacks.jl  # CollisionCallbackComponent
+│   └── guards.jl               # Guard conditions for state transitions
+│
+├── game/
+│   ├── state_machine.jl        # GameState, GameStateMachine, StateTransition
+│   ├── context.jl              # GameContext, spawn!, despawn!, apply_mutations!
+│   ├── prefab.jl               # Prefab, instantiate
+│   ├── event_bus.jl            # EventBus, subscribe!, emit!, unsubscribe!
+│   └── script.jl               # update_scripts! system
 │
 ├── math/
 │   └── transforms.jl           # Matrix utilities, type aliases
 │
 ├── windowing/
 │   ├── glfw.jl                 # GLFW window management
-│   └── input.jl                # InputState (keyboard, mouse)
+│   ├── input.jl                # InputState (keyboard, mouse)
+│   └── input_mapping.jl        # InputMap, ActionBinding, gamepad support
 │
 ├── audio/
 │   └── openal_backend.jl       # OpenAL device/context/buffer/source wrappers
@@ -511,6 +532,12 @@ src/
 │   ├── particles.jl            # update_particles!(dt)
 │   ├── terrain.jl              # update_terrain_lod!(scene)
 │   └── player_controller.jl    # FPS input handling
+│
+├── debug/
+│   └── debug_draw.jl           # DebugDraw — wireframe lines, boxes, spheres
+│
+├── serialization/
+│   └── save_load.jl            # save_game / load_game scene serialization
 │
 ├── rendering/
 │   ├── pipeline.jl             # RenderPipeline manager
@@ -550,6 +577,8 @@ examples/
 ├── basic_scene.jl              # Simple PBR scene
 ├── pbr_showcase.jl             # Advanced materials + post-processing
 ├── features_showcase.jl        # Animation, shadows, lighting
+├── scripting_demo.jl           # FSM, scripting, scene switching
+├── maze_game.jl                # First-person 3D maze game
 ├── boulder_scene.jl            # Primitives showcase
 ├── physics_demo.jl             # Physics engine showcase
 ├── vulkan_test.jl              # Vulkan backend test
@@ -559,7 +588,7 @@ examples/
 └── wasm_export_test.jl         # ORSB scene export test
 
 test/
-└── runtests.jl                 # Test suite (656 tests)
+└── runtests.jl                 # Test suite (938 tests)
 ```
 
 ---
