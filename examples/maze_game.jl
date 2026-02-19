@@ -46,6 +46,22 @@ function grid_to_world(row::Int, col::Int)
     return (x, z)
 end
 
+function world_to_grid(x::Real, z::Real)
+    rows, cols = size(MAZE)
+    col = round(Int, x / CELL_SIZE + (cols - 1) / 2) + 1
+    row = round(Int, z / CELL_SIZE + (rows - 1) / 2) + 1
+    return (row, col)
+end
+
+function is_wall_at(x::Real, z::Real)
+    row, col = world_to_grid(x, z)
+    rows, cols = size(MAZE)
+    (row < 1 || row > rows || col < 1 || col > cols) && return true
+    return MAZE[row, col] == 1
+end
+
+const PLAYER_RADIUS = 0.35
+
 function build_maze_entities()
     entities = Any[]
     rows, cols = size(MAZE)
@@ -61,9 +77,9 @@ function build_maze_entities()
         cell = MAZE[row, col]
 
         if cell == 1
-            # Wall block
+            # Wall block — cube fills the full cell
             push!(entities, entity([
-                cube_mesh(size=Float32(CELL_SIZE / 2)),
+                cube_mesh(size=Float32(CELL_SIZE)),
                 MaterialComponent(
                     color=wall_color,
                     roughness=0.85f0,
@@ -223,12 +239,71 @@ function build_full_scene(goal_pos::Vec3d, playing_state::PlayingState)
         tc.position[] = Vec3d(pos[1], new_y, pos[3])
     end
 
+    # Grid-based collision: push player out of walls each frame
+    maze_collide = function(eid, dt, ctx)
+        tc = get_component(eid, TransformComponent)
+        tc === nothing && return
+        pos = tc.position[]
+        x, z = pos[1], pos[3]
+
+        # Check the 4 axis-aligned directions for wall overlap
+        half = CELL_SIZE / 2.0
+        rows, cols = size(MAZE)
+
+        for dr in -1:1, dc in -1:1
+            row, col = world_to_grid(x, z)
+            r, c = row + dr, col + dc
+            (r < 1 || r > rows || c < 1 || c > cols) && continue
+            MAZE[r, c] != 1 && continue
+
+            # Wall center
+            wx, wz = grid_to_world(r, c)
+
+            # Nearest point on wall AABB to player
+            cx = clamp(x, wx - half, wx + half)
+            cz = clamp(z, wz - half, wz + half)
+            dx = x - cx
+            dz = z - cz
+            dist = sqrt(dx * dx + dz * dz)
+
+            if dist < PLAYER_RADIUS && dist > 1e-6
+                # Push player out
+                nx, nz = dx / dist, dz / dist
+                push_dist = PLAYER_RADIUS - dist
+                x += nx * push_dist
+                z += nz * push_dist
+            elseif dist < 1e-6
+                # Player center is inside the wall — push to nearest edge
+                to_left  = (x - (wx - half))
+                to_right = ((wx + half) - x)
+                to_back  = (z - (wz - half))
+                to_front = ((wz + half) - z)
+                min_pen = min(to_left, to_right, to_back, to_front)
+                if min_pen == to_left
+                    x = wx - half - PLAYER_RADIUS
+                elseif min_pen == to_right
+                    x = wx + half + PLAYER_RADIUS
+                elseif min_pen == to_back
+                    z = wz - half - PLAYER_RADIUS
+                else
+                    z = wz + half + PLAYER_RADIUS
+                end
+            end
+        end
+
+        tc.position[] = Vec3d(x, pos[2], z)
+    end
+
     # Start position (first open cell after top-left corner)
     start_x, start_z = grid_to_world(2, 2)
 
+    # Player with maze collision script
+    player_def = create_player(position=Vec3d(start_x, 1.7, start_z))
+    push!(player_def.components, ScriptComponent(on_update=maze_collide))
+
     scene_defs = Any[
         # --- Player ---
-        create_player(position=Vec3d(start_x, 1.7, start_z)),
+        player_def,
 
         # --- Lighting ---
         entity([
