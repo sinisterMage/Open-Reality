@@ -13,34 +13,30 @@ using StaticArrays
     @testset "ECS" begin
         @testset "World-based entity creation" begin
             world = World()
-            @test world.next_entity_id == 1
 
-            id1 = create_entity!(world)
-            @test id1 == 1
-            @test world.next_entity_id == 2
+            id1 = create_entity!(World())
+            @test id1._id == 2
 
-            id2 = create_entity!(world)
-            @test id2 == 2
+            id2 = create_entity!(World())
+            @test id2._id == 3
         end
 
         @testset "Global entity ID generation" begin
-            reset_entity_counter!()
-
-            id1 = create_entity_id()
-            id2 = create_entity_id()
+            id1 = create_entity!(World())
+            id2 = create_entity!(World())
 
             @test id1 != id2
-            @test id2 == id1 + 1
+            @test id2._id == id1._id + 1
             @test typeof(id1) == EntityID
         end
 
         @testset "Component storage" begin
             reset_component_stores!()
-            reset_entity_counter!()
+            
 
             # Create entities
-            e1 = create_entity_id()
-            e2 = create_entity_id()
+            e1 = create_entity!(World())
+            e2 = create_entity!(World())
 
             # Add components (using new Observable-based TransformComponent)
             add_component!(e1, transform(position=Vec3d(1, 2, 3)))
@@ -67,9 +63,9 @@ using StaticArrays
 
         @testset "Component replacement" begin
             reset_component_stores!()
-            reset_entity_counter!()
+            
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
 
             # Add initial component
             add_component!(e1, transform(position=Vec3d(1, 1, 1)))
@@ -85,11 +81,11 @@ using StaticArrays
 
         @testset "Component removal" begin
             reset_component_stores!()
-            reset_entity_counter!()
+            
 
-            e1 = create_entity_id()
-            e2 = create_entity_id()
-            e3 = create_entity_id()
+            e1 = create_entity!(World())
+            e2 = create_entity!(World())
+            e3 = create_entity!(World())
 
             add_component!(e1, transform(position=Vec3d(1, 0, 0)))
             add_component!(e2, transform(position=Vec3d(2, 0, 0)))
@@ -114,10 +110,10 @@ using StaticArrays
 
         @testset "Component iteration" begin
             reset_component_stores!()
-            reset_entity_counter!()
+            
 
-            e1 = create_entity_id()
-            e2 = create_entity_id()
+            e1 = create_entity!(World())
+            e2 = create_entity!(World())
 
             add_component!(e1, transform(position=Vec3d(1, 0, 0)))
             add_component!(e2, transform(position=Vec3d(2, 0, 0)))
@@ -139,9 +135,9 @@ using StaticArrays
 
         @testset "Multiple component types" begin
             reset_component_stores!()
-            reset_entity_counter!()
+            
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
 
             # Add multiple component types to same entity
             add_component!(e1, transform(position=Vec3d(1, 2, 3)))
@@ -182,11 +178,10 @@ using StaticArrays
         end
 
         @testset "Immutable Scene" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
             s1 = Scene()
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
 
             s2 = add_entity(s1, e1)
 
@@ -202,13 +197,12 @@ using StaticArrays
         end
 
         @testset "Entity hierarchy" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
             s = Scene()
-            parent_id = create_entity_id()
-            child1_id = create_entity_id()
-            child2_id = create_entity_id()
+            parent_id = create_entity!(World())
+            child1_id = create_entity!(World())
+            child2_id = create_entity!(World())
 
             # Build hierarchy: parent -> [child1, child2]
             s = add_entity(s, parent_id, nothing)
@@ -233,7 +227,6 @@ using StaticArrays
         end
 
         @testset "Scene construction with entity definitions" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
             # Create scene with hierarchy using entity definitions
@@ -265,7 +258,6 @@ using StaticArrays
         end
 
         @testset "Single component entity convenience" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
             s = scene([
@@ -279,7 +271,6 @@ using StaticArrays
         end
 
         @testset "Scene traversal" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
             # Create a tree: root -> [child1 -> [grandchild], child2]
@@ -302,7 +293,7 @@ using StaticArrays
         end
 
         @testset "Scene traversal with depth" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
 
             # Create: root (depth 0) -> child (depth 1) -> grandchild (depth 2)
@@ -320,7 +311,7 @@ using StaticArrays
         end
 
         @testset "Get descendants and ancestors" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
 
             # Create: root -> child -> grandchild
@@ -350,7 +341,7 @@ using StaticArrays
         end
 
         @testset "Entity removal" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
 
             # Create: root1 -> [child1, child2], root2
@@ -381,7 +372,6 @@ using StaticArrays
         end
 
         @testset "Entity helper functions" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
             s = scene([
@@ -407,7 +397,6 @@ using StaticArrays
         end
 
         @testset "Complex nested hierarchy" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
             # Create a more complex tree
@@ -638,11 +627,10 @@ using StaticArrays
         end
 
         @testset "Collision resolution — floor prevents fall-through" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
             # Create a floor (static, at y=0, extends from -10 to 10 in xz, height 0.1)
-            floor_id = create_entity_id()
+            floor_id = create_entity!(World())
             add_component!(floor_id, transform(position=Vec3d(0, -0.05, 0)))
             add_component!(floor_id, ColliderComponent(
                 shape=AABBShape(Vec3f(10.0, 0.05, 10.0))
@@ -650,7 +638,7 @@ using StaticArrays
             add_component!(floor_id, RigidBodyComponent(body_type=BODY_STATIC))
 
             # Create a dynamic box above the floor
-            box_id = create_entity_id()
+            box_id = create_entity!(World())
             add_component!(box_id, transform(position=Vec3d(0, 0.5, 0)))
             add_component!(box_id, ColliderComponent(
                 shape=AABBShape(Vec3f(0.5, 0.5, 0.5))
@@ -822,14 +810,13 @@ using StaticArrays
 
     @testset "Physics — Narrowphase" begin
         @testset "Sphere vs Sphere collision" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=SphereShape(1.0f0)))
 
-            e2 = create_entity_id()
+            e2 = create_entity!(World())
             add_component!(e2, transform(position=Vec3d(1.5, 0, 0)))
             add_component!(e2, ColliderComponent(shape=SphereShape(1.0f0)))
 
@@ -842,14 +829,13 @@ using StaticArrays
         end
 
         @testset "Sphere vs Sphere no collision" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=SphereShape(0.5f0)))
 
-            e2 = create_entity_id()
+            e2 = create_entity!(World())
             add_component!(e2, transform(position=Vec3d(5, 0, 0)))
             add_component!(e2, ColliderComponent(shape=SphereShape(0.5f0)))
 
@@ -858,14 +844,13 @@ using StaticArrays
         end
 
         @testset "AABB vs AABB collision" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=AABBShape(Vec3f(1, 1, 1))))
 
-            e2 = create_entity_id()
+            e2 = create_entity!(World())
             add_component!(e2, transform(position=Vec3d(1.5, 0, 0)))
             add_component!(e2, ColliderComponent(shape=AABBShape(Vec3f(1, 1, 1))))
 
@@ -875,14 +860,13 @@ using StaticArrays
         end
 
         @testset "Sphere vs AABB collision" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=SphereShape(1.0f0)))
 
-            e2 = create_entity_id()
+            e2 = create_entity!(World())
             add_component!(e2, transform(position=Vec3d(1.5, 0, 0)))
             add_component!(e2, ColliderComponent(shape=AABBShape(Vec3f(1, 1, 1))))
 
@@ -892,14 +876,13 @@ using StaticArrays
         end
 
         @testset "Capsule vs Sphere collision" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=CapsuleShape(radius=0.5f0, half_height=1.0f0)))
 
-            e2 = create_entity_id()
+            e2 = create_entity!(World())
             add_component!(e2, transform(position=Vec3d(0.8, 0, 0)))
             add_component!(e2, ColliderComponent(shape=SphereShape(0.5f0)))
 
@@ -909,14 +892,13 @@ using StaticArrays
         end
 
         @testset "Capsule vs Capsule collision" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=CapsuleShape(radius=0.3f0, half_height=0.5f0)))
 
-            e2 = create_entity_id()
+            e2 = create_entity!(World())
             add_component!(e2, transform(position=Vec3d(0.4, 0, 0)))
             add_component!(e2, ColliderComponent(shape=CapsuleShape(radius=0.3f0, half_height=0.5f0)))
 
@@ -926,14 +908,13 @@ using StaticArrays
         end
 
         @testset "Capsule vs AABB collision" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 1, 0)))
             add_component!(e1, ColliderComponent(shape=CapsuleShape(radius=0.5f0, half_height=0.5f0)))
 
-            e2 = create_entity_id()
+            e2 = create_entity!(World())
             add_component!(e2, transform(position=Vec3d(0, 0, 0)))
             add_component!(e2, ColliderComponent(shape=AABBShape(Vec3f(2, 0.5, 2))))
 
@@ -944,14 +925,13 @@ using StaticArrays
 
     @testset "Physics — GJK/EPA" begin
         @testset "OBB vs AABB collision" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=OBBShape(Vec3f(1, 1, 1))))
 
-            e2 = create_entity_id()
+            e2 = create_entity!(World())
             add_component!(e2, transform(position=Vec3d(1.5, 0, 0)))
             add_component!(e2, ColliderComponent(shape=AABBShape(Vec3f(1, 1, 1))))
 
@@ -961,14 +941,13 @@ using StaticArrays
         end
 
         @testset "OBB vs OBB collision" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=OBBShape(Vec3f(1, 1, 1))))
 
-            e2 = create_entity_id()
+            e2 = create_entity!(World())
             add_component!(e2, transform(position=Vec3d(1.5, 0, 0)))
             add_component!(e2, ColliderComponent(shape=OBBShape(Vec3f(1, 1, 1))))
 
@@ -977,17 +956,16 @@ using StaticArrays
         end
 
         @testset "ConvexHull vs AABB collision" begin
-            reset_entity_counter!()
-            reset_component_stores!()
+           reset_component_stores!()
 
             # Tetrahedron centered at origin
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=ConvexHullShape([
                 Vec3f(0, 1, 0), Vec3f(-1, -1, 0), Vec3f(1, -1, 0), Vec3f(0, 0, -1)
             ])))
 
-            e2 = create_entity_id()
+            e2 = create_entity!(World())
             add_component!(e2, transform(position=Vec3d(0.5, 0, 0)))
             add_component!(e2, ColliderComponent(shape=AABBShape(Vec3f(1, 1, 1))))
 
@@ -996,16 +974,15 @@ using StaticArrays
         end
 
         @testset "ConvexHull vs ConvexHull no collision" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=ConvexHullShape([
                 Vec3f(0, 1, 0), Vec3f(-1, -1, 0), Vec3f(1, -1, 0), Vec3f(0, 0, -1)
             ])))
 
-            e2 = create_entity_id()
+            e2 = create_entity!(World())
             add_component!(e2, transform(position=Vec3d(10, 0, 0)))
             add_component!(e2, ColliderComponent(shape=ConvexHullShape([
                 Vec3f(0, 1, 0), Vec3f(-1, -1, 0), Vec3f(1, -1, 0), Vec3f(0, 0, -1)
@@ -1032,10 +1009,9 @@ using StaticArrays
 
     @testset "Physics — Raycasting" begin
         @testset "Raycast hits sphere" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 0, -5)))
             add_component!(e1, ColliderComponent(shape=SphereShape(1.0f0)))
 
@@ -1047,10 +1023,9 @@ using StaticArrays
         end
 
         @testset "Raycast hits AABB" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, -2, 0)))
             add_component!(e1, ColliderComponent(shape=AABBShape(Vec3f(10, 0.5, 10))))
 
@@ -1061,10 +1036,9 @@ using StaticArrays
         end
 
         @testset "Raycast misses" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(10, 0, 0)))
             add_component!(e1, ColliderComponent(shape=SphereShape(1.0f0)))
 
@@ -1073,10 +1047,9 @@ using StaticArrays
         end
 
         @testset "Raycast hits capsule" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 0, -5)))
             add_component!(e1, ColliderComponent(shape=CapsuleShape(radius=0.5f0, half_height=1.0f0)))
 
@@ -1086,10 +1059,9 @@ using StaticArrays
         end
 
         @testset "Raycast skips triggers" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 0, -3)))
             add_component!(e1, ColliderComponent(shape=SphereShape(1.0f0), is_trigger=true))
 
@@ -1098,14 +1070,13 @@ using StaticArrays
         end
 
         @testset "raycast_all returns sorted hits" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 0, -3)))
             add_component!(e1, ColliderComponent(shape=SphereShape(0.5f0)))
 
-            e2 = create_entity_id()
+            e2 = create_entity!(World())
             add_component!(e2, transform(position=Vec3d(0, 0, -8)))
             add_component!(e2, ColliderComponent(shape=SphereShape(0.5f0)))
 
@@ -1119,16 +1090,15 @@ using StaticArrays
 
     @testset "Physics — CCD" begin
         @testset "Sweep test detects collision" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
             # Static wall close to origin
-            wall_id = create_entity_id()
+            wall_id = create_entity!(World())
             add_component!(wall_id, transform(position=Vec3d(1, 0, 0)))
             add_component!(wall_id, ColliderComponent(shape=AABBShape(Vec3f(0.1, 2, 2))))
 
             # Fast-moving sphere
-            bullet_id = create_entity_id()
+            bullet_id = create_entity!(World())
             add_component!(bullet_id, transform(position=Vec3d(0, 0, 0)))
             add_component!(bullet_id, ColliderComponent(shape=SphereShape(0.2f0)))
             add_component!(bullet_id, RigidBodyComponent(body_type=BODY_DYNAMIC, mass=0.5))
@@ -1190,18 +1160,17 @@ using StaticArrays
         end
 
         @testset "Ball-socket joint constrains pendulum" begin
-            reset_entity_counter!()
             reset_component_stores!()
             reset_physics_world!()
 
             # Static anchor
-            anchor = create_entity_id()
+            anchor = create_entity!(World())
             add_component!(anchor, transform(position=Vec3d(0, 5, 0)))
             add_component!(anchor, ColliderComponent(shape=SphereShape(0.1f0)))
             add_component!(anchor, RigidBodyComponent(body_type=BODY_STATIC))
 
             # Dynamic bob
-            bob = create_entity_id()
+            bob = create_entity!(World())
             add_component!(bob, transform(position=Vec3d(0, 3, 0)))
             add_component!(bob, ColliderComponent(shape=SphereShape(0.3f0)))
             add_component!(bob, RigidBodyComponent(body_type=BODY_DYNAMIC, mass=1.0,
@@ -1251,13 +1220,12 @@ using StaticArrays
         end
 
         @testset "Trigger enter/exit detection" begin
-            reset_entity_counter!()
             reset_component_stores!()
             reset_physics_world!()
             OpenReality.reset_trigger_state!()
 
             # Trigger zone at origin
-            trigger_eid = create_entity_id()
+            trigger_eid = create_entity!(World())
             add_component!(trigger_eid, transform(position=Vec3d(0, 0, 0)))
             add_component!(trigger_eid, ColliderComponent(
                 shape=AABBShape(Vec3f(2, 2, 2)), is_trigger=true
@@ -1271,7 +1239,7 @@ using StaticArrays
             ))
 
             # Object inside trigger zone
-            obj_eid = create_entity_id()
+            obj_eid = create_entity!(World())
             add_component!(obj_eid, transform(position=Vec3d(0, 0, 0)))
             add_component!(obj_eid, ColliderComponent(shape=SphereShape(0.5f0)))
 
@@ -1301,22 +1269,21 @@ using StaticArrays
         end
 
         @testset "build_islands groups connected bodies" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
             # Two dynamic bodies with a contact manifold between them
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=SphereShape(1.0f0)))
             add_component!(e1, RigidBodyComponent(body_type=BODY_DYNAMIC))
 
-            e2 = create_entity_id()
+            e2 = create_entity!(World())
             add_component!(e2, transform(position=Vec3d(1, 0, 0)))
             add_component!(e2, ColliderComponent(shape=SphereShape(1.0f0)))
             add_component!(e2, RigidBodyComponent(body_type=BODY_DYNAMIC))
 
             # Isolated body
-            e3 = create_entity_id()
+            e3 = create_entity!(World())
             add_component!(e3, transform(position=Vec3d(100, 0, 0)))
             add_component!(e3, ColliderComponent(shape=SphereShape(1.0f0)))
             add_component!(e3, RigidBodyComponent(body_type=BODY_DYNAMIC))
@@ -1341,17 +1308,16 @@ using StaticArrays
 
     @testset "Physics — Compound Shapes" begin
         @testset "CompoundShape vs AABB collision" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=CompoundShape([
                 CompoundChild(AABBShape(Vec3f(0.5, 0.25, 0.25)), position=Vec3d(0, 0.25, 0)),
                 CompoundChild(AABBShape(Vec3f(0.25, 0.5, 0.25)), position=Vec3d(-0.25, -0.25, 0))
             ])))
 
-            e2 = create_entity_id()
+            e2 = create_entity!(World())
             add_component!(e2, transform(position=Vec3d(0.5, 0.25, 0)))
             add_component!(e2, ColliderComponent(shape=AABBShape(Vec3f(0.5, 0.5, 0.5))))
 
@@ -1360,16 +1326,15 @@ using StaticArrays
         end
 
         @testset "CompoundShape vs Sphere collision" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=CompoundShape([
                 CompoundChild(SphereShape(0.5f0), position=Vec3d(0, 0, 0))
             ])))
 
-            e2 = create_entity_id()
+            e2 = create_entity!(World())
             add_component!(e2, transform(position=Vec3d(0.8, 0, 0)))
             add_component!(e2, ColliderComponent(shape=SphereShape(0.5f0)))
 
@@ -1378,16 +1343,15 @@ using StaticArrays
         end
 
         @testset "CompoundShape no collision when distant" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=CompoundShape([
                 CompoundChild(AABBShape(Vec3f(0.5, 0.5, 0.5)), position=Vec3d(0, 0, 0))
             ])))
 
-            e2 = create_entity_id()
+            e2 = create_entity!(World())
             add_component!(e2, transform(position=Vec3d(100, 0, 0)))
             add_component!(e2, ColliderComponent(shape=SphereShape(0.5f0)))
 
@@ -1441,11 +1405,10 @@ using StaticArrays
 
     @testset "Physics — Solver integration" begin
         @testset "Dynamic body falls under gravity" begin
-            reset_entity_counter!()
             reset_component_stores!()
             reset_physics_world!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 10, 0)))
             add_component!(e1, ColliderComponent(shape=SphereShape(0.5f0)))
             add_component!(e1, RigidBodyComponent(body_type=BODY_DYNAMIC, mass=1.0))
@@ -1459,11 +1422,10 @@ using StaticArrays
         end
 
         @testset "Static body does not move" begin
-            reset_entity_counter!()
             reset_component_stores!()
             reset_physics_world!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(0, 5, 0)))
             add_component!(e1, ColliderComponent(shape=AABBShape(Vec3f(1, 1, 1))))
             add_component!(e1, RigidBodyComponent(body_type=BODY_STATIC))
@@ -1477,24 +1439,23 @@ using StaticArrays
         end
 
         @testset "Restitution: bouncy ball bounces higher" begin
-            reset_entity_counter!()
             reset_component_stores!()
             reset_physics_world!()
 
             # Floor
-            floor_id = create_entity_id()
+            floor_id = create_entity!(World())
             add_component!(floor_id, transform(position=Vec3d(0, -0.5, 0)))
             add_component!(floor_id, ColliderComponent(shape=AABBShape(Vec3f(10, 0.5, 10))))
             add_component!(floor_id, RigidBodyComponent(body_type=BODY_STATIC))
 
             # Low-bounce ball
-            b1 = create_entity_id()
+            b1 = create_entity!(World())
             add_component!(b1, transform(position=Vec3d(-2, 3, 0)))
             add_component!(b1, ColliderComponent(shape=SphereShape(0.3f0)))
             add_component!(b1, RigidBodyComponent(body_type=BODY_DYNAMIC, mass=1.0, restitution=0.1f0))
 
             # High-bounce ball
-            b2 = create_entity_id()
+            b2 = create_entity!(World())
             add_component!(b2, transform(position=Vec3d(2, 3, 0)))
             add_component!(b2, ColliderComponent(shape=SphereShape(0.3f0)))
             add_component!(b2, RigidBodyComponent(body_type=BODY_DYNAMIC, mass=1.0, restitution=0.9f0))
@@ -1694,10 +1655,9 @@ using StaticArrays
 
     @testset "Hierarchical Transforms" begin
         @testset "World transform for entity without parent" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(position=Vec3d(10, 0, 0)))
 
             world = get_world_transform(e1)
@@ -1709,10 +1669,9 @@ using StaticArrays
         end
 
         @testset "World transform for entity without transform" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             # No transform component added
 
             world = get_world_transform(e1)
@@ -1722,7 +1681,6 @@ using StaticArrays
         end
 
         @testset "Hierarchical transforms with parent-child" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
             # Create parent-child hierarchy via scene
@@ -1747,7 +1705,6 @@ using StaticArrays
         end
 
         @testset "Three-level hierarchy" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
             # Create grandparent -> parent -> child hierarchy
@@ -1777,7 +1734,6 @@ using StaticArrays
         end
 
         @testset "Hierarchical transforms with scale" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
             # Parent scaled 2x, child at local position (5, 0, 0)
@@ -1798,7 +1754,6 @@ using StaticArrays
         end
 
         @testset "Hierarchical transforms with rotation" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
             # Parent rotated 90° around Z axis
@@ -1823,10 +1778,9 @@ using StaticArrays
         end
 
         @testset "Local transform calculation" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, transform(
                 position=Vec3d(1, 2, 3),
                 scale=Vec3d(2, 2, 2)
@@ -2040,11 +1994,10 @@ using StaticArrays
         end
 
         @testset "update_animations! moves position" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
             # Create entity with transform
-            eid = create_entity_id()
+            eid = create_entity!(World())
             add_component!(eid, transform(position=Vec3d(0, 0, 0)))
 
             # Create animation that moves x from 0 to 10 over 1 second
@@ -2513,13 +2466,12 @@ using StaticArrays
 
         @testset "Audio components in ECS" begin
             reset_component_stores!()
-            reset_entity_counter!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, AudioListenerComponent(gain=0.9f0))
             add_component!(e1, transform())
 
-            e2 = create_entity_id()
+            e2 = create_entity!(World())
             add_component!(e2, AudioSourceComponent(audio_path="sfx.wav", playing=true))
             add_component!(e2, transform(position=Vec3d(5, 0, 0)))
 
@@ -3078,14 +3030,13 @@ using StaticArrays
         end
 
         @testset "Bone matrix computation — identity" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
             # Create a mesh entity and a bone entity at the same position
-            mesh_eid = create_entity_id()
+            mesh_eid = create_entity!(World())
             add_component!(mesh_eid, transform(position=Vec3d(0, 0, 0)))
 
-            bone_eid = create_entity_id()
+            bone_eid = create_entity!(World())
             add_component!(bone_eid, transform(position=Vec3d(0, 0, 0)))
             add_component!(bone_eid, BoneComponent(
                 inverse_bind_matrix=Mat4f(I),
@@ -3107,13 +3058,12 @@ using StaticArrays
         end
 
         @testset "Bone matrix computation — translated bone" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            mesh_eid = create_entity_id()
+            mesh_eid = create_entity!(World())
             add_component!(mesh_eid, transform(position=Vec3d(0, 0, 0)))
 
-            bone_eid = create_entity_id()
+            bone_eid = create_entity!(World())
             add_component!(bone_eid, transform(position=Vec3d(5, 0, 0)))
             add_component!(bone_eid, BoneComponent(
                 inverse_bind_matrix=Mat4f(I),
@@ -3138,13 +3088,12 @@ using StaticArrays
         end
 
         @testset "Bone matrix with inverse bind matrix" begin
-            reset_entity_counter!()
             reset_component_stores!()
 
-            mesh_eid = create_entity_id()
+            mesh_eid = create_entity!(World())
             add_component!(mesh_eid, transform(position=Vec3d(0, 0, 0)))
 
-            bone_eid = create_entity_id()
+            bone_eid = create_entity!(World())
             add_component!(bone_eid, transform(position=Vec3d(3, 0, 0)))
 
             # IBM that undoes the bind pose translation
@@ -3176,17 +3125,17 @@ using StaticArrays
         end
 
         @testset "Multi-bone skinning" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
 
-            mesh_eid = create_entity_id()
+            mesh_eid = create_entity!(World())
             add_component!(mesh_eid, transform(position=Vec3d(0, 0, 0)))
 
-            bone1 = create_entity_id()
+            bone1 = create_entity!(World())
             add_component!(bone1, transform(position=Vec3d(1, 0, 0)))
             add_component!(bone1, BoneComponent(bone_index=0, name="bone1"))
 
-            bone2 = create_entity_id()
+            bone2 = create_entity!(World())
             add_component!(bone2, transform(position=Vec3d(0, 2, 0)))
             add_component!(bone2, BoneComponent(bone_index=1, name="bone2"))
 
@@ -3206,7 +3155,7 @@ using StaticArrays
         end
 
         @testset "update_skinned_meshes! with no skinned entities" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
 
             # Should not error with no skinned entities
@@ -3215,13 +3164,13 @@ using StaticArrays
         end
 
         @testset "Bone and skin components in ECS" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
 
-            e1 = create_entity_id()
+            e1 = create_entity!(World())
             add_component!(e1, BoneComponent(bone_index=0, name="root"))
 
-            e2 = create_entity_id()
+            e2 = create_entity!(World())
             add_component!(e2, SkinnedMeshComponent(bone_entities=[e1]))
 
             @test has_component(e1, BoneComponent)
@@ -3239,13 +3188,13 @@ using StaticArrays
         end
 
         @testset "Skinning resizes bone_matrices if needed" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
 
-            mesh_eid = create_entity_id()
+            mesh_eid = create_entity!(World())
             add_component!(mesh_eid, transform())
 
-            bone_eid = create_entity_id()
+            bone_eid = create_entity!(World())
             add_component!(bone_eid, transform())
             add_component!(bone_eid, BoneComponent(bone_index=0))
 
@@ -3325,10 +3274,10 @@ using StaticArrays
         end
 
         @testset "ParticleSystemComponent in ECS" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
 
-            eid = create_entity_id()
+            eid = create_entity!(World())
             comp = ParticleSystemComponent(emission_rate=30.0f0)
             add_component!(eid, comp)
 
@@ -3356,7 +3305,7 @@ using StaticArrays
         end
 
         @testset "Particle emission" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             reset_particle_pools!()
 
@@ -3377,7 +3326,7 @@ using StaticArrays
         end
 
         @testset "Particle simulation" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
 
             comp = ParticleSystemComponent(
@@ -3504,7 +3453,7 @@ using StaticArrays
         end
 
         @testset "update_particles! with no emitters" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             reset_particle_pools!()
 
@@ -3514,11 +3463,11 @@ using StaticArrays
         end
 
         @testset "Full particle update cycle" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             reset_particle_pools!()
 
-            eid = create_entity_id()
+            eid = create_entity!(World())
             add_component!(eid, transform(position=Vec3d(0, 5, 0)))
             add_component!(eid, ParticleSystemComponent(
                 max_particles=50,
@@ -3546,11 +3495,11 @@ using StaticArrays
         end
 
         @testset "Particle pool cleanup on entity removal" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             reset_particle_pools!()
 
-            eid = create_entity_id()
+            eid = create_entity!(World())
             add_component!(eid, transform())
             add_component!(eid, ParticleSystemComponent(burst_count=5))
 
@@ -3567,11 +3516,11 @@ using StaticArrays
         end
 
         @testset "Inactive emitter skipped" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             reset_particle_pools!()
 
-            eid = create_entity_id()
+            eid = create_entity!(World())
             add_component!(eid, transform())
             comp = ParticleSystemComponent(burst_count=5, _active=false)
             add_component!(eid, comp)
@@ -3594,7 +3543,7 @@ using StaticArrays
         end
 
         @testset "Empty scene export roundtrip" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
 
             s = scene()
@@ -3617,10 +3566,10 @@ using StaticArrays
         end
 
         @testset "Single entity export" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
 
-            eid = create_entity_id()
+            eid = create_entity!(World())
             add_component!(eid, transform(position=Vec3d(1.0, 2.0, 3.0)))
             s = add_entity(scene(), eid)
 
@@ -3633,17 +3582,17 @@ using StaticArrays
                 @test reinterpret(UInt32, data[13:16])[1] == UInt32(1)
                 # Entity ID should be in the entity graph section (starts at byte 33)
                 eid_bytes = reinterpret(UInt64, data[33:40])[1]
-                @test eid_bytes == UInt64(eid)
+                @test eid_bytes == ((UInt64(eid._id) >> 32) | UInt64(eid._gen))
             finally
                 isfile(tmp) && rm(tmp)
             end
         end
 
         @testset "Entity with mesh and material" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
 
-            eid = create_entity_id()
+            eid = create_entity!(World())
             add_component!(eid, transform())
             add_component!(eid, MeshComponent(
                 vertices=[Point3f(0,0,0), Point3f(1,0,0), Point3f(0,1,0)],
@@ -3675,7 +3624,7 @@ using StaticArrays
         end
 
         @testset "Physics config export" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
 
             s = scene()
@@ -3696,10 +3645,10 @@ using StaticArrays
         end
 
         @testset "Entity with lights" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
 
-            eid1 = create_entity_id()
+            eid1 = create_entity!(World())
             add_component!(eid1, transform(position=Vec3d(5.0, 10.0, 5.0)))
             add_component!(eid1, PointLightComponent(
                 color=RGB{Float32}(1.0, 1.0, 1.0),
@@ -3707,7 +3656,7 @@ using StaticArrays
                 range=50.0f0
             ))
 
-            eid2 = create_entity_id()
+            eid2 = create_entity!(World())
             add_component!(eid2, transform())
             add_component!(eid2, DirectionalLightComponent(
                 direction=Vec3f(0.0, -1.0, 0.0),
@@ -3759,15 +3708,14 @@ using StaticArrays
     @testset "Engine Reset" begin
         @testset "reset_engine_state! clears ECS and physics" begin
             reset_component_stores!()
-            reset_entity_counter!()
-            eid = create_entity_id()
+            
+            eid = create_entity!(World())
             add_component!(eid, TransformComponent())
             @test component_count(TransformComponent) == 1
 
             reset_engine_state!()
 
             @test component_count(TransformComponent) == 0
-            @test OpenReality.ENTITY_COUNTER.next_id == 1
             @test OpenReality._PHYSICS_WORLD[] === nothing
         end
 
@@ -3808,7 +3756,7 @@ using StaticArrays
             reset_engine_state!()
             start_count = Ref(0)
             update_count = Ref(0)
-            eid = create_entity_id()
+            eid = create_entity!(World())
             add_component!(eid, ScriptComponent(
                 on_start = (_, _) -> start_count[] += 1,
                 on_update = (_, _, _) -> update_count[] += 1
@@ -3823,11 +3771,11 @@ using StaticArrays
         @testset "Error isolation" begin
             reset_engine_state!()
             counter = Ref(0)
-            eid1 = create_entity_id()
+            eid1 = create_entity!(World())
             add_component!(eid1, ScriptComponent(
                 on_update = (_, _, _) -> error("boom")
             ))
-            eid2 = create_entity_id()
+            eid2 = create_entity!(World())
             add_component!(eid2, ScriptComponent(
                 on_update = (_, _, _) -> counter[] += 1
             ))
@@ -3838,10 +3786,10 @@ using StaticArrays
 
         @testset "Snapshot protection" begin
             reset_engine_state!()
-            eid = create_entity_id()
+            eid = create_entity!(World())
             add_component!(eid, ScriptComponent(
                 on_update = (_, _, _) -> begin
-                    new_eid = create_entity_id()
+                    new_eid = create_entity!(World())
                     add_component!(new_eid, ScriptComponent(
                         on_update = (_, _, _) -> nothing
                     ))
@@ -3854,7 +3802,7 @@ using StaticArrays
         @testset "destroy_entity! fires on_destroy before removal" begin
             reset_engine_state!()
             destroy_count = Ref(0)
-            eid = create_entity_id()
+            eid = create_entity!(World())
             add_component!(eid, ScriptComponent(
                 on_destroy = (_, _) -> destroy_count[] += 1
             ))
@@ -3868,8 +3816,8 @@ using StaticArrays
         @testset "destroy_entity! fires on_destroy for descendants" begin
             reset_engine_state!()
             child_destroy_count = Ref(0)
-            parent_eid = create_entity_id()
-            child_eid = create_entity_id()
+            parent_eid = create_entity!(World())
+            child_eid = create_entity!(World())
             add_component!(child_eid, ScriptComponent(
                 on_destroy = (_, _) -> child_destroy_count[] += 1
             ))
@@ -3883,7 +3831,7 @@ using StaticArrays
         @testset "remove_entity does NOT fire on_destroy" begin
             reset_engine_state!()
             destroy_count = Ref(0)
-            eid = create_entity_id()
+            eid = create_entity!(World())
             add_component!(eid, ScriptComponent(
                 on_destroy = (_, _) -> destroy_count[] += 1
             ))
@@ -3896,7 +3844,7 @@ using StaticArrays
         @testset "on_update receives GameContext" begin
             reset_engine_state!()
             received_ctx = Ref{Any}(nothing)
-            eid = create_entity_id()
+            eid = create_entity!(World())
             add_component!(eid, ScriptComponent(
                 on_update = (_, _, c) -> (received_ctx[] = c)
             ))
@@ -3915,12 +3863,12 @@ using StaticArrays
         end
 
         @testset "enter detection" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             reset_physics_world!()
 
-            e1 = create_entity_id()
-            e2 = create_entity_id()
+            e1 = create_entity!(World())
+            e2 = create_entity!(World())
 
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=SphereShape(0.5f0)))
@@ -3944,12 +3892,12 @@ using StaticArrays
         end
 
         @testset "stay detection" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             reset_physics_world!()
 
-            e1 = create_entity_id()
-            e2 = create_entity_id()
+            e1 = create_entity!(World())
+            e2 = create_entity!(World())
 
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=SphereShape(0.5f0)))
@@ -3974,12 +3922,12 @@ using StaticArrays
         end
 
         @testset "exit detection" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             reset_physics_world!()
 
-            e1 = create_entity_id()
-            e2 = create_entity_id()
+            e1 = create_entity!(World())
+            e2 = create_entity!(World())
 
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=SphereShape(0.5f0)))
@@ -4003,12 +3951,12 @@ using StaticArrays
         end
 
         @testset "sleeping suppression" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             reset_physics_world!()
 
-            e1 = create_entity_id()
-            e2 = create_entity_id()
+            e1 = create_entity!(World())
+            e2 = create_entity!(World())
 
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=SphereShape(0.5f0)))
@@ -4032,12 +3980,12 @@ using StaticArrays
         end
 
         @testset "callback error isolation" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             reset_physics_world!()
 
-            e1 = create_entity_id()
-            e2 = create_entity_id()
+            e1 = create_entity!(World())
+            e2 = create_entity!(World())
 
             add_component!(e1, transform(position=Vec3d(0, 0, 0)))
             add_component!(e1, ColliderComponent(shape=SphereShape(0.5f0)))
@@ -4064,19 +4012,19 @@ using StaticArrays
         end
 
         @testset "integration: enter fires on collision" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             reset_physics_world!()
             OpenReality.reset_trigger_state!()
 
             # Dynamic sphere above static floor
-            sphere_eid = create_entity_id()
+            sphere_eid = create_entity!(World())
             add_component!(sphere_eid, transform(position=Vec3d(0, 1, 0)))
             add_component!(sphere_eid, ColliderComponent(shape=SphereShape(0.5f0)))
             add_component!(sphere_eid, RigidBodyComponent(mass=1.0))
             OpenReality.initialize_rigidbody_inertia!(sphere_eid)
 
-            floor_eid = create_entity_id()
+            floor_eid = create_entity!(World())
             add_component!(floor_eid, transform(position=Vec3d(0, 0, 0)))
             add_component!(floor_eid, ColliderComponent(shape=AABBShape(Vec3f(10, 0.1, 10))))
             add_component!(floor_eid, RigidBodyComponent(body_type=BODY_STATIC, mass=0.0))
@@ -4104,7 +4052,7 @@ using StaticArrays
         @testset "update_scripts! callable in full module context" begin
             reset_engine_state!()
             counter = Ref(0)
-            eid = create_entity_id()
+            eid = create_entity!(World())
             add_component!(eid, ScriptComponent(on_update=(id, dt) -> counter[] += 1))
             update_scripts!(0.016)
             @test counter[] == 1
@@ -4157,8 +4105,8 @@ using StaticArrays
             reset_engine_state!()
 
             # Create two target entities with transforms
-            target_a = create_entity_id()
-            target_b = create_entity_id()
+            target_a = create_entity!(World())
+            target_b = create_entity!(World())
             add_component!(target_a, transform(position=Vec3d(0, 0, 0)))
             add_component!(target_b, transform(position=Vec3d(0, 0, 0)))
 
@@ -4235,8 +4183,8 @@ using StaticArrays
 
         @testset "Guard: update_animations! skips blend-tree entities" begin
             reset_engine_state!()
-            eid = create_entity_id()
-            target_eid = create_entity_id()
+            eid = create_entity!(World())
+            target_eid = create_entity!(World())
             add_component!(target_eid, transform(position=Vec3d(0, 0, 0)))
 
             clip = AnimationClip("test", [
@@ -4267,7 +4215,7 @@ using StaticArrays
 
         @testset "Trigger consumed after evaluation" begin
             reset_engine_state!()
-            eid = create_entity_id()
+            eid = create_entity!(World())
             add_component!(eid, transform(position=Vec3d(0, 0, 0)))
 
             comp = AnimationBlendTreeComponent(
@@ -4294,11 +4242,11 @@ using StaticArrays
     @testset "Camera Controllers" begin
         @testset "find_active_camera with two cameras" begin
             reset_engine_state!()
-            eid1 = create_entity_id()
+            eid1 = create_entity!(World())
             add_component!(eid1, transform())
             add_component!(eid1, CameraComponent(active=false))
 
-            eid2 = create_entity_id()
+            eid2 = create_entity!(World())
             add_component!(eid2, transform())
             add_component!(eid2, CameraComponent(active=true))
 
@@ -4310,11 +4258,11 @@ using StaticArrays
             reset_engine_state!()
 
             # Target entity at origin
-            target_eid = create_entity_id()
+            target_eid = create_entity!(World())
             add_component!(target_eid, transform(position=Vec3d(0, 0, 0)))
 
             # Camera entity at origin
-            cam_eid = create_entity_id()
+            cam_eid = create_entity!(World())
             add_component!(cam_eid, transform(position=Vec3d(0, 0, 0)))
             add_component!(cam_eid, ThirdPersonCamera(
                 target_eid,
@@ -4344,7 +4292,7 @@ using StaticArrays
         @testset "CinematicCamera path interpolation" begin
             reset_engine_state!()
 
-            cam_eid = create_entity_id()
+            cam_eid = create_entity!(World())
             add_component!(cam_eid, transform(position=Vec3d(0, 0, 0)))
             add_component!(cam_eid, CinematicCamera(
                 5.0f0,                                    # move_speed
@@ -4490,11 +4438,11 @@ using StaticArrays
     end
 
     @testset "GameContext" begin
-        reset_entity_counter!()
+        
         reset_component_stores!()
 
         @testset "spawn! returns non-zero EntityID" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             s = Scene()
             ctx = GameContext(s, InputState())
@@ -4504,7 +4452,7 @@ using StaticArrays
         end
 
         @testset "spawned entity not in scene before apply_mutations!" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             s = Scene()
             ctx = GameContext(s, InputState())
@@ -4514,7 +4462,7 @@ using StaticArrays
         end
 
         @testset "spawned entity in scene after apply_mutations!" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             s = Scene()
             ctx = GameContext(s, InputState())
@@ -4525,7 +4473,7 @@ using StaticArrays
         end
 
         @testset "spawned entity has components after apply_mutations!" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             s = Scene()
             ctx = GameContext(s, InputState())
@@ -4536,7 +4484,7 @@ using StaticArrays
         end
 
         @testset "despawn removes entity from scene" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             s = scene([entity([TransformComponent()])])
             eid = s.entities[1]
@@ -4547,7 +4495,7 @@ using StaticArrays
         end
 
         @testset "despawn removes entity components from ECS" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             s = scene([entity([TransformComponent()])])
             eid = s.entities[1]
@@ -4558,7 +4506,7 @@ using StaticArrays
         end
 
         @testset "apply_mutations! on empty queues preserves entity count" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             s = scene([entity([TransformComponent()])])
             initial_count = entity_count(s)
@@ -4568,7 +4516,7 @@ using StaticArrays
         end
 
         @testset "two spawn! calls return different EntityIDs" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             s = Scene()
             ctx = GameContext(s, InputState())
@@ -4683,11 +4631,11 @@ using StaticArrays
     end
 
     @testset "Prefab" begin
-        reset_entity_counter!()
+        
         reset_component_stores!()
 
         @testset "instantiate calls factory with correct kwargs" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             pf = Prefab(; position=Vec3d(0,0,0)) do (; position)
                 entity([TransformComponent(; position)])
@@ -4698,7 +4646,7 @@ using StaticArrays
         end
 
         @testset "spawn!(ctx, prefab) returns a valid EntityID" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             pf = Prefab(; position=Vec3d(0,0,0)) do (; position)
                 entity([TransformComponent(; position)])
@@ -4711,7 +4659,7 @@ using StaticArrays
         end
 
         @testset "two spawns from same prefab produce different EntityIDs" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             pf = Prefab(; position=Vec3d(0,0,0)) do (; position)
                 entity([TransformComponent(; position)])
@@ -4724,7 +4672,7 @@ using StaticArrays
         end
 
         @testset "after apply_mutations! both entities exist in scene" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             pf = Prefab(; position=Vec3d(0,0,0)) do (; position)
                 entity([TransformComponent(; position)])
@@ -4739,7 +4687,7 @@ using StaticArrays
         end
 
         @testset "override kwargs reflected in spawned entity components" begin
-            reset_entity_counter!()
+            
             reset_component_stores!()
             pf = Prefab(; position=Vec3d(0,0,0)) do (; position)
                 entity([TransformComponent(; position)])

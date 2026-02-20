@@ -105,11 +105,9 @@ function remove_entity(scene::Scene, entity_id::EntityID)::Scene
     queue_gpu_cleanup!(entities_to_remove)
 
     # Purge ECS components for all entities being removed
+    world = World()
     for eid in entities_to_remove
-        for (_, store) in COMPONENT_STORES
-            T = eltype(store.components)
-            remove_component!(eid, T)
-        end
+        Ark.remove_entity!(world, eid)
     end
 
     # Filter out removed entities
@@ -284,7 +282,7 @@ reference for hierarchical transform calculation.
 """
 function add_entity_from_def(scene::Scene, entity_def::EntityDef, parent::Union{EntityID, Nothing})::Scene
     # Create entity ID
-    entity_id = create_entity_id()
+    entity_id = create_entity!(World())
 
     # Add components to ECS storage
     for component in entity_def.components
@@ -555,7 +553,7 @@ Note: This returns the entity ID but doesn't update the scene (use scene(defs) i
 """
 function entity(scene_ref::Scene)
     @warn "Using entity(scene::Scene) is deprecated. Use scene([entity(...)]) syntax instead."
-    id = create_entity_id()
+    id = create_entity!(World())
     return id
 end
 
@@ -567,7 +565,7 @@ Deprecated: Use the new scene([entity(...)]) syntax instead.
 """
 function entity(scene_ref::Scene, f::Function)
     @warn "Using entity(scene::Scene, f::Function) is deprecated. Use scene([entity(...)]) syntax instead."
-    id = create_entity_id()
+    id = create_entity!(World())
     f(id)
     return id
 end

@@ -1,6 +1,7 @@
 module OpenReality
 
 # Dependencies
+import Ark
 using Observables
 using GeometryBasics
 using ColorTypes
@@ -247,6 +248,58 @@ include("export/scene_export.jl")
 # Save/load serialization system
 include("serialization/save_load.jl")
 
+const COMPONENT_TYPES = DataType[
+    # Animation
+    AnimationComponent,
+    # Animation Blend Tree
+    AnimationBlendTreeComponent,
+    # Audio
+    AudioListenerComponent,
+    AudioSourceComponent,
+    # Camera
+    CameraComponent,
+    # Camera Controller
+    ThirdPersonCamera,
+    OrbitCamera,
+    CinematicCamera,
+    # Collider
+    ColliderComponent,
+    # Lights
+    PointLightComponent,
+    DirectionalLightComponent,
+    IBLComponent,
+    # Lod
+    LODComponent,
+    # Material
+    MaterialComponent,
+    # Mesh
+    MeshComponent,
+    # Particle System
+    ParticleSystemComponent,
+    # Player
+    PlayerComponent,
+    # Rigid Body
+    RigidBodyComponent,
+    # Script
+    ScriptComponent,
+    # Skeleton
+    BoneComponent,
+    SkinnedMeshComponent,
+    # Terrain
+    TerrainComponent,
+    # Transform
+    TransformComponent,
+    # Constraint
+    JointComponent,
+    # Trigger
+    TriggerComponent,
+    # Collision
+    CollisionCallbackComponent,
+]
+
+# Initialize the global Ark world with all components
+const _WORLD = initialize_world()
+
 # Export Threading
 export use_threading, threading_enabled
 
@@ -255,8 +308,9 @@ export EntityID, World, create_entity!, create_entity_id
 export Component, ComponentStore
 export add_component!, get_component, has_component, remove_component!
 export collect_components, entities_with_component, first_entity_with_component, component_count, iterate_components
-export register_component_type, reset_entity_counter!, reset_component_stores!, reset_engine_state!
+export reset_entity_counter!, reset_component_stores!, reset_engine_state!
 export queue_gpu_cleanup!, drain_gpu_cleanup_queue!, flush_gpu_cleanup!, cleanup_all_gpu_resources!
+export initialize_world
 
 # Export State
 export State, state

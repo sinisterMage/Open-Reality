@@ -7,13 +7,14 @@
 Find the first entity with a CameraComponent.
 """
 function find_active_camera()
-    store = get_component_store(CameraComponent)
-    store === nothing && return nothing
-    for (eid, idx) in store.entity_map
-        cam = store.components[idx]
-        cam.active && return eid
+    active_eid = nothing
+    iterate_components(CameraComponent) do eid, cam
+        if cam.active
+            active_eid = eid
+            return # This return is for the closure, not find_active_camera
+        end
     end
-    return nothing
+    return active_eid
 end
 
 """

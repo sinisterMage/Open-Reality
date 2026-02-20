@@ -60,13 +60,13 @@ Snapshot all TransformComponents into plain immutable structs.
 **Must be called on the main thread** (reads Observable values).
 """
 function snapshot_transforms()::Dict{EntityID, TransformSnapshot}
-    store = get(COMPONENT_STORES, TransformComponent, nothing)
-    store === nothing && return Dict{EntityID, TransformSnapshot}()
+    world = World()
     result = Dict{EntityID, TransformSnapshot}()
-    sizehint!(result, length(store.entity_map))
-    for (eid, idx) in store.entity_map
-        tc = store.components[idx]
-        result[eid] = TransformSnapshot(tc.position[], tc.rotation[], tc.scale[])
+    for (entities, transforms) in Ark.Query(world, (TransformComponent,))
+        for i in eachindex(entities)
+            tc = transforms[i]
+            result[entities[i]] = TransformSnapshot(tc.position[], tc.rotation[], tc.scale[])
+        end
     end
     return result
 end
@@ -79,12 +79,12 @@ For immutable component structs this is a lightweight copy.
 **Must be called on the main thread.**
 """
 function snapshot_components(::Type{T})::Dict{EntityID, T} where T <: Component
-    store = get(COMPONENT_STORES, T, nothing)
-    store === nothing && return Dict{EntityID, T}()
+    world = World()
     result = Dict{EntityID, T}()
-    sizehint!(result, length(store.entity_map))
-    for (eid, idx) in store.entity_map
-        result[eid] = store.components[idx]
+    for (entities, components) in Ark.Query(world, (T,))
+        for i in eachindex(entities)
+            result[entities[i]] = components[i]
+        end
     end
     return result
 end

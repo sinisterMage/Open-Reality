@@ -163,7 +163,9 @@ end
 function _write_entity_graph(io, entities, entity_index, parent_map,
                               mesh_index_map, material_index_map)
     for eid in entities
-        write(io, UInt64(eid))
+
+        # TODO: do not use internals of Ark
+        write(io, (UInt64(eid._id) >> 32) | UInt64(eid._gen))
 
         # Parent index (UInt32_MAX = root)
         parent_idx = haskey(parent_map, eid) ? entity_index[parent_map[eid]] : typemax(UInt32)

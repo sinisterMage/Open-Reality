@@ -27,7 +27,7 @@ Enqueue a new entity for deferred spawning.  Returns the pre-allocated
 `apply_mutations!` flush.
 """
 function spawn!(ctx::GameContext, entity_def::EntityDef)::EntityID
-    eid = create_entity_id()
+    eid = create_entity!(World())
     push!(ctx._spawn_queue, (eid, entity_def))
     return eid
 end

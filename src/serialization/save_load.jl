@@ -53,18 +53,22 @@ function save_game(scene::Scene, path::String)
     # Snapshot component data, skipping non-serializable types
     comp_data = Dict{String, Vector{Tuple{EntityID, Vector{UInt8}}}}()
 
-    for (T, store) in COMPONENT_STORES
+    world = World()
+    for T in COMPONENT_TYPES
         T in _NON_SERIALIZABLE_TYPES && continue
 
         entries = Tuple{EntityID, Vector{UInt8}}[]
-        for (eid, idx) in store.entity_map
-            comp = store.components[idx]
-            try
-                buf = IOBuffer()
-                Serialization.serialize(buf, comp)
-                push!(entries, (eid, take!(buf)))
-            catch
-                # Component has non-serializable fields — skip silently
+        for (entities, col) in Ark.Query(world, (T,))
+            for i in eachindex(entities)
+                eid = entities[i]
+                comp = col[i]
+                try
+                    buf = IOBuffer()
+                    Serialization.serialize(buf, comp)
+                    push!(entries, (eid, take!(buf)))
+                catch
+                    # Component has non-serializable fields — skip silently
+                end
             end
         end
 

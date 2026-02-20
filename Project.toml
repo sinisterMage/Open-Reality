@@ -22,6 +22,7 @@ Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 Vulkan = "9f14b124-c50e-4008-a7d4-969b3a6cd68a"
 glslang_jll = "6fd5517d-459c-5c5a-9b1a-c968b4e37a81"
+Ark = "56664e29-41e4-4ea5-ab0e-825499acc647"
 
 [compat]
 Base64 = "1.11.0"
