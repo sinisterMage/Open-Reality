@@ -52,6 +52,14 @@ OpenReality provides AAA-quality rendering with a clean functional API. Define s
 - Save/load game serialization
 - Debug drawing (lines, boxes, spheres)
 
+---
+
+## Core Contributers:
+### Really apperciate your contribution!!!!
+[ameligrana](https://github.com/ameligrana) - first ever contributer to OpenReality 🎉
+
+---
+
 ## Quick Start
 
 ### Prerequisites
