@@ -254,8 +254,7 @@ function _vk_composite_frag()
             mapped = uncharted2(hdrColor * 2.0) / uncharted2(vec3(W));
         }
 
-        // Gamma correction
-        mapped = pow(mapped, vec3(1.0 / params.gamma));
+        // NOTE: No manual gamma correction here — the SRGB swapchain handles it
 
         // Vignette (radial darkening)
         if (params.vignette_intensity > 0.0) {

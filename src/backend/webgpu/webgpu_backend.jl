@@ -336,7 +336,7 @@ Check the GPU cache for the mesh. If not cached, upload it via wgpu_upload_mesh.
 Returns the WebGPUGPUMesh or nothing on failure.
 """
 function _ensure_mesh_uploaded(backend::WebGPUBackend, entity_id::EntityID, mesh::MeshComponent)
-    eid = EntityID(entity_id)
+    eid = entity_id
     if haskey(backend.gpu_cache.meshes, eid)
         return backend.gpu_cache.meshes[eid]
     end
@@ -919,7 +919,7 @@ end
 
 function backend_upload_mesh!(backend::WebGPUBackend, entity_id, mesh)
     # Check cache first
-    eid = EntityID(entity_id)
+    eid = entity_id
     if haskey(backend.gpu_cache.meshes, eid)
         return backend.gpu_cache.meshes[eid]
     end

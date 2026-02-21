@@ -60,6 +60,16 @@ end
 
 
 """
+    reset_entity_counter!()
+
+No-op under Ark.jl — entity IDs are managed by the World.
+Kept for API compatibility; `reset_component_stores!()` handles the full reset.
+"""
+function reset_entity_counter!()
+    return nothing
+end
+
+"""
     reset_component_stores!()
 """
 function reset_component_stores!()

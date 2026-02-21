@@ -98,16 +98,14 @@ void main() {
 
     if (params.tone_mapping_mode == 0) {
         color = reinhard(color);
-        color = pow(color, vec3(1.0 / params.gamma));
     } else if (params.tone_mapping_mode == 1) {
         color = aces(color);
-        color = pow(color, vec3(1.0 / params.gamma));
     } else if (params.tone_mapping_mode == 2) {
         float W = 11.2;
         color = uncharted2(color * 2.0) / uncharted2(vec3(W));
-        color = pow(color, vec3(1.0 / params.gamma));
     }
     // tone_mapping_mode == 3: passthrough (already LDR from composite)
+    // NOTE: No manual gamma correction — the SRGB swapchain handles it
 
     outColor = vec4(color, 1.0);
 }
@@ -186,6 +184,7 @@ mutable struct VulkanBackend <: AbstractBackend
     post_process::Union{VulkanPostProcessPipeline, Nothing}
     default_texture::Union{VulkanGPUTexture, Nothing}
     black_texture::Union{VulkanGPUTexture, Nothing}
+    default_cubemap::Union{VulkanGPUTexture, Nothing}
     shadow_sampler::Union{Sampler, Nothing}
 
     # Per-frame transient descriptor pools (reset each frame for per-material allocations)
@@ -222,7 +221,6 @@ mutable struct VulkanBackend <: AbstractBackend
     use_deferred::Bool
     post_process_config::Union{PostProcessConfig, Nothing}
     present_pipeline::Union{VulkanShaderProgram, Nothing}
-    debug_frame_count::Int
 end
 
 function VulkanBackend()
@@ -243,7 +241,7 @@ function VulkanBackend()
         DescriptorSet[], Buffer[], DeviceMemory[], Buffer[], DeviceMemory[],
         # Pipelines
         nothing, nothing, VulkanGPUResourceCache(), VulkanTextureCache(),
-        Dict{EntityID, BoundingSphere}(), nothing, nothing, nothing, nothing, nothing,
+        Dict{EntityID, BoundingSphere}(), nothing, nothing, nothing, nothing, nothing, nothing,
         # Transient pools
         DescriptorPool[],
         # Temp buffers per frame
@@ -265,9 +263,7 @@ function VulkanBackend()
         # State
         false, true, nothing,
         # Present
-        nothing,
-        # Debug
-        0
+        nothing
     )
 end
 
@@ -397,12 +393,24 @@ function initialize!(backend::VulkanBackend; width::Int=1280, height::Int=720, t
         backend.device, backend.physical_device, backend.command_pool, backend.graphics_queue,
         black_pixel, 1, 1, 4; format=FORMAT_R8G8B8A8_UNORM, generate_mipmaps=false)
 
-    # Fill lighting descriptor set unused bindings with default texture
+    # Create 1x1 black cubemap (placeholder for IBL samplerCube bindings)
+    backend.default_cubemap = _vk_create_default_cubemap(
+        backend.device, backend.physical_device, backend.command_pool, backend.graphics_queue)
+
+    # Fill lighting descriptor set unused bindings with default textures
     for i in 1:VK_MAX_FRAMES_IN_FLIGHT
-        for binding in 2:8  # CSM cascades (2-5) + IBL (6-8)
+        for binding in 2:5  # CSM cascades (2D textures)
             vk_update_texture_descriptor!(backend.device, backend.lighting_ds[i],
                 binding, backend.default_texture)
         end
+        # IBL cubemaps (bindings 6-7 require samplerCube)
+        vk_update_texture_descriptor!(backend.device, backend.lighting_ds[i],
+            6, backend.default_cubemap)
+        vk_update_texture_descriptor!(backend.device, backend.lighting_ds[i],
+            7, backend.default_cubemap)
+        # BRDF LUT (binding 8 is sampler2D)
+        vk_update_texture_descriptor!(backend.device, backend.lighting_ds[i],
+            8, backend.default_texture)
     end
 
     # Create shadow sampler
@@ -457,6 +465,11 @@ function initialize!(backend::VulkanBackend; width::Int=1280, height::Int=720, t
     # Create motion blur pass
     backend.motion_blur_pass = vk_create_motion_blur_pass(backend.device, backend.physical_device,
         width, height, backend.fullscreen_layout, backend.descriptor_pool)
+
+    # Transition ALL render target images from UNDEFINED → SHADER_READ_ONLY_OPTIMAL.
+    # This prevents Vulkan validation errors when textures are sampled before being
+    # rendered to (e.g., first frame, disabled passes bound to descriptors).
+    _vk_transition_all_render_targets!(backend)
 
     # Initialize debug draw renderer (shares UI overlay render pass)
     if OPENREALITY_DEBUG && backend.ui_renderer.render_pass !== nothing
@@ -820,6 +833,111 @@ function render_frame!(backend::VulkanBackend, scene::Scene)
 
     # Advance frame
     backend.current_frame = (frame_idx % VK_MAX_FRAMES_IN_FLIGHT) + 1
+    return nothing
+end
+
+# ==================================================================
+# Initial layout transitions for all render targets
+# ==================================================================
+
+"""
+    _vk_transition_all_render_targets!(backend)
+
+Batch-transition all render target images from UNDEFINED to SHADER_READ_ONLY_OPTIMAL.
+Called once during initialization to prevent validation errors when textures are sampled
+before any render pass writes to them.
+"""
+function _vk_transition_all_render_targets!(backend::VulkanBackend)
+    dev = backend.device
+    cp = backend.command_pool
+    q = backend.graphics_queue
+
+    cmd = vk_begin_single_time_commands(dev, cp)
+
+    # Deferred pipeline targets
+    dp = backend.deferred_pipeline
+    if dp !== nothing
+        # Lighting target
+        if dp.lighting_target !== nothing
+            transition_image_layout!(cmd, dp.lighting_target.color_image,
+                IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        end
+
+        # G-buffer textures (individual VulkanGPUTexture, not VulkanFramebuffer)
+        gb = dp.gbuffer
+        if gb !== nothing
+            transition_image_layout!(cmd, gb.albedo_metallic.image,
+                IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+            transition_image_layout!(cmd, gb.normal_roughness.image,
+                IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+            transition_image_layout!(cmd, gb.emissive_ao.image,
+                IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+            transition_image_layout!(cmd, gb.advanced_material.image,
+                IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+            transition_image_layout!(cmd, gb.depth.image,
+                IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                aspect_mask=IMAGE_ASPECT_DEPTH_BIT)
+        end
+
+        # SSAO pass targets (created inside deferred pipeline)
+        if dp.ssao_pass !== nothing
+            transition_image_layout!(cmd, dp.ssao_pass.ssao_target.color_image,
+                IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+            transition_image_layout!(cmd, dp.ssao_pass.blur_target.color_image,
+                IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        end
+
+        # SSR pass target (created inside deferred pipeline)
+        if dp.ssr_pass !== nothing
+            transition_image_layout!(cmd, dp.ssr_pass.ssr_target.color_image,
+                IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        end
+
+        # TAA pass targets (created inside deferred pipeline)
+        if dp.taa_pass !== nothing
+            transition_image_layout!(cmd, dp.taa_pass.history_target.color_image,
+                IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+            transition_image_layout!(cmd, dp.taa_pass.current_target.color_image,
+                IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        end
+    end
+
+    # Post-process targets
+    pp = backend.post_process
+    if pp !== nothing
+        transition_image_layout!(cmd, pp.scene_target.color_image,
+            IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        transition_image_layout!(cmd, pp.bright_target.color_image,
+            IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        for bt in pp.bloom_targets
+            transition_image_layout!(cmd, bt.color_image,
+                IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        end
+    end
+
+    # DOF targets
+    dof = backend.dof_pass
+    if dof !== nothing
+        transition_image_layout!(cmd, dof.coc_target.color_image,
+            IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        transition_image_layout!(cmd, dof.blur_h_target.color_image,
+            IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        transition_image_layout!(cmd, dof.blur_v_target.color_image,
+            IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        transition_image_layout!(cmd, dof.composite_target.color_image,
+            IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+    end
+
+    # Motion blur targets
+    mb = backend.motion_blur_pass
+    if mb !== nothing
+        transition_image_layout!(cmd, mb.velocity_target.color_image,
+            IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        transition_image_layout!(cmd, mb.blur_target.color_image,
+            IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+    end
+
+    vk_end_single_time_commands(dev, cp, q, cmd)
     return nothing
 end
 
@@ -1537,6 +1655,16 @@ function backend_create_csm!(backend::VulkanBackend, num_cascades::Int, resoluti
         [backend.per_frame_layout, backend.per_frame_layout],
         backend.push_constant_range)
 
+    # Transition cascade depth textures from UNDEFINED → SHADER_READ_ONLY_OPTIMAL
+    # so they're in a valid layout if sampled before the shadow pass renders to them.
+    cmd = vk_begin_single_time_commands(backend.device, backend.command_pool)
+    for c in 1:num_cascades
+        transition_image_layout!(cmd, csm.cascade_depth_textures[c].image,
+            IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            aspect_mask=IMAGE_ASPECT_DEPTH_BIT)
+    end
+    vk_end_single_time_commands(backend.device, backend.command_pool, backend.graphics_queue, cmd)
+
     # Bind CSM depth textures to lighting descriptor sets
     for i in 1:VK_MAX_FRAMES_IN_FLIGHT
         for c in 1:min(num_cascades, VK_MAX_CSM_CASCADES)
@@ -1574,19 +1702,35 @@ end
 # ---- Screen-space effect operations ----
 
 function backend_create_ssr_pass!(backend::VulkanBackend, width::Int, height::Int)
-    return vk_create_ssr_pass(backend.device, backend.physical_device, width, height,
-                               backend.fullscreen_layout, backend.descriptor_pool)
+    ssr = vk_create_ssr_pass(backend.device, backend.physical_device, width, height,
+                              backend.fullscreen_layout, backend.descriptor_pool)
+    _vk_transition_framebuffer_readable!(backend.device, backend.command_pool,
+        backend.graphics_queue, ssr.ssr_target)
+    return ssr
 end
 
 function backend_create_ssao_pass!(backend::VulkanBackend, width::Int, height::Int)
-    return vk_create_ssao_pass(backend.device, backend.physical_device,
+    ssao = vk_create_ssao_pass(backend.device, backend.physical_device,
                                 backend.command_pool, backend.graphics_queue,
                                 width, height, backend.fullscreen_layout, backend.descriptor_pool)
+    _vk_transition_framebuffer_readable!(backend.device, backend.command_pool,
+        backend.graphics_queue, ssao.ssao_target)
+    _vk_transition_framebuffer_readable!(backend.device, backend.command_pool,
+        backend.graphics_queue, ssao.blur_target)
+    return ssao
 end
 
 function backend_create_taa_pass!(backend::VulkanBackend, width::Int, height::Int)
-    return vk_create_taa_pass(backend.device, backend.physical_device, width, height,
-                               backend.fullscreen_layout, backend.descriptor_pool)
+    taa = vk_create_taa_pass(backend.device, backend.physical_device, width, height,
+                              backend.fullscreen_layout, backend.descriptor_pool)
+
+    # Transition TAA render targets so they're in a valid layout if sampled before rendering.
+    _vk_transition_framebuffer_readable!(backend.device, backend.command_pool,
+        backend.graphics_queue, taa.history_target)
+    _vk_transition_framebuffer_readable!(backend.device, backend.command_pool,
+        backend.graphics_queue, taa.current_target)
+
+    return taa
 end
 
 # ---- Post-processing operations ----

@@ -290,6 +290,18 @@ mutable struct VulkanTextureCache <: AbstractTextureCache
     VulkanTextureCache() = new(Dict{String, VulkanGPUTexture}())
 end
 
+# Generic cleanup interface (Vulkan resources are destroyed by vk_destroy_* helpers;
+# these just clear the Julia-side handle maps for the generic cleanup_all_gpu_resources! path)
+function destroy_all!(cache::VulkanGPUResourceCache)
+    empty!(cache.meshes)
+    return nothing
+end
+
+function destroy_all_textures!(cache::VulkanTextureCache)
+    empty!(cache.textures)
+    return nothing
+end
+
 """
     VulkanUIRenderer
 

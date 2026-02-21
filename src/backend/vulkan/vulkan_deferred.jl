@@ -484,8 +484,8 @@ function vk_create_deferred_pipeline(device::Device, physical_device::PhysicalDe
     # Create G-buffer shader library with compile function for Vulkan
     # Detects FEATURE_SKINNING in the source and uses skinned bindings + bone descriptor set
     compile_fn = (vert_src::String, frag_src::String) -> begin
-        is_skinned = contains(vert_src, "FEATURE_SKINNING")
-        is_instanced = contains(vert_src, "FEATURE_INSTANCED")
+        is_skinned = contains(vert_src, "#define FEATURE_SKINNING")
+        is_instanced = contains(vert_src, "#define FEATURE_INSTANCED")
         if is_skinned
             bindings = vk_skinned_vertex_bindings()
             attributes = vk_skinned_vertex_attributes()

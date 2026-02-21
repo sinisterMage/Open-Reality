@@ -162,3 +162,14 @@ mutable struct WebGPUTextureCache
 end
 
 WebGPUTextureCache() = WebGPUTextureCache(Dict{String, WebGPUGPUTexture}())
+
+# Cleanup methods (GPU resources are owned by Rust; Julia just clears its handle maps)
+function destroy_all!(cache::WebGPUGPUResourceCache)
+    empty!(cache.meshes)
+    return nothing
+end
+
+function destroy_all_textures!(cache::WebGPUTextureCache)
+    empty!(cache.textures)
+    return nothing
+end
