@@ -79,6 +79,77 @@ function wgpu_destroy_mesh(backend::UInt64, mesh::UInt64)
           (UInt64, UInt64), backend, mesh)
 end
 
+"""
+    wgpu_upload_bone_data(backend, mesh_handle, bone_weights, bone_indices, num_vertices) -> Int32
+
+Upload bone weight and index data to an existing mesh for skeletal animation.
+- `bone_weights`: Vector{Float32} of vec4 per vertex (4 floats per vertex)
+- `bone_indices`: Vector{UInt16} of uvec4 per vertex (4 u16 per vertex)
+Returns 0 on success, -1 on failure.
+"""
+function wgpu_upload_bone_data(backend::UInt64, mesh_handle::UInt64,
+                                bone_weights::Vector{Float32},
+                                bone_indices::Vector{UInt16},
+                                num_vertices::Integer)
+    ccall((:or_wgpu_upload_bone_data, _webgpu_lib()), Int32,
+          (UInt64, UInt64, Ptr{Float32}, Ptr{UInt16}, UInt32),
+          backend, mesh_handle, bone_weights, bone_indices, UInt32(num_vertices))
+end
+
+"""
+    wgpu_upload_bone_matrices(backend, bone_matrices, num_bones) -> Int32
+
+Upload bone matrices for the current skinned entity.
+- `bone_matrices`: Vector{Float32} of mat4x4 column-major (16 floats per bone)
+Returns 0 on success, -1 on failure.
+"""
+function wgpu_upload_bone_matrices(backend::UInt64, bone_matrices::Vector{Float32},
+                                    num_bones::Integer)
+    ccall((:or_wgpu_upload_bone_matrices, _webgpu_lib()), Int32,
+          (UInt64, Ptr{Float32}, UInt32),
+          backend, bone_matrices, UInt32(num_bones))
+end
+
+"""
+    wgpu_gbuffer_instanced_pass(backend, mesh_handle, material_data, texture_handles,
+                                  instance_data, instance_count) -> Int32
+
+Render an instanced batch into the G-Buffer. All instances share the same mesh + material.
+- `mesh_handle`: UInt64 GPU mesh handle
+- `material_data`: Vector{UInt8} of 96-byte MaterialUniforms
+- `texture_handles`: Vector{UInt64} of 6 texture handles
+- `instance_data`: Vector{Float32} of 28 floats per instance (model mat4 + 3 normal vec4)
+- `instance_count`: number of instances
+Returns 0 on success, -1 on failure.
+"""
+function wgpu_gbuffer_instanced_pass(backend::UInt64,
+                                       mesh_handle::UInt64,
+                                       material_data::Vector{UInt8},
+                                       texture_handles::Vector{UInt64},
+                                       instance_data::Vector{Float32},
+                                       instance_count::Integer)
+    ccall((:or_wgpu_gbuffer_instanced_pass, _webgpu_lib()), Int32,
+          (UInt64, UInt64, Ptr{UInt8}, Ptr{UInt64}, Ptr{Float32}, UInt32),
+          backend, mesh_handle, material_data, texture_handles, instance_data, UInt32(instance_count))
+end
+
+"""
+    wgpu_gbuffer_skinned_pass(backend, entities_data, entity_count, entity_stride) -> Int32
+
+Render skinned entities into the G-Buffer using the skeletal animation pipeline.
+Called after the regular gbuffer pass (uses LoadOp::Load to preserve existing data).
+Same packed entity format as gbuffer_pass.
+Returns 0 on success, -1 on failure.
+"""
+function wgpu_gbuffer_skinned_pass(backend::UInt64,
+                                     entities_data::Vector{UInt8},
+                                     entity_count::Integer,
+                                     entity_stride::Integer)
+    ccall((:or_wgpu_gbuffer_skinned_pass, _webgpu_lib()), Int32,
+          (UInt64, Ptr{UInt8}, UInt32, UInt32),
+          backend, entities_data, UInt32(entity_count), UInt32(entity_stride))
+end
+
 # ---- Texture operations ----
 
 function wgpu_upload_texture(backend::UInt64, pixels::Vector{UInt8},
@@ -314,8 +385,8 @@ end
     WGPUPostProcessParams
 
 Matches Rust `PostProcessParams`.
-Bloom and tone mapping control params.
-Total: 32 bytes.
+Bloom, tone mapping, vignette, and color grading control params.
+Total: 48 bytes.
 """
 struct WGPUPostProcessParams
     bloom_threshold::Float32                   # 4
@@ -323,9 +394,48 @@ struct WGPUPostProcessParams
     gamma::Float32                             # 4
     tone_mapping_mode::Int32                   # 4
     horizontal::Int32                          # 4
+    vignette_intensity::Float32                # 4
+    vignette_radius::Float32                   # 4
+    vignette_softness::Float32                 # 4
+    color_brightness::Float32                  # 4
+    color_contrast::Float32                    # 4
+    color_saturation::Float32                  # 4
+    _pad1::Float32                             # 4
+end
+
+"""
+    WGPUDOFParams
+
+DOF pass parameters (32 bytes): focus_distance, focus_range, near_plane, far_plane, bokeh_radius + padding.
+Passed as 8 Float32 values to Rust.
+"""
+struct WGPUDOFParams
+    focus_distance::Float32                    # 4
+    focus_range::Float32                       # 4
+    near_plane::Float32                        # 4
+    far_plane::Float32                         # 4
+    bokeh_radius::Float32                      # 4
     _pad1::Float32                             # 4
     _pad2::Float32                             # 4
     _pad3::Float32                             # 4
+end
+
+"""
+    WGPUMotionBlurParams
+
+Motion blur pass parameters (160 bytes): VelocityParams (144 bytes) + MotionBlurParams (16 bytes).
+"""
+struct WGPUMotionBlurParams
+    inv_view_proj::NTuple{16, Float32}         # mat4 = 64 bytes
+    prev_view_proj::NTuple{16, Float32}        # mat4 = 64 bytes
+    max_velocity::Float32                      # 4
+    _vel_pad1::Float32                         # 4
+    _vel_pad2::Float32                         # 4
+    _vel_pad3::Float32                         # 4
+    samples::Int32                             # 4
+    intensity::Float32                         # 4
+    _blur_pad1::Float32                        # 4
+    _blur_pad2::Float32                        # 4
 end
 
 """
@@ -520,6 +630,32 @@ function wgpu_postprocess_pass(backend::UInt64, params::Vector{UInt8})
 end
 
 """
+    wgpu_dof_pass(backend, params) -> Int32
+
+Depth of field pass: CoC computation, separable blur, composite.
+`params` is a Vector{Float32} with 8 elements (32 bytes).
+Returns 0 on success, -1 on failure.
+"""
+function wgpu_dof_pass(backend::UInt64, params::Vector{Float32})
+    ccall((:or_wgpu_dof_pass, _webgpu_lib()), Int32,
+          (UInt64, Ptr{Float32}),
+          backend, params)
+end
+
+"""
+    wgpu_motion_blur_pass(backend, params) -> Int32
+
+Motion blur pass: velocity buffer computation + directional blur.
+`params` is a Vector{UInt8} containing packed WGPUMotionBlurParams (160 bytes).
+Returns 0 on success, -1 on failure.
+"""
+function wgpu_motion_blur_pass(backend::UInt64, params::Vector{UInt8})
+    ccall((:or_wgpu_motion_blur_pass, _webgpu_lib()), Int32,
+          (UInt64, Ptr{UInt8}),
+          backend, params)
+end
+
+"""
     wgpu_forward_pass(backend, entities_data, entity_count, entity_stride) -> Int32
 
 Render transparent objects (forward pass with blending).
@@ -573,6 +709,24 @@ function wgpu_ui_pass(backend::UInt64,
           (UInt64, Ptr{Float32}, UInt32, Float32, Float32),
           backend, vertices, UInt32(vertex_count),
           Float32(screen_width), Float32(screen_height))
+end
+
+"""
+    wgpu_debug_lines_pass(backend, vertices, vertex_count, view_proj) -> Int32
+
+Render debug lines (no depth test, line-list topology).
+- `vertices`: Vector{Float32} of interleaved vertex data (pos3 + color3 = 6 floats/vertex)
+- `vertex_count`: number of vertices (2 per line)
+- `view_proj`: Vector{Float32} of 16 floats (column-major mat4 view*projection matrix)
+Returns 0 on success, -1 on failure.
+"""
+function wgpu_debug_lines_pass(backend::UInt64,
+                                 vertices::Vector{Float32},
+                                 vertex_count::Integer,
+                                 view_proj::Vector{Float32})
+    ccall((:or_wgpu_debug_lines_pass, _webgpu_lib()), Int32,
+          (UInt64, Ptr{Float32}, UInt32, Ptr{Float32}),
+          backend, vertices, UInt32(vertex_count), view_proj)
 end
 
 """

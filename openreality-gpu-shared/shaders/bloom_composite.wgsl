@@ -6,9 +6,13 @@ struct PostProcessParams {
     gamma: f32,
     tone_mapping_mode: i32,
     horizontal: i32,
+    vignette_intensity: f32,
+    vignette_radius: f32,
+    vignette_softness: f32,
+    color_brightness: f32,
+    color_contrast: f32,
+    color_saturation: f32,
     _pad1: f32,
-    _pad2: f32,
-    _pad3: f32,
 };
 
 @group(0) @binding(0) var<uniform> params: PostProcessParams;
@@ -64,6 +68,21 @@ fn fs_main(in: FragmentInput) -> @location(0) vec4<f32> {
 
     // Gamma correction
     mapped = pow(mapped, vec3<f32>(1.0 / params.gamma));
+
+    // Vignette (radial darkening)
+    if params.vignette_intensity > 0.0 {
+        let center = in.uv - 0.5;
+        let dist = length(center);
+        let vignette = smoothstep(params.vignette_radius, params.vignette_radius - params.vignette_softness, dist);
+        mapped *= mix(1.0, vignette, params.vignette_intensity);
+    }
+
+    // Color grading (brightness, contrast, saturation)
+    mapped += params.color_brightness;
+    mapped = mix(vec3<f32>(0.5), mapped, params.color_contrast);
+    let luma = dot(mapped, vec3<f32>(0.2126, 0.7152, 0.0722));
+    mapped = mix(vec3<f32>(luma), mapped, params.color_saturation);
+    mapped = clamp(mapped, vec3<f32>(0.0), vec3<f32>(1.0));
 
     return vec4<f32>(mapped, 1.0);
 }

@@ -1,0 +1,13 @@
+{
+  "appId": "com.openreality.game",
+  "appName": "OpenReality Game",
+  "webDir": "web",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchAutoHide": false
+    }
+  }
+}

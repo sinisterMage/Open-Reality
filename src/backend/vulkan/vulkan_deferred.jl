@@ -28,21 +28,66 @@ layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inUV;
 
+#ifdef FEATURE_SKINNING
+layout(location = 3) in vec4 inBoneWeights;
+layout(location = 4) in uvec4 inBoneIndices;
+
+#define MAX_BONES 128
+layout(set = 2, binding = 0) uniform BoneData {
+    int has_skinning;
+    int _pad1, _pad2, _pad3;
+    mat4 bones[MAX_BONES];
+} skinning;
+#endif
+
+#ifdef FEATURE_INSTANCED
+layout(location = 5) in vec4 inInstanceModelCol0;
+layout(location = 6) in vec4 inInstanceModelCol1;
+layout(location = 7) in vec4 inInstanceModelCol2;
+layout(location = 8) in vec4 inInstanceModelCol3;
+layout(location = 9) in vec3 inInstanceNormalCol0;
+layout(location = 10) in vec3 inInstanceNormalCol1;
+layout(location = 11) in vec3 inInstanceNormalCol2;
+#endif
+
 layout(location = 0) out vec3 fragWorldPos;
 layout(location = 1) out vec3 fragNormal;
 layout(location = 2) out vec2 fragUV;
 layout(location = 3) out vec3 fragCameraPos;
 
 void main() {
-    vec4 worldPos = obj.model * vec4(inPosition, 1.0);
-    fragWorldPos = worldPos.xyz;
+    vec3 localPos = inPosition;
+    vec3 localNormal = inNormal;
 
-    mat3 normalMatrix = mat3(
+#ifdef FEATURE_SKINNING
+    if (skinning.has_skinning != 0) {
+        mat4 skin = skinning.bones[inBoneIndices.x] * inBoneWeights.x
+                  + skinning.bones[inBoneIndices.y] * inBoneWeights.y
+                  + skinning.bones[inBoneIndices.z] * inBoneWeights.z
+                  + skinning.bones[inBoneIndices.w] * inBoneWeights.w;
+        localPos = (skin * vec4(inPosition, 1.0)).xyz;
+        localNormal = mat3(skin) * inNormal;
+    }
+#endif
+
+#ifdef FEATURE_INSTANCED
+    mat4 modelMatrix = mat4(inInstanceModelCol0, inInstanceModelCol1,
+                            inInstanceModelCol2, inInstanceModelCol3);
+    mat3 normalMat = mat3(inInstanceNormalCol0, inInstanceNormalCol1,
+                           inInstanceNormalCol2);
+#else
+    mat4 modelMatrix = obj.model;
+    mat3 normalMat = mat3(
         obj.normal_matrix_col0.xyz,
         obj.normal_matrix_col1.xyz,
         obj.normal_matrix_col2.xyz
     );
-    fragNormal = normalize(normalMatrix * inNormal);
+#endif
+
+    vec4 worldPos = modelMatrix * vec4(localPos, 1.0);
+    fragWorldPos = worldPos.xyz;
+
+    fragNormal = normalize(normalMat * localNormal);
     fragUV = inUV;
     fragCameraPos = frame.camera_pos.xyz;
 
@@ -81,7 +126,8 @@ layout(set = 1, binding = 0) uniform MaterialUBO {
     int has_ao_map;
     int has_emissive_map;
     int has_height_map;
-    int _pad1, _pad2;
+    float lod_alpha;
+    int _pad2;
 } material;
 
 layout(set = 1, binding = 1) uniform sampler2D albedoMap;
@@ -102,7 +148,23 @@ layout(location = 1) out vec4 outNormalRoughness;   // RGB = normal (encoded), A
 layout(location = 2) out vec4 outEmissiveAO;        // RGB = emissive, A = AO
 layout(location = 3) out vec4 outAdvancedMaterial;  // R = clearcoat, G = subsurface, BA = reserved
 
+// Bayer 4x4 dithering matrix for LOD crossfade
+const float bayerMatrix[16] = float[16](
+    0.0/16.0,  8.0/16.0,  2.0/16.0, 10.0/16.0,
+    12.0/16.0, 4.0/16.0, 14.0/16.0,  6.0/16.0,
+    3.0/16.0, 11.0/16.0,  1.0/16.0,  9.0/16.0,
+    15.0/16.0, 7.0/16.0, 13.0/16.0,  5.0/16.0
+);
+
 void main() {
+    // LOD crossfade dithering
+    if (material.lod_alpha < 1.0) {
+        ivec2 pixel = ivec2(gl_FragCoord.xy) % 4;
+        float threshold = bayerMatrix[pixel.y * 4 + pixel.x];
+        if (material.lod_alpha < threshold)
+            discard;
+    }
+
     vec2 uv = fragUV;
 
     // Parallax mapping
@@ -243,6 +305,11 @@ layout(set = 1, binding = 0) uniform LightData {
     float ibl_intensity;
 } lights;
 
+// IBL textures (set 1, bindings 6-8)
+layout(set = 1, binding = 6) uniform samplerCube irradianceMap;
+layout(set = 1, binding = 7) uniform samplerCube prefilterMap;
+layout(set = 1, binding = 8) uniform sampler2D brdfLUT;
+
 layout(location = 0) in vec2 fragUV;
 layout(location = 0) out vec4 outColor;
 
@@ -277,6 +344,10 @@ vec3 FresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+vec3 FresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
 void main() {
     vec4 albedoMetallic = texture(gAlbedoMetallic, fragUV);
     vec4 normalRoughness = texture(gNormalRoughness, fragUV);
@@ -300,10 +371,31 @@ void main() {
     vec3 V = normalize(frame.camera_pos.xyz - worldPos);
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
 
-    // Ambient (modulated by SSAO)
+    // SSAO
     float ssao = texture(ssaoTexture, fragUV).r;
-    vec3 ambient = vec3(0.03) * albedo * ao * ssao;
-    vec3 Lo = ambient;
+
+    // Ambient / IBL
+    vec3 Lo;
+    if (lights.has_ibl != 0) {
+        float NdotV = max(dot(N, V), 0.0);
+        vec3 F = FresnelSchlickRoughness(NdotV, F0, roughness);
+        vec3 kD_ibl = (1.0 - F) * (1.0 - metallic);
+
+        // Diffuse IBL (irradiance map)
+        vec3 irradiance = texture(irradianceMap, N).rgb;
+        vec3 diffuse_ibl = irradiance * albedo;
+
+        // Specular IBL (prefiltered env map + BRDF LUT)
+        vec3 R = reflect(-V, N);
+        const float MAX_REFLECTION_LOD = 4.0;
+        vec3 prefilteredColor = textureLod(prefilterMap, R, roughness * MAX_REFLECTION_LOD).rgb;
+        vec2 brdf = texture(brdfLUT, vec2(NdotV, roughness)).rg;
+        vec3 specular_ibl = prefilteredColor * (F * brdf.x + brdf.y);
+
+        Lo = (kD_ibl * diffuse_ibl + specular_ibl) * ao * ssao * lights.ibl_intensity;
+    } else {
+        Lo = vec3(0.03) * albedo * ao * ssao;
+    }
 
     // Directional lights
     for (int i = 0; i < lights.num_dir_lights; i++) {
@@ -390,12 +482,28 @@ function vk_create_deferred_pipeline(device::Device, physical_device::PhysicalDe
                                                         has_depth=false)
 
     # Create G-buffer shader library with compile function for Vulkan
+    # Detects FEATURE_SKINNING in the source and uses skinned bindings + bone descriptor set
     compile_fn = (vert_src::String, frag_src::String) -> begin
+        is_skinned = contains(vert_src, "FEATURE_SKINNING")
+        is_instanced = contains(vert_src, "FEATURE_INSTANCED")
+        if is_skinned
+            bindings = vk_skinned_vertex_bindings()
+            attributes = vk_skinned_vertex_attributes()
+            layouts = [per_frame_layout, per_material_layout, per_frame_layout]
+        elseif is_instanced
+            bindings = vk_instanced_vertex_bindings()
+            attributes = vk_instanced_vertex_attributes()
+            layouts = [per_frame_layout, per_material_layout]
+        else
+            bindings = vk_standard_vertex_bindings()
+            attributes = vk_standard_vertex_attributes()
+            layouts = [per_frame_layout, per_material_layout]
+        end
         vk_compile_and_create_pipeline(device, vert_src, frag_src,
             VulkanPipelineConfig(
                 pipeline.gbuffer.render_pass, UInt32(0),
-                vk_standard_vertex_bindings(), vk_standard_vertex_attributes(),
-                [per_frame_layout, per_material_layout],
+                bindings, attributes,
+                layouts,
                 [push_constant_range],
                 false,  # no blend
                 true,   # depth test

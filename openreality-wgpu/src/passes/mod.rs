@@ -12,3 +12,6 @@ pub mod present;
 pub mod particles;
 pub mod ui;
 pub mod terrain;
+pub mod dof;
+pub mod motion_blur;
+pub mod debug_lines;

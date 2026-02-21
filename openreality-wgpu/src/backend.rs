@@ -8,6 +8,10 @@ pub struct GPUMesh {
     pub uv_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
     pub index_count: u32,
+    // Optional skinning data (bone weights + bone indices per vertex)
+    pub bone_weight_buffer: Option<wgpu::Buffer>,
+    pub bone_index_buffer: Option<wgpu::Buffer>,
+    pub has_skinning: bool,
 }
 
 /// GPU texture with associated view and sampler.
@@ -112,6 +116,8 @@ pub struct DeferredPipeline {
     pub particle_pipeline: wgpu::RenderPipeline,
     pub ui_pipeline: wgpu::RenderPipeline,
     pub terrain_pipeline: wgpu::RenderPipeline,
+    pub gbuffer_skinned_pipeline: wgpu::RenderPipeline,
+    pub gbuffer_instanced_pipeline: wgpu::RenderPipeline,
 
     // Effect pipelines
     pub ssao_pipeline: wgpu::RenderPipeline,
@@ -130,8 +136,26 @@ pub struct DeferredPipeline {
     pub ssr_target: RenderTarget,
     pub taa_targets: render_targets::TAATargets,
     pub bloom_targets: render_targets::BloomTargets,
-    pub dof_targets: Option<render_targets::DOFTargets>,
-    pub mblur_targets: Option<render_targets::MotionBlurTargets>,
+    pub dof_targets: render_targets::DOFTargets,
+    pub mblur_targets: render_targets::MotionBlurTargets,
+
+    // DOF pipelines
+    pub dof_coc_pipeline: wgpu::RenderPipeline,
+    pub dof_blur_pipeline: wgpu::RenderPipeline,
+    pub dof_composite_pipeline: wgpu::RenderPipeline,
+    pub dof_coc_bgl: wgpu::BindGroupLayout,
+    pub dof_blur_bgl: wgpu::BindGroupLayout,
+    pub dof_composite_bgl: wgpu::BindGroupLayout,
+    pub dof_coc_params_buffer: wgpu::Buffer,
+    pub dof_blur_params_buffer: wgpu::Buffer,
+
+    // Motion blur pipelines
+    pub mblur_velocity_pipeline: wgpu::RenderPipeline,
+    pub mblur_blur_pipeline: wgpu::RenderPipeline,
+    pub mblur_velocity_bgl: wgpu::BindGroupLayout,
+    pub mblur_blur_bgl: wgpu::BindGroupLayout,
+    pub mblur_velocity_params_buffer: wgpu::Buffer,
+    pub mblur_blur_params_buffer: wgpu::Buffer,
 
     // Post-process intermediate targets (for ping-pong)
     pub pp_target_a: RenderTarget,
@@ -153,6 +177,7 @@ pub struct DeferredPipeline {
     pub terrain_bgl: wgpu::BindGroupLayout,
     pub present_bgl: wgpu::BindGroupLayout,
     pub forward_light_shadow_bgl: wgpu::BindGroupLayout,
+    pub bone_bgl: wgpu::BindGroupLayout,
 
     // Effect bind group layouts
     pub ssao_bgl: wgpu::BindGroupLayout,
@@ -173,6 +198,7 @@ pub struct DeferredPipeline {
     pub particle_uniform_buffer: wgpu::Buffer,
     pub ui_uniform_buffer: wgpu::Buffer,
     pub terrain_params_buffer: wgpu::Buffer,
+    pub bone_uniform_buffer: wgpu::Buffer,
 
     // Samplers
     pub depth_sampler: wgpu::Sampler,
@@ -183,6 +209,15 @@ pub struct DeferredPipeline {
     pub particle_vbo_size: u64,
     pub ui_vbo: wgpu::Buffer,
     pub ui_vbo_size: u64,
+    pub instance_vbo: wgpu::Buffer,
+    pub instance_vbo_size: u64,
+
+    // Debug lines
+    pub debug_lines_pipeline: wgpu::RenderPipeline,
+    pub debug_lines_bgl: wgpu::BindGroupLayout,
+    pub debug_lines_uniform_buffer: wgpu::Buffer,
+    pub debug_lines_vbo: wgpu::Buffer,
+    pub debug_lines_vbo_size: u64,
 
     // TAA state
     pub taa_first_frame: bool,
@@ -563,6 +598,9 @@ impl WGPUBackendState {
             uv_buffer,
             index_buffer,
             index_count: indices.len() as u32,
+            bone_weight_buffer: None,
+            bone_index_buffer: None,
+            has_skinning: false,
         };
 
         self.meshes.insert(mesh)
@@ -698,6 +736,7 @@ impl WGPUBackendState {
         let terrain_bgl = pipeline::create_terrain_bgl(device);
         let present_bgl = pipeline::create_present_bgl(device);
         let forward_light_shadow_bgl = pipeline::create_forward_light_shadow_bgl(device);
+        let bone_bgl = pipeline::create_bone_bgl(device);
 
         // Effect bind group layouts — dedicated layouts for shaders with non-standard binding patterns
         let ssao_bgl = pipeline::create_ssao_bind_group_layout(device);
@@ -755,6 +794,22 @@ impl WGPUBackendState {
         log::info!("Creating terrain pipeline...");
         let terrain_pipeline = pipeline::create_terrain_pipeline(device, &self.per_frame_bind_group_layout, &terrain_bgl);
 
+        log::info!("Creating skinned G-Buffer pipeline...");
+        let gbuffer_skinned_pipeline = pipeline::create_gbuffer_skinned_pipeline(
+            device,
+            &self.per_frame_bind_group_layout,
+            &self.material_bind_group_layout,
+            &per_object_bgl,
+            &bone_bgl,
+        );
+
+        log::info!("Creating instanced G-Buffer pipeline...");
+        let gbuffer_instanced_pipeline = pipeline::create_gbuffer_instanced_pipeline(
+            device,
+            &self.per_frame_bind_group_layout,
+            &self.material_bind_group_layout,
+        );
+
         // Effect pipelines
         use openreality_gpu_shared::shaders;
         log::info!("Creating SSAO pipeline...");
@@ -800,6 +855,8 @@ impl WGPUBackendState {
         let bloom_targets = render_targets::create_bloom_targets(device, w, h);
         let pp_target_a = render_targets::create_hdr_target(device, w, h, "PP Target A", false);
         let pp_target_b = render_targets::create_hdr_target(device, w, h, "PP Target B", false);
+        let dof_targets = render_targets::create_dof_targets(device, w, h);
+        let mblur_targets = render_targets::create_motion_blur_targets(device, w, h);
 
         // Default resources
         let (default_texture, default_texture_view) = render_targets::create_default_texture(device, queue);
@@ -873,6 +930,63 @@ impl WGPUBackendState {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let bone_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Bone Uniforms"),
+            size: std::mem::size_of::<BoneUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // DOF pipelines, BGLs, and buffers
+        use openreality_gpu_shared::uniforms::{DOFCoCParams, DOFBlurParams, VelocityParams, MotionBlurParams};
+        let dof_coc_bgl = pipeline::create_dof_coc_bgl(device);
+        let dof_blur_bgl = pipeline::create_dof_blur_bgl(device);
+        let dof_composite_bgl = pipeline::create_dof_composite_bgl(device);
+        let dof_coc_pipeline = pipeline::create_fullscreen_effect_pipeline(
+            device, "DOF CoC Pipeline", shaders::DOF_SHADER, "fs_coc", &dof_coc_bgl, render_targets::R16_FORMAT,
+        );
+        let dof_blur_pipeline = pipeline::create_fullscreen_effect_pipeline(
+            device, "DOF Blur Pipeline", shaders::DOF_SHADER, "fs_blur", &dof_blur_bgl, render_targets::HDR_FORMAT,
+        );
+        let dof_composite_pipeline = pipeline::create_fullscreen_effect_pipeline(
+            device, "DOF Composite Pipeline", shaders::DOF_SHADER, "fs_composite", &dof_composite_bgl, render_targets::HDR_FORMAT,
+        );
+        let dof_coc_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("DOF CoC Params"),
+            size: std::mem::size_of::<DOFCoCParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let dof_blur_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("DOF Blur Params"),
+            size: std::mem::size_of::<DOFBlurParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Motion blur pipelines, BGLs, and buffers
+        let mblur_velocity_bgl = pipeline::create_mblur_velocity_bgl(device);
+        let mblur_blur_bgl = pipeline::create_mblur_blur_bgl(device);
+        let mblur_velocity_pipeline = pipeline::create_fullscreen_effect_pipeline(
+            device, "Motion Blur Velocity Pipeline", shaders::MOTION_BLUR_SHADER, "fs_velocity",
+            &mblur_velocity_bgl, render_targets::RG16_FORMAT,
+        );
+        let mblur_blur_pipeline = pipeline::create_fullscreen_effect_pipeline(
+            device, "Motion Blur Pipeline", shaders::MOTION_BLUR_SHADER, "fs_blur",
+            &mblur_blur_bgl, render_targets::HDR_FORMAT,
+        );
+        let mblur_velocity_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Motion Blur Velocity Params"),
+            size: std::mem::size_of::<VelocityParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mblur_blur_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Motion Blur Blur Params"),
+            size: std::mem::size_of::<MotionBlurParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         // Dynamic vertex buffers (start with reasonable default size, resize as needed)
         let initial_particle_vbo_size = 1024 * 9 * 4; // 1024 vertices * 9 floats * 4 bytes
@@ -891,6 +1005,33 @@ impl WGPUBackendState {
             mapped_at_creation: false,
         });
 
+        let initial_instance_vbo_size = 256 * pipeline::INSTANCE_STRIDE; // 256 instances * 112 bytes
+        let instance_vbo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Instance VBO"),
+            size: initial_instance_vbo_size,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Debug lines
+        let debug_lines_bgl = pipeline::create_debug_lines_bgl(device);
+        let debug_lines_pipeline = pipeline::create_debug_lines_pipeline(
+            device, &debug_lines_bgl, self.surface_config.format,
+        );
+        let debug_lines_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Debug Lines Uniform"),
+            size: 64, // mat4x4
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let initial_debug_lines_vbo_size = 1024 * 24u64; // 1024 vertices * 24 bytes
+        let debug_lines_vbo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Debug Lines VBO"),
+            size: initial_debug_lines_vbo_size,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         self.deferred = Some(DeferredPipeline {
             gbuffer_pipeline,
             lighting_pipeline,
@@ -900,6 +1041,8 @@ impl WGPUBackendState {
             particle_pipeline,
             ui_pipeline,
             terrain_pipeline,
+            gbuffer_skinned_pipeline,
+            gbuffer_instanced_pipeline,
             ssao_pipeline,
             ssao_blur_pipeline,
             ssr_pipeline,
@@ -914,8 +1057,22 @@ impl WGPUBackendState {
             ssr_target,
             taa_targets,
             bloom_targets,
-            dof_targets: None,
-            mblur_targets: None,
+            dof_targets,
+            mblur_targets,
+            dof_coc_pipeline,
+            dof_blur_pipeline,
+            dof_composite_pipeline,
+            dof_coc_bgl,
+            dof_blur_bgl,
+            dof_composite_bgl,
+            dof_coc_params_buffer,
+            dof_blur_params_buffer,
+            mblur_velocity_pipeline,
+            mblur_blur_pipeline,
+            mblur_velocity_bgl,
+            mblur_blur_bgl,
+            mblur_velocity_params_buffer,
+            mblur_blur_params_buffer,
             pp_target_a,
             pp_target_b,
             default_texture,
@@ -931,6 +1088,7 @@ impl WGPUBackendState {
             terrain_bgl,
             present_bgl,
             forward_light_shadow_bgl,
+            bone_bgl,
             ssao_bgl,
             ssao_blur_bgl,
             ssr_bgl,
@@ -947,12 +1105,20 @@ impl WGPUBackendState {
             particle_uniform_buffer,
             ui_uniform_buffer,
             terrain_params_buffer,
+            bone_uniform_buffer,
             depth_sampler,
             shadow_comparison_sampler,
             particle_vbo,
             particle_vbo_size: initial_particle_vbo_size,
             ui_vbo,
             ui_vbo_size: initial_ui_vbo_size,
+            instance_vbo,
+            instance_vbo_size: initial_instance_vbo_size,
+            debug_lines_pipeline,
+            debug_lines_bgl,
+            debug_lines_uniform_buffer,
+            debug_lines_vbo,
+            debug_lines_vbo_size: initial_debug_lines_vbo_size,
             taa_first_frame: true,
         });
 

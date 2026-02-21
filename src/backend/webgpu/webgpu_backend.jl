@@ -224,23 +224,40 @@ function render_frame!(backend::WebGPUBackend, scene)
         wgpu_begin_frame(backend.backend_handle, per_frame_data)
     end
 
-    # 4. G-Buffer pass: pack opaque entities
+    # 4. G-Buffer pass: batch into instanced + singles, then render
     if !isempty(frame_data.opaque_entities)
-        entity_stride = UInt32(264)  # sizeof(EntityDrawData) as expected by Rust parser
-        entities_buf = UInt8[]
+        # Ensure all meshes are uploaded first
         for erd in frame_data.opaque_entities
-            gpu_mesh = _ensure_mesh_uploaded(backend, erd.entity_id, erd.mesh)
-            gpu_mesh === nothing && continue
-            material = get_component(erd.entity_id, MaterialComponent)
-            tex_handles = _ensure_textures_uploaded(backend, material)
-            entity_bytes = _pack_entity_raw(gpu_mesh.handle, erd.model, erd.normal_matrix, material, tex_handles)
-            append!(entities_buf, entity_bytes)
+            _ensure_mesh_uploaded(backend, erd.entity_id, erd.mesh)
         end
-        if !isempty(entities_buf)
-            entity_count = UInt32(length(entities_buf) ÷ Int(entity_stride))
-            wgpu_gbuffer_pass(backend.backend_handle, entities_buf, entity_count, entity_stride)
+
+        # Group entities into instanced batches and singles
+        batches, singles = group_into_batches(frame_data.opaque_entities)
+
+        # 4a. Render singles (non-instanced) via regular gbuffer pass
+        if !isempty(singles)
+            entity_stride = UInt32(264)
+            entities_buf = UInt8[]
+            for erd in singles
+                gpu_mesh = _ensure_mesh_uploaded(backend, erd.entity_id, erd.mesh)
+                gpu_mesh === nothing && continue
+                material = get_component(erd.entity_id, MaterialComponent)
+                tex_handles = _ensure_textures_uploaded(backend, material)
+                entity_bytes = _pack_entity_raw(gpu_mesh.handle, erd.model, erd.normal_matrix, material, tex_handles)
+                append!(entities_buf, entity_bytes)
+            end
+            if !isempty(entities_buf)
+                entity_count = UInt32(length(entities_buf) ÷ Int(entity_stride))
+                wgpu_gbuffer_pass(backend.backend_handle, entities_buf, entity_count, entity_stride)
+            end
         end
+
+        # 4b. Render instanced batches
+        _render_wgpu_instanced_batches(backend, batches)
     end
+
+    # 4c. Skinned G-Buffer pass: render entities with skeletal animation
+    _render_wgpu_skinned_gbuffer(backend, frame_data.opaque_entities)
 
     # 5. Lighting pass
     wgpu_lighting_pass(backend.backend_handle)
@@ -258,6 +275,19 @@ function render_frame!(backend::WebGPUBackend, scene)
     wgpu_taa_pass(backend.backend_handle, taa_params)
     backend.prev_view_proj = Mat4f(vp)
     backend.taa_frame_index += 1
+
+    # 8.5. DOF pass (if enabled)
+    config = backend.post_process_config
+    if config !== nothing && config.dof_enabled
+        dof_params = _pack_dof_params(config, proj)
+        wgpu_dof_pass(backend.backend_handle, dof_params)
+    end
+
+    # 8.6. Motion blur pass (if enabled)
+    if config !== nothing && config.motion_blur_enabled
+        mblur_params = _pack_motion_blur_params(config, inv_vp, backend.prev_view_proj)
+        wgpu_motion_blur_pass(backend.backend_handle, mblur_params)
+    end
 
     # 9. Post-process pass
     pp_params = _pack_postprocess_params(backend)
@@ -287,6 +317,9 @@ function render_frame!(backend::WebGPUBackend, scene)
 
     # 12. UI pass
     _render_wgpu_ui(backend)
+
+    # 12.5. Debug lines pass (if ENV gated debug is enabled)
+    _render_wgpu_debug_lines(backend, vp)
 
     # 13. Present
     wgpu_present(backend.backend_handle)
@@ -467,8 +500,8 @@ function _pack_material_96(material)::Vector{UInt8}
                        0.0f0, 0.0f0, 0.0f0, 0.0f0,   # emissive_factor + pad
                        0.0f0, 0.0f0, 0.0f0, 0.0f0]   # clearcoat, clearcoat_rough, subsurface, parallax
         buf[1:64] .= reinterpret(UInt8, data)
-        # has_*_map flags + padding (all zero, 8 Int32 = 32 bytes)
-        buf[65:96] .= reinterpret(UInt8, Int32[0, 0, 0, 0, 0, 0, 0, 0])
+        # has_*_map flags + lod_alpha + padding (8 Int32 = 32 bytes)
+        buf[65:96] .= reinterpret(UInt8, Int32[0, 0, 0, 0, 0, 0, reinterpret(Int32, 1.0f0), 0])
         return buf
     end
 
@@ -481,7 +514,8 @@ function _pack_material_96(material)::Vector{UInt8}
     ]
     buf[1:64] .= reinterpret(UInt8, data)
 
-    # Pack has_*_map flags + padding (8 Int32 = 32 bytes)
+    # Pack has_*_map flags + lod_alpha + padding (8 Int32 = 32 bytes)
+    lod_alpha_bits = reinterpret(Int32, 1.0f0)  # 0x3f800000 = fully visible
     flags = Int32[
         material.albedo_map !== nothing ? Int32(1) : Int32(0),
         material.normal_map !== nothing ? Int32(1) : Int32(0),
@@ -489,7 +523,7 @@ function _pack_material_96(material)::Vector{UInt8}
         material.ao_map !== nothing ? Int32(1) : Int32(0),
         material.emissive_map !== nothing ? Int32(1) : Int32(0),
         material.height_map !== nothing ? Int32(1) : Int32(0),
-        Int32(0),  # _pad1
+        lod_alpha_bits,  # lod_alpha as f32 bits (1.0 = fully visible)
         Int32(0),  # _pad2
     ]
     buf[65:96] .= reinterpret(UInt8, flags)
@@ -594,12 +628,24 @@ function _pack_postprocess_params(backend::WebGPUBackend)::Vector{UInt8}
     bloom_intensity = 0.3f0
     gamma = 2.2f0
     tone_mapping_mode = Int32(0)  # Reinhard
+    vignette_intensity = 0.0f0
+    vignette_radius = 0.8f0
+    vignette_softness = 0.5f0
+    color_brightness = 0.0f0
+    color_contrast = 1.0f0
+    color_saturation = 1.0f0
 
     if config !== nothing
         bloom_threshold = config.bloom_threshold
         bloom_intensity = config.bloom_intensity
         gamma = config.gamma
         tone_mapping_mode = Int32(config.tone_mapping)
+        vignette_intensity = config.vignette_enabled ? config.vignette_intensity : 0.0f0
+        vignette_radius = config.vignette_radius
+        vignette_softness = config.vignette_softness
+        color_brightness = config.color_grading_enabled ? config.color_grading_brightness : 0.0f0
+        color_contrast = config.color_grading_enabled ? config.color_grading_contrast : 1.0f0
+        color_saturation = config.color_grading_enabled ? config.color_grading_saturation : 1.0f0
     end
 
     pp = WGPUPostProcessParams(
@@ -608,11 +654,61 @@ function _pack_postprocess_params(backend::WebGPUBackend)::Vector{UInt8}
         gamma,
         tone_mapping_mode,
         Int32(0),               # horizontal (not used for composite)
+        vignette_intensity,
+        vignette_radius,
+        vignette_softness,
+        color_brightness,
+        color_contrast,
+        color_saturation,
         0.0f0,                  # _pad1
-        0.0f0,                  # _pad2
-        0.0f0,                  # _pad3
     )
     return _struct_to_bytes(pp)
+end
+
+# ---- Helper: Pack DOF params ----
+
+"""
+    _pack_dof_params(config, proj) -> Vector{Float32}
+
+Pack DOF parameters as 8 Float32 values for the Rust FFI.
+"""
+function _pack_dof_params(config::PostProcessConfig, proj)::Vector{Float32}
+    # Extract near/far planes from projection matrix (perspective: p[3,3] and p[3,4])
+    near = Float32(proj[4,3] / (proj[3,3] - 1.0))
+    far  = Float32(proj[4,3] / (proj[3,3] + 1.0))
+    return Float32[
+        config.dof_focus_distance,
+        config.dof_focus_range,
+        abs(near),
+        abs(far),
+        config.dof_bokeh_radius,
+        0.0f0,  # pad
+        0.0f0,  # pad
+        0.0f0,  # pad
+    ]
+end
+
+# ---- Helper: Pack motion blur params ----
+
+"""
+    _pack_motion_blur_params(config, inv_vp, prev_vp) -> Vector{UInt8}
+
+Pack motion blur parameters matching WGPUMotionBlurParams layout (160 bytes).
+"""
+function _pack_motion_blur_params(config::PostProcessConfig, inv_vp, prev_vp)::Vector{UInt8}
+    mblur = WGPUMotionBlurParams(
+        _mat4_to_ntuple(inv_vp),
+        _mat4_to_ntuple(prev_vp),
+        config.motion_blur_max_velocity,
+        0.0f0,  # _vel_pad1
+        0.0f0,  # _vel_pad2
+        0.0f0,  # _vel_pad3
+        Int32(config.motion_blur_samples),
+        config.motion_blur_intensity,
+        0.0f0,  # _blur_pad1
+        0.0f0,  # _blur_pad2
+    )
+    return _struct_to_bytes(mblur)
 end
 
 # ---- Helper: Render particles ----
@@ -674,6 +770,126 @@ function _render_wgpu_ui(backend::WebGPUBackend)
 
     wgpu_ui_pass(backend.backend_handle, ctx.vertices,
         UInt32(vertex_count), Float32(ctx.width), Float32(ctx.height))
+end
+
+# ---- Helper: Render debug lines ----
+
+"""
+    _render_wgpu_debug_lines(backend, view_proj)
+
+Render debug lines if OPENREALITY_DEBUG is enabled. Packs DebugLine data into
+pos3+color3 vertex format and calls wgpu_debug_lines_pass.
+"""
+function _render_wgpu_debug_lines(backend::WebGPUBackend, view_proj)
+    !OPENREALITY_DEBUG && return
+    isempty(_DEBUG_LINES) && return
+
+    # Pack: 2 vertices per line, 6 floats per vertex (pos3 + color3)
+    nlines = length(_DEBUG_LINES)
+    vertices = Float32[]
+    sizehint!(vertices, nlines * 12)
+    for line in _DEBUG_LINES
+        push!(vertices, Float32(line.start_pos[1]), Float32(line.start_pos[2]), Float32(line.start_pos[3]))
+        push!(vertices, Float32(line.color.r), Float32(line.color.g), Float32(line.color.b))
+        push!(vertices, Float32(line.end_pos[1]), Float32(line.end_pos[2]), Float32(line.end_pos[3]))
+        push!(vertices, Float32(line.color.r), Float32(line.color.g), Float32(line.color.b))
+    end
+
+    vertex_count = UInt32(nlines * 2)
+    vp_floats = Float32[Float32(view_proj[i]) for i in 1:16]
+    wgpu_debug_lines_pass(backend.backend_handle, vertices, vertex_count, vp_floats)
+
+    flush_debug_draw!()
+end
+
+# ---- Helper: Render instanced batches ----
+
+"""
+    _render_wgpu_instanced_batches(backend, batches)
+
+Render instanced batches via the instanced G-Buffer pipeline.
+Each batch shares one mesh + material; per-instance transforms are packed into a flat buffer.
+Instance data layout: 28 floats per instance (model mat4 column-major + 3 normal vec4 columns).
+"""
+function _render_wgpu_instanced_batches(backend::WebGPUBackend, batches)
+    isempty(batches) && return
+
+    for batch in batches
+        rep = batch.representative
+        gpu_mesh = _ensure_mesh_uploaded(backend, rep.entity_id, rep.mesh)
+        gpu_mesh === nothing && continue
+
+        # Pack material for the representative entity
+        material = get_component(rep.entity_id, MaterialComponent)
+        material === nothing && (material = MaterialComponent())
+        mat_data = _pack_material_96(material)
+        tex_handles = UInt64[_ensure_textures_uploaded(backend, material)...]
+
+        # Pack instance data: 28 floats per instance (model mat4 + 3 normal vec4)
+        instance_count = length(batch.model_matrices)
+        instance_data = Float32[]
+        sizehint!(instance_data, instance_count * 28)
+        for i in 1:instance_count
+            m = batch.model_matrices[i]
+            # Model matrix (column-major, 16 floats)
+            for j in 1:16
+                push!(instance_data, Float32(m[j]))
+            end
+            # Normal matrix columns as vec4 (3 * 4 = 12 floats)
+            nm = batch.normal_matrices[i]
+            push!(instance_data, Float32(nm[1,1]), Float32(nm[2,1]), Float32(nm[3,1]), 0.0f0)
+            push!(instance_data, Float32(nm[1,2]), Float32(nm[2,2]), Float32(nm[3,2]), 0.0f0)
+            push!(instance_data, Float32(nm[1,3]), Float32(nm[2,3]), Float32(nm[3,3]), 0.0f0)
+        end
+
+        wgpu_gbuffer_instanced_pass(backend.backend_handle,
+            gpu_mesh.handle, mat_data, tex_handles, instance_data, instance_count)
+    end
+end
+
+# ---- Helper: Render skinned entities ----
+
+"""
+    _render_wgpu_skinned_gbuffer(backend, opaque_entities)
+
+Find entities with SkinnedMeshComponent, upload their bone matrices, and render
+them via the skinned G-Buffer pipeline (LoadOp::Load preserves existing G-Buffer data).
+
+Each skinned entity is rendered in its own pass invocation because the Rust side
+has a single shared bone_uniform_buffer — uploading + drawing per entity ensures
+each entity uses its own bone matrices.
+"""
+function _render_wgpu_skinned_gbuffer(backend::WebGPUBackend, opaque_entities)
+    isempty(opaque_entities) && return
+
+    entity_stride = UInt32(264)
+
+    for erd in opaque_entities
+        skin = get_component(erd.entity_id, SkinnedMeshComponent)
+        skin === nothing && continue
+        isempty(skin.bone_matrices) && continue
+
+        gpu_mesh = _ensure_mesh_uploaded(backend, erd.entity_id, erd.mesh)
+        gpu_mesh === nothing && continue
+
+        # Upload bone matrices for this entity
+        num_bones = min(length(skin.bone_matrices), 128)
+        bone_floats = Float32[]
+        sizehint!(bone_floats, num_bones * 16)
+        for i in 1:num_bones
+            m = skin.bone_matrices[i]
+            for j in 1:16
+                push!(bone_floats, Float32(m[j]))
+            end
+        end
+        wgpu_upload_bone_matrices(backend.backend_handle, bone_floats, num_bones)
+
+        # Pack and draw this single entity
+        material = get_component(erd.entity_id, MaterialComponent)
+        tex_handles = _ensure_textures_uploaded(backend, material)
+        entity_bytes = _pack_entity_raw(gpu_mesh.handle, erd.model, erd.normal_matrix, material, tex_handles)
+        wgpu_gbuffer_skinned_pass(backend.backend_handle, entity_bytes, UInt32(1), entity_stride)
+    end
 end
 
 # ---- Shader operations ----
@@ -738,6 +954,20 @@ function backend_upload_mesh!(backend::WebGPUBackend, entity_id, mesh)
     handle = wgpu_upload_mesh(backend.backend_handle, positions, normals, uvs, indices)
     if handle == UInt64(0)
         error("Failed to upload mesh: $(wgpu_last_error(backend.backend_handle))")
+    end
+
+    # Upload bone data for skeletal animation if available
+    if !isempty(mesh.bone_weights) && !isempty(mesh.bone_indices)
+        num_verts = length(mesh.bone_weights)
+        bone_weights = Float32[]
+        for bw in mesh.bone_weights
+            push!(bone_weights, Float32(bw[1]), Float32(bw[2]), Float32(bw[3]), Float32(bw[4]))
+        end
+        bone_indices = UInt16[]
+        for bi in mesh.bone_indices
+            push!(bone_indices, UInt16(bi[1]), UInt16(bi[2]), UInt16(bi[3]), UInt16(bi[4]))
+        end
+        wgpu_upload_bone_data(backend.backend_handle, handle, bone_weights, bone_indices, num_verts)
     end
 
     gpu_mesh = WebGPUGPUMesh(handle, Int32(length(indices)))

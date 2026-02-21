@@ -55,9 +55,23 @@ async fn main() -> Result<()> {
             let ctx = project::detect_project_context()?;
             commands::run_cmd::run(file, ctx).await
         }
-        Some(cli::Command::Build { backend }) => {
+        Some(cli::Command::Build { target }) => {
             let ctx = project::detect_project_context()?;
-            commands::build_cmd::run(backend, ctx).await
+            commands::build_cmd::run(target, ctx).await
+        }
+        Some(cli::Command::Export {
+            scene,
+            output,
+            format,
+            physics,
+            compress_textures,
+        }) => {
+            let ctx = project::detect_project_context()?;
+            commands::export::run(scene, output, format, physics, compress_textures, ctx).await
+        }
+        Some(cli::Command::Package { target }) => {
+            let ctx = project::detect_project_context()?;
+            commands::package::run(target, ctx).await
         }
         Some(cli::Command::Test) => {
             let ctx = project::detect_project_context()?;

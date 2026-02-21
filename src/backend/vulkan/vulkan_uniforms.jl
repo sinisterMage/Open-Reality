@@ -67,7 +67,7 @@ struct VulkanMaterialUniforms
     has_ao_map::Int32
     has_emissive_map::Int32
     has_height_map::Int32
-    _pad1::Int32
+    lod_alpha::Float32
     _pad2::Int32
 end
 
@@ -89,7 +89,7 @@ function vk_pack_material(mat::MaterialComponent)
         mat.ao_map !== nothing ? Int32(1) : Int32(0),
         mat.emissive_map !== nothing ? Int32(1) : Int32(0),
         (mat.height_map !== nothing && mat.parallax_height_scale > 0.0f0) ? Int32(1) : Int32(0),
-        Int32(0), Int32(0)
+        1.0f0, Int32(0)  # lod_alpha = 1.0 (fully opaque, no LOD crossfade)
     )
 end
 
@@ -275,6 +275,7 @@ end
 
 struct VulkanTAAUniforms
     prev_view_proj::NTuple{16, Float32}
+    inv_view_proj::NTuple{16, Float32}
     feedback::Float32
     first_frame::Int32
     screen_width::Float32
@@ -289,9 +290,42 @@ struct VulkanPostProcessUniforms
     gamma::Float32
     tone_mapping_mode::Int32
     horizontal::Int32
+    vignette_intensity::Float32
+    vignette_radius::Float32
+    vignette_softness::Float32
+    color_brightness::Float32
+    color_contrast::Float32
+    color_saturation::Float32
     _pad1::Float32
-    _pad2::Float32
-    _pad3::Float32
+end
+
+# ---- Bone Matrix Uniforms (skeletal animation) ----
+
+const VK_MAX_BONES = 128
+
+struct VulkanBoneUniforms
+    has_skinning::Int32
+    _pad1::Int32
+    _pad2::Int32
+    _pad3::Int32
+    bone_matrices::NTuple{128, NTuple{16, Float32}}
+end
+
+function vk_pack_bone_uniforms(bone_matrices::Vector{Mat4f})
+    mats = ntuple(VK_MAX_BONES) do i
+        if i <= length(bone_matrices)
+            m = bone_matrices[i]
+            ntuple(j -> m[j], 16)
+        else
+            ntuple(_ -> 0.0f0, 16)
+        end
+    end
+    VulkanBoneUniforms(Int32(1), Int32(0), Int32(0), Int32(0), mats)
+end
+
+function vk_pack_empty_bone_uniforms()
+    VulkanBoneUniforms(Int32(0), Int32(0), Int32(0), Int32(0),
+        ntuple(_ -> ntuple(_ -> 0.0f0, 16), VK_MAX_BONES))
 end
 
 # ---- Helper: Create and upload a uniform buffer ----

@@ -28,7 +28,7 @@ struct MaterialUBO {
     has_ao_map: i32,
     has_emissive_map: i32,
     has_height_map: i32,
-    _pad1: i32,
+    lod_alpha_bits: i32,
     _pad2: i32,
 };
 
@@ -42,6 +42,7 @@ struct MaterialUBO {
 @group(1) @binding(7) var material_sampler: sampler;
 
 struct FragmentInput {
+    @builtin(position) frag_coord: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
@@ -55,9 +56,27 @@ struct GBufferOutput {
     @location(3) advanced_material: vec4<f32>,
 };
 
+// Bayer 4x4 dithering matrix for LOD crossfade
+const BAYER_MATRIX = array<f32, 16>(
+    0.0/16.0,  8.0/16.0,  2.0/16.0, 10.0/16.0,
+    12.0/16.0, 4.0/16.0, 14.0/16.0,  6.0/16.0,
+    3.0/16.0, 11.0/16.0,  1.0/16.0,  9.0/16.0,
+    15.0/16.0, 7.0/16.0, 13.0/16.0,  5.0/16.0
+);
+
 @fragment
 fn fs_main(in: FragmentInput) -> GBufferOutput {
     var uv = in.uv;
+
+    // LOD crossfade dithering — reinterpret lod_alpha_bits as float
+    let lod_alpha = bitcast<f32>(material.lod_alpha_bits);
+    if lod_alpha < 1.0 {
+        let pixel = vec2<i32>(in.frag_coord.xy) % vec2<i32>(4);
+        let threshold = BAYER_MATRIX[pixel.y * 4 + pixel.x];
+        if lod_alpha < threshold {
+            discard;
+        }
+    }
 
     // Parallax mapping
     if HAS_PARALLAX_MAPPING && material.has_height_map != 0 && material.parallax_scale > 0.0 {

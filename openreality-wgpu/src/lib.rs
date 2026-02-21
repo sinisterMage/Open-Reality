@@ -11,6 +11,7 @@ mod passes;
 mod ibl;
 
 use backend::WGPUBackendState;
+use bytemuck::Zeroable;
 use handle::HandleStore;
 use std::ffi::CString;
 use std::os::raw::c_char;
@@ -216,6 +217,92 @@ pub extern "C" fn or_wgpu_destroy_mesh(backend: u64, mesh: u64) {
     let mut backends = BACKENDS.lock().unwrap();
     if let Some(state) = backends.get_mut(backend) {
         state.destroy_mesh(mesh);
+    }
+}
+
+/// Upload bone data (weights + indices) to an existing mesh for skeletal animation.
+/// `bone_weights_ptr`: vec4<f32> per vertex (4 floats per vertex).
+/// `bone_indices_ptr`: uvec4<u16> per vertex (4 u16 per vertex).
+/// Returns 0 on success, -1 on failure.
+#[no_mangle]
+pub extern "C" fn or_wgpu_upload_bone_data(
+    backend: u64,
+    mesh_handle: u64,
+    bone_weights_ptr: *const f32,
+    bone_indices_ptr: *const u16,
+    num_vertices: u32,
+) -> i32 {
+    use wgpu::util::DeviceExt;
+
+    let mut backends = BACKENDS.lock().unwrap();
+    if let Some(state) = backends.get_mut(backend) {
+        // Check mesh exists before creating buffers
+        if state.meshes.get(mesh_handle).is_none() {
+            return -1;
+        }
+
+        let weight_slice = unsafe { std::slice::from_raw_parts(bone_weights_ptr, (num_vertices * 4) as usize) };
+        let index_slice = unsafe { std::slice::from_raw_parts(bone_indices_ptr, (num_vertices * 4) as usize) };
+
+        // Create buffers first (borrows state.device immutably)
+        let weight_buf = state.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Bone Weight Buffer"),
+            contents: bytemuck::cast_slice(weight_slice),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let index_buf = state.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Bone Index Buffer"),
+            contents: bytemuck::cast_slice(index_slice),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        // Now mutably borrow mesh and assign
+        let mesh = state.meshes.get_mut(mesh_handle).unwrap();
+        mesh.bone_weight_buffer = Some(weight_buf);
+        mesh.bone_index_buffer = Some(index_buf);
+        mesh.has_skinning = true;
+        0
+    } else {
+        -1
+    }
+}
+
+/// Upload bone matrices for the current skinned entity.
+/// Called before or_wgpu_gbuffer_pass for skinned entities.
+/// `bone_matrices_ptr` points to N * mat4x4<f32> (N * 16 floats).
+/// `num_bones` is the number of bone matrices (up to 128).
+/// Returns 0 on success, -1 on failure.
+#[no_mangle]
+pub extern "C" fn or_wgpu_upload_bone_matrices(
+    backend: u64,
+    bone_matrices_ptr: *const f32,
+    num_bones: u32,
+) -> i32 {
+    let mut backends = BACKENDS.lock().unwrap();
+    if let Some(state) = backends.get_mut(backend) {
+        let dp = match state.deferred.as_ref() {
+            Some(dp) => dp,
+            None => { state.last_error = Some("Deferred pipeline not created".into()); return -1; }
+        };
+
+        let num = (num_bones as usize).min(128);
+        let mut bone_data = openreality_gpu_shared::uniforms::BoneUniforms::zeroed();
+        bone_data.has_skinning = 1;
+
+        let mat_slice = unsafe { std::slice::from_raw_parts(bone_matrices_ptr, num * 16) };
+        for i in 0..num {
+            for col in 0..4 {
+                for row in 0..4 {
+                    bone_data.bone_matrices[i][col][row] = mat_slice[i * 16 + col * 4 + row];
+                }
+            }
+        }
+
+        state.queue.write_buffer(&dp.bone_uniform_buffer, 0, bytemuck::bytes_of(&bone_data));
+        0
+    } else {
+        -1
     }
 }
 
@@ -639,6 +726,227 @@ pub extern "C" fn or_wgpu_gbuffer_pass(
     }
 }
 
+/// Skinned G-Buffer pass: render skinned entities with bone matrix skinning.
+/// Same entity format as gbuffer_pass. Bone matrices must be uploaded first via
+/// or_wgpu_upload_bone_matrices. Called after or_wgpu_gbuffer_pass with LoadOp::Load.
+#[no_mangle]
+pub extern "C" fn or_wgpu_gbuffer_skinned_pass(
+    backend: u64,
+    entities_ptr: *const u8,
+    entity_count: u32,
+    entity_stride: u32,
+) -> i32 {
+    if entity_count == 0 {
+        return 0;
+    }
+    let mut backends = BACKENDS.lock().unwrap();
+    if let Some(state) = backends.get_mut(backend) {
+        let dp = match state.deferred.as_ref() {
+            Some(dp) => dp,
+            None => { state.last_error = Some("Deferred pipeline not created".into()); return -1; }
+        };
+
+        let per_frame_bg = state.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Skinned GBuffer Per-Frame BG"),
+            layout: &state.per_frame_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: state.per_frame_buffer.as_entire_binding(),
+            }],
+        });
+
+        let bone_bg = state.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Bone BG"),
+            layout: &dp.bone_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: dp.bone_uniform_buffer.as_entire_binding(),
+            }],
+        });
+
+        // Parse entities (same format as gbuffer_pass)
+        let entities_data = unsafe { std::slice::from_raw_parts(entities_ptr, (entity_count * entity_stride) as usize) };
+        let mut skinned_entities = Vec::new();
+
+        for i in 0..entity_count as usize {
+            let offset = i * entity_stride as usize;
+            let entity_bytes = &entities_data[offset..offset + entity_stride as usize];
+
+            let mesh_handle = u64::from_le_bytes(entity_bytes[0..8].try_into().unwrap());
+            let mesh = match state.meshes.get(mesh_handle) {
+                Some(m) => m,
+                None => continue,
+            };
+            if !mesh.has_skinning { continue; }
+
+            let model: [[f32; 4]; 4] = *bytemuck::from_bytes(&entity_bytes[8..72]);
+            let nc0: [f32; 4] = *bytemuck::from_bytes(&entity_bytes[72..88]);
+            let nc1: [f32; 4] = *bytemuck::from_bytes(&entity_bytes[88..104]);
+            let nc2: [f32; 4] = *bytemuck::from_bytes(&entity_bytes[104..120]);
+            let material: openreality_gpu_shared::uniforms::MaterialUniforms =
+                *bytemuck::from_bytes(&entity_bytes[120..216]);
+            let tex_handles: [u64; 6] = *bytemuck::from_bytes(&entity_bytes[216..264]);
+
+            let mut texture_views: [Option<&wgpu::TextureView>; 6] = [None; 6];
+            for (j, &handle) in tex_handles.iter().enumerate() {
+                if handle != 0 {
+                    if let Some(tex) = state.textures.get(handle) {
+                        texture_views[j] = Some(&tex.view);
+                    }
+                }
+            }
+
+            skinned_entities.push(passes::gbuffer::GBufferEntity {
+                mesh,
+                per_object: openreality_gpu_shared::uniforms::PerObjectUniforms {
+                    model,
+                    normal_matrix_col0: nc0,
+                    normal_matrix_col1: nc1,
+                    normal_matrix_col2: nc2,
+                    _pad: [0.0; 4],
+                },
+                material,
+                texture_views,
+            });
+        }
+
+        if skinned_entities.is_empty() {
+            return 0;
+        }
+
+        let mut encoder = state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Skinned GBuffer Encoder"),
+        });
+
+        passes::gbuffer::render_gbuffer_skinned_pass(
+            &mut encoder,
+            &dp.gbuffer,
+            &dp.gbuffer_skinned_pipeline,
+            &per_frame_bg,
+            &dp.per_object_bgl,
+            &state.material_bind_group_layout,
+            &bone_bg,
+            &state.device,
+            &state.queue,
+            &skinned_entities,
+            &dp.default_texture_view,
+            &state.default_sampler,
+        );
+
+        state.queue.submit(std::iter::once(encoder.finish()));
+        0
+    } else {
+        -1
+    }
+}
+
+/// Instanced G-Buffer pass: draw a batch of entities sharing the same mesh + material
+/// with per-instance transforms provided in a flat float buffer.
+///
+/// FFI params:
+/// - `mesh_handle`: GPU mesh to draw
+/// - `material_ptr`: 96-byte MaterialUniforms
+/// - `texture_handles_ptr`: 6 u64 texture handles
+/// - `instance_data_ptr`: 28 floats per instance (model mat4 column-major + 3 normal vec4)
+/// - `instance_count`: number of instances
+#[no_mangle]
+pub extern "C" fn or_wgpu_gbuffer_instanced_pass(
+    backend: u64,
+    mesh_handle: u64,
+    material_ptr: *const u8,
+    texture_handles_ptr: *const u64,
+    instance_data_ptr: *const f32,
+    instance_count: u32,
+) -> i32 {
+    if instance_count == 0 {
+        return 0;
+    }
+    let mut backends = BACKENDS.lock().unwrap();
+    if let Some(state) = backends.get_mut(backend) {
+        let dp = match state.deferred.as_mut() {
+            Some(dp) => dp,
+            None => { state.last_error = Some("Deferred pipeline not created".into()); return -1; }
+        };
+
+        let mesh = match state.meshes.get(mesh_handle) {
+            Some(m) => m,
+            None => { state.last_error = Some("Mesh not found".into()); return -1; }
+        };
+
+        // Parse material
+        let material: openreality_gpu_shared::uniforms::MaterialUniforms =
+            *bytemuck::from_bytes(unsafe { std::slice::from_raw_parts(material_ptr, 96) });
+
+        // Parse texture handles
+        let tex_handles: &[u64] = unsafe { std::slice::from_raw_parts(texture_handles_ptr, 6) };
+        let mut texture_views: [Option<&wgpu::TextureView>; 6] = [None; 6];
+        for (j, &handle) in tex_handles.iter().enumerate() {
+            if handle != 0 {
+                if let Some(tex) = state.textures.get(handle) {
+                    texture_views[j] = Some(&tex.view);
+                }
+            }
+        }
+
+        // Upload instance data to the instance VBO (resize if needed)
+        let instance_floats = 28u64; // 4*4 model + 3*4 normal columns
+        let instance_stride_bytes = instance_floats * 4; // 112 bytes
+        let required_size = instance_count as u64 * instance_stride_bytes;
+
+        if required_size > dp.instance_vbo_size {
+            let new_size = required_size.next_power_of_two();
+            dp.instance_vbo = state.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Instance VBO (resized)"),
+                size: new_size,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            dp.instance_vbo_size = new_size;
+        }
+
+        let instance_data = unsafe {
+            std::slice::from_raw_parts(instance_data_ptr as *const u8, required_size as usize)
+        };
+        state.queue.write_buffer(&dp.instance_vbo, 0, instance_data);
+
+        // Create per-frame bind group
+        let per_frame_bg = state.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Instanced GBuffer Per-Frame BG"),
+            layout: &state.per_frame_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: state.per_frame_buffer.as_entire_binding(),
+            }],
+        });
+
+        let mut encoder = state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Instanced GBuffer Encoder"),
+        });
+
+        passes::gbuffer::render_gbuffer_instanced_pass(
+            &mut encoder,
+            &dp.gbuffer,
+            &dp.gbuffer_instanced_pipeline,
+            &per_frame_bg,
+            &state.material_bind_group_layout,
+            &state.device,
+            &state.queue,
+            mesh,
+            material,
+            texture_views,
+            &dp.instance_vbo,
+            instance_count,
+            &dp.default_texture_view,
+            &state.default_sampler,
+        );
+
+        state.queue.submit(std::iter::once(encoder.finish()));
+        0
+    } else {
+        -1
+    }
+}
+
 /// Deferred lighting pass: fullscreen PBR lighting.
 #[no_mangle]
 pub extern "C" fn or_wgpu_lighting_pass(backend: u64) -> i32 {
@@ -921,6 +1229,212 @@ pub extern "C" fn or_wgpu_postprocess_pass(backend: u64, params_ptr: *const u8) 
     }
 }
 
+/// DOF pass: CoC computation, separable blur, composite, then copy result back to lighting target.
+/// `params_ptr` points to 32 bytes: focus_distance(f32), focus_range(f32), near_plane(f32), far_plane(f32), bokeh_radius(f32), pad(3xf32).
+#[no_mangle]
+pub extern "C" fn or_wgpu_dof_pass(backend: u64, params_ptr: *const f32) -> i32 {
+    let mut backends = BACKENDS.lock().unwrap();
+    if let Some(state) = backends.get_mut(backend) {
+        let dp = match state.deferred.as_ref() {
+            Some(dp) => dp,
+            None => { state.last_error = Some("Deferred pipeline not created".into()); return -1; }
+        };
+
+        let params = unsafe { std::slice::from_raw_parts(params_ptr, 8) };
+        let focus_distance = params[0];
+        let focus_range = params[1];
+        let near_plane = params[2];
+        let far_plane = params[3];
+        let bokeh_radius = params[4];
+
+        // Upload CoC params
+        let coc_params = openreality_gpu_shared::uniforms::DOFCoCParams {
+            focus_distance,
+            focus_range,
+            near_plane,
+            far_plane,
+        };
+        state.queue.write_buffer(&dp.dof_coc_params_buffer, 0, bytemuck::bytes_of(&coc_params));
+
+        let mut encoder = state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("DOF Encoder"),
+        });
+
+        // Pass 1: CoC from depth
+        let coc_bg = state.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("DOF CoC BG"),
+            layout: &dp.dof_coc_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: dp.dof_coc_params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&dp.gbuffer.depth_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&dp.depth_sampler) },
+            ],
+        });
+        passes::dof::render_dof_coc(&mut encoder, &dp.dof_targets.coc, &dp.dof_coc_pipeline, &coc_bg);
+
+        // Pass 2: Horizontal blur (scene + CoC → blur_h)
+        let blur_h_params = openreality_gpu_shared::uniforms::DOFBlurParams {
+            horizontal: 1,
+            bokeh_radius,
+            _pad1: 0.0,
+            _pad2: 0.0,
+        };
+        state.queue.write_buffer(&dp.dof_blur_params_buffer, 0, bytemuck::bytes_of(&blur_h_params));
+
+        let blur_h_bg = state.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("DOF Blur H BG"),
+            layout: &dp.dof_blur_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: dp.dof_blur_params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&dp.lighting_target.color_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&dp.dof_targets.coc.color_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&state.default_sampler) },
+            ],
+        });
+        passes::dof::render_dof_blur(&mut encoder, &dp.dof_targets.blur_h, &dp.dof_blur_pipeline, &blur_h_bg);
+
+        // Pass 3: Vertical blur (blur_h + CoC → blur_v)
+        // Need a second uniform write — submit first encoder, start new one
+        state.queue.submit(std::iter::once(encoder.finish()));
+
+        let blur_v_params = openreality_gpu_shared::uniforms::DOFBlurParams {
+            horizontal: 0,
+            bokeh_radius,
+            _pad1: 0.0,
+            _pad2: 0.0,
+        };
+        state.queue.write_buffer(&dp.dof_blur_params_buffer, 0, bytemuck::bytes_of(&blur_v_params));
+
+        let mut encoder = state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("DOF Encoder 2"),
+        });
+
+        let blur_v_bg = state.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("DOF Blur V BG"),
+            layout: &dp.dof_blur_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: dp.dof_blur_params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&dp.dof_targets.blur_h.color_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&dp.dof_targets.coc.color_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&state.default_sampler) },
+            ],
+        });
+        passes::dof::render_dof_blur(&mut encoder, &dp.dof_targets.blur_v, &dp.dof_blur_pipeline, &blur_v_bg);
+
+        // Pass 4: Composite (sharp + blurred + CoC → pp_target_a)
+        let composite_bg = state.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("DOF Composite BG"),
+            layout: &dp.dof_composite_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&dp.lighting_target.color_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&dp.dof_targets.blur_v.color_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&dp.dof_targets.coc.color_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&state.default_sampler) },
+            ],
+        });
+        passes::dof::render_dof_composite(&mut encoder, &dp.pp_target_a, &dp.dof_composite_pipeline, &composite_bg);
+
+        // Copy pp_target_a back to lighting_target so postprocess chain reads the DOF result
+        let w = dp.lighting_target.width;
+        let h = dp.lighting_target.height;
+        encoder.copy_texture_to_texture(
+            wgpu::ImageCopyTexture {
+                texture: &dp.pp_target_a.color_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyTexture {
+                texture: &dp.lighting_target.color_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+
+        state.queue.submit(std::iter::once(encoder.finish()));
+        0
+    } else {
+        -1
+    }
+}
+
+/// Motion blur pass: velocity buffer computation + directional blur, then copy result back to lighting target.
+/// `params_ptr` points to 160 bytes: inv_view_proj(16xf32), prev_view_proj(16xf32), max_velocity(f32), 3xpad(f32), samples(i32), intensity(f32), 2xpad(f32).
+#[no_mangle]
+pub extern "C" fn or_wgpu_motion_blur_pass(backend: u64, params_ptr: *const u8) -> i32 {
+    let mut backends = BACKENDS.lock().unwrap();
+    if let Some(state) = backends.get_mut(backend) {
+        let dp = match state.deferred.as_ref() {
+            Some(dp) => dp,
+            None => { state.last_error = Some("Deferred pipeline not created".into()); return -1; }
+        };
+
+        // First 144 bytes = VelocityParams, next 16 bytes = MotionBlurParams
+        let vel_size = std::mem::size_of::<openreality_gpu_shared::uniforms::VelocityParams>();
+        let blur_size = std::mem::size_of::<openreality_gpu_shared::uniforms::MotionBlurParams>();
+        let vel_data = unsafe { std::slice::from_raw_parts(params_ptr, vel_size) };
+        let blur_data = unsafe { std::slice::from_raw_parts(params_ptr.add(vel_size), blur_size) };
+
+        state.queue.write_buffer(&dp.mblur_velocity_params_buffer, 0, vel_data);
+        state.queue.write_buffer(&dp.mblur_blur_params_buffer, 0, blur_data);
+
+        let mut encoder = state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Motion Blur Encoder"),
+        });
+
+        // Pass 1: Velocity buffer from depth reprojection
+        let vel_bg = state.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("MBlur Velocity BG"),
+            layout: &dp.mblur_velocity_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: dp.mblur_velocity_params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&dp.gbuffer.depth_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&dp.depth_sampler) },
+            ],
+        });
+        passes::motion_blur::render_velocity_pass(&mut encoder, &dp.mblur_targets.velocity, &dp.mblur_velocity_pipeline, &vel_bg);
+
+        // Pass 2: Directional blur along velocity vectors
+        let blur_bg = state.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("MBlur Blur BG"),
+            layout: &dp.mblur_blur_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: dp.mblur_blur_params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&dp.lighting_target.color_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&dp.mblur_targets.velocity.color_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&state.default_sampler) },
+            ],
+        });
+        passes::motion_blur::render_blur_pass(&mut encoder, &dp.mblur_targets.blur, &dp.mblur_blur_pipeline, &blur_bg);
+
+        // Copy motion blur result back to lighting_target so postprocess reads the blurred result
+        let w = dp.lighting_target.width;
+        let h = dp.lighting_target.height;
+        encoder.copy_texture_to_texture(
+            wgpu::ImageCopyTexture {
+                texture: &dp.mblur_targets.blur.color_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyTexture {
+                texture: &dp.lighting_target.color_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+
+        state.queue.submit(std::iter::once(encoder.finish()));
+        0
+    } else {
+        -1
+    }
+}
+
 /// Forward pass: render transparent objects.
 /// Same entity format as gbuffer_pass.
 #[no_mangle]
@@ -930,11 +1444,121 @@ pub extern "C" fn or_wgpu_forward_pass(
     entity_count: u32,
     entity_stride: u32,
 ) -> i32 {
+    if entity_count == 0 {
+        return 0;
+    }
     let mut backends = BACKENDS.lock().unwrap();
-    if let Some(_state) = backends.get_mut(backend) {
-        // Forward pass uses same entity parsing as gbuffer_pass
-        // For now return success — will be filled in when Julia side packs data
-        let _ = (entities_ptr, entity_count, entity_stride);
+    if let Some(state) = backends.get_mut(backend) {
+        let dp = match state.deferred.as_ref() {
+            Some(dp) => dp,
+            None => { state.last_error = Some("Deferred pipeline not created".into()); return -1; }
+        };
+
+        let per_frame_bg = state.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Forward Per-Frame BG"),
+            layout: &state.per_frame_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: state.per_frame_buffer.as_entire_binding(),
+            }],
+        });
+
+        // Parse entities (same format as gbuffer_pass: 264 bytes each)
+        let entities_data = unsafe { std::slice::from_raw_parts(entities_ptr, (entity_count * entity_stride) as usize) };
+        let mut forward_entities = Vec::new();
+
+        for i in 0..entity_count as usize {
+            let offset = i * entity_stride as usize;
+            let entity_bytes = &entities_data[offset..offset + entity_stride as usize];
+
+            let mesh_handle = u64::from_le_bytes(entity_bytes[0..8].try_into().unwrap());
+            let mesh = match state.meshes.get(mesh_handle) {
+                Some(m) => m,
+                None => continue,
+            };
+
+            let model: [[f32; 4]; 4] = *bytemuck::from_bytes(&entity_bytes[8..72]);
+            let nc0: [f32; 4] = *bytemuck::from_bytes(&entity_bytes[72..88]);
+            let nc1: [f32; 4] = *bytemuck::from_bytes(&entity_bytes[88..104]);
+            let nc2: [f32; 4] = *bytemuck::from_bytes(&entity_bytes[104..120]);
+            let material: openreality_gpu_shared::uniforms::MaterialUniforms =
+                *bytemuck::from_bytes(&entity_bytes[120..216]);
+            let tex_handles: [u64; 6] = *bytemuck::from_bytes(&entity_bytes[216..264]);
+
+            let mut texture_views: [Option<&wgpu::TextureView>; 6] = [None; 6];
+            for (j, &handle) in tex_handles.iter().enumerate() {
+                if handle != 0 {
+                    if let Some(tex) = state.textures.get(handle) {
+                        texture_views[j] = Some(&tex.view);
+                    }
+                }
+            }
+
+            forward_entities.push(passes::gbuffer::GBufferEntity {
+                mesh,
+                per_object: openreality_gpu_shared::uniforms::PerObjectUniforms {
+                    model,
+                    normal_matrix_col0: nc0,
+                    normal_matrix_col1: nc1,
+                    normal_matrix_col2: nc2,
+                    _pad: [0.0; 4],
+                },
+                material,
+                texture_views,
+            });
+        }
+
+        // Build light+shadow bind group (group 3)
+        // Use CSM depth views if available, otherwise fall back to gbuffer depth
+        let fallback_depth_view = &dp.gbuffer.depth_view;
+        let cascade_views: Vec<&wgpu::TextureView> = if let Some(csm) = state.csm.as_ref() {
+            (0..4).map(|i| {
+                if i < csm.depth_views.len() {
+                    &csm.depth_views[i]
+                } else {
+                    fallback_depth_view
+                }
+            }).collect()
+        } else {
+            vec![fallback_depth_view; 4]
+        };
+
+        let light_shadow_bg = state.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Forward Light+Shadow BG"),
+            layout: &dp.forward_light_shadow_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: state.light_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: dp.shadow_uniform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(cascade_views[0]) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(cascade_views[1]) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(cascade_views[2]) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(cascade_views[3]) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&dp.shadow_comparison_sampler) },
+            ],
+        });
+
+        let mut encoder = state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Forward Encoder"),
+        });
+
+        passes::forward::render_forward_pass(
+            &mut encoder,
+            &dp.pp_target_b,
+            &dp.gbuffer.depth_view,
+            &dp.forward_pipeline,
+            &per_frame_bg,
+            &light_shadow_bg,
+            &dp.per_object_bgl,
+            &state.material_bind_group_layout,
+            &state.device,
+            &state.queue,
+            &state.per_object_buffer,
+            &forward_entities,
+            &dp.default_texture_view,
+            &state.default_sampler,
+        );
+
+        state.queue.submit(std::iter::once(encoder.finish()));
         0
     } else {
         -1
@@ -1042,12 +1666,168 @@ pub extern "C" fn or_wgpu_ui_pass(
     }
     let mut backends = BACKENDS.lock().unwrap();
     if let Some(state) = backends.get_mut(backend) {
-        let _dp = match state.deferred.as_ref() {
+        let dp = match state.deferred.as_mut() {
             Some(dp) => dp,
             None => { state.last_error = Some("Deferred pipeline not created".into()); return -1; }
         };
-        // UI rendering will be wired up with draw commands
-        let _ = (vertices_ptr, vertex_count, screen_width, screen_height);
+
+        // Upload vertex data (pos2 + uv2 + color4 = 8 floats per vertex)
+        let float_count = (vertex_count * 8) as usize;
+        let vertex_data = unsafe { std::slice::from_raw_parts(vertices_ptr, float_count) };
+        let byte_size = (float_count * 4) as u64;
+
+        // Resize VBO if needed
+        if byte_size > dp.ui_vbo_size {
+            dp.ui_vbo = state.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("UI VBO"),
+                size: byte_size,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            dp.ui_vbo_size = byte_size;
+        }
+
+        state.queue.write_buffer(&dp.ui_vbo, 0, bytemuck::cast_slice(vertex_data));
+
+        // Build orthographic projection (top-left origin, Y down)
+        let w = screen_width;
+        let h = screen_height;
+        #[rustfmt::skip]
+        let projection: [[f32; 4]; 4] = [
+            [2.0 / w,  0.0,      0.0, 0.0],
+            [0.0,     -2.0 / h,  0.0, 0.0],
+            [0.0,      0.0,      1.0, 0.0],
+            [-1.0,     1.0,      0.0, 1.0],
+        ];
+
+        // UIUniforms: mat4x4 projection (64 bytes) + has_texture i32 + is_font i32 + 2 pad i32 = 80 bytes
+        let mut ui_uniform_data = [0u8; 80];
+        for col in 0..4usize {
+            for row in 0..4usize {
+                let idx = (col * 4 + row) * 4;
+                ui_uniform_data[idx..idx + 4].copy_from_slice(&projection[col][row].to_le_bytes());
+            }
+        }
+        // has_texture = 0, is_font = 0 (solid color mode) — remaining bytes already zero
+        state.queue.write_buffer(&dp.ui_uniform_buffer, 0, &ui_uniform_data);
+
+        let ui_bg = state.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("UI BG"),
+            layout: &dp.ui_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: dp.ui_uniform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&dp.default_texture_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&state.default_sampler) },
+            ],
+        });
+
+        // Acquire surface for rendering
+        let output = match state.surface.get_current_texture() {
+            Ok(o) => o,
+            Err(e) => { state.last_error = Some(format!("Surface error: {e}")); return -1; }
+        };
+        let surface_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("UI Encoder"),
+        });
+
+        let draw_cmd = passes::ui::UIDrawCommand {
+            first_vertex: 0,
+            vertex_count,
+            texture_handle: 0,
+            is_font: 0,
+        };
+
+        passes::ui::render_ui_pass(
+            &mut encoder,
+            &surface_view,
+            &dp.ui_pipeline,
+            &dp.ui_vbo,
+            &[draw_cmd],
+            &[&ui_bg],
+        );
+
+        state.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
+        0
+    } else {
+        -1
+    }
+}
+
+/// Debug lines pass: render colored lines (no depth test).
+/// `vertices_ptr` points to interleaved vertex data (pos3 + color3 = 6 floats per vertex).
+/// `view_proj_ptr` points to a mat4x4 (16 floats).
+#[no_mangle]
+pub extern "C" fn or_wgpu_debug_lines_pass(
+    backend: u64,
+    vertices_ptr: *const f32,
+    vertex_count: u32,
+    view_proj_ptr: *const f32,
+) -> i32 {
+    if vertex_count == 0 {
+        return 0;
+    }
+    let mut backends = BACKENDS.lock().unwrap();
+    if let Some(state) = backends.get_mut(backend) {
+        let dp = match state.deferred.as_mut() {
+            Some(dp) => dp,
+            None => { state.last_error = Some("Deferred pipeline not created".into()); return -1; }
+        };
+
+        let float_count = (vertex_count * 6) as usize;
+        let vertex_data = unsafe { std::slice::from_raw_parts(vertices_ptr, float_count) };
+        let byte_size = (float_count * 4) as u64;
+
+        // Resize VBO if needed
+        if byte_size > dp.debug_lines_vbo_size {
+            dp.debug_lines_vbo = state.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Debug Lines VBO"),
+                size: byte_size,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            dp.debug_lines_vbo_size = byte_size;
+        }
+
+        state.queue.write_buffer(&dp.debug_lines_vbo, 0, bytemuck::cast_slice(vertex_data));
+
+        // Upload view_proj
+        let vp_data = unsafe { std::slice::from_raw_parts(view_proj_ptr, 16) };
+        state.queue.write_buffer(&dp.debug_lines_uniform_buffer, 0, bytemuck::cast_slice(vp_data));
+
+        let bg = state.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Debug Lines BG"),
+            layout: &dp.debug_lines_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: dp.debug_lines_uniform_buffer.as_entire_binding(),
+            }],
+        });
+
+        // Acquire surface for rendering
+        let output = match state.surface.get_current_texture() {
+            Ok(o) => o,
+            Err(e) => { state.last_error = Some(format!("Surface error: {e}")); return -1; }
+        };
+        let surface_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Debug Lines Encoder"),
+        });
+
+        passes::debug_lines::render_debug_lines(
+            &mut encoder,
+            &surface_view,
+            &dp.debug_lines_pipeline,
+            &bg,
+            &dp.debug_lines_vbo,
+            vertex_count,
+        );
+
+        state.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
         0
     } else {
         -1

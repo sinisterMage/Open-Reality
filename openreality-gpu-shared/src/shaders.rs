@@ -3,6 +3,8 @@
 
 pub const FULLSCREEN_QUAD_VERT: &str = include_str!("../shaders/fullscreen_quad.wgsl");
 pub const GBUFFER_VERT: &str = include_str!("../shaders/gbuffer_vert.wgsl");
+pub const GBUFFER_SKINNED_VERT: &str = include_str!("../shaders/gbuffer_skinned_vert.wgsl");
+pub const GBUFFER_INSTANCED_VERT: &str = include_str!("../shaders/gbuffer_instanced_vert.wgsl");
 pub const GBUFFER_FRAG: &str = include_str!("../shaders/gbuffer_frag.wgsl");
 pub const DEFERRED_LIGHTING_FRAG: &str = include_str!("../shaders/deferred_lighting.wgsl");
 pub const SHADOW_DEPTH_VERT: &str = include_str!("../shaders/shadow_depth.wgsl");
@@ -21,3 +23,4 @@ pub const TERRAIN_GBUFFER_SHADER: &str = include_str!("../shaders/terrain_gbuffe
 pub const FORWARD_PBR_SHADER: &str = include_str!("../shaders/forward_pbr.wgsl");
 pub const DOF_SHADER: &str = include_str!("../shaders/dof.wgsl");
 pub const MOTION_BLUR_SHADER: &str = include_str!("../shaders/motion_blur.wgsl");
+pub const DEBUG_LINES_SHADER: &str = include_str!("../shaders/debug_lines.wgsl");

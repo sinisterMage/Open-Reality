@@ -199,6 +199,7 @@ if !Sys.isapple()
     include("backend/vulkan/vulkan_uniforms.jl")
     include("backend/vulkan/vulkan_shader.jl")
     include("backend/vulkan/vulkan_mesh.jl")
+    include("backend/vulkan/vulkan_instancing.jl")
     include("backend/vulkan/vulkan_texture.jl")
     include("backend/vulkan/vulkan_framebuffer.jl")
     include("backend/vulkan/vulkan_pbr.jl")
@@ -210,6 +211,12 @@ if !Sys.isapple()
     include("backend/vulkan/vulkan_postprocess.jl")
     include("backend/vulkan/vulkan_deferred.jl")
     include("backend/vulkan/vulkan_backend.jl")
+    include("backend/vulkan/vulkan_ui.jl")
+    include("backend/vulkan/vulkan_particles.jl")
+    include("backend/vulkan/vulkan_terrain.jl")
+    include("backend/vulkan/vulkan_dof.jl")
+    include("backend/vulkan/vulkan_motion_blur.jl")
+    include("backend/vulkan/vulkan_debug_draw.jl")
 end
 
 # WebGPU backend (all platforms, requires compiled Rust FFI library)
@@ -241,6 +248,9 @@ include("loading/gltf_loader.jl")
 include("loading/loader.jl")
 include("loading/asset_manager.jl")
 include("loading/async_loader.jl")
+
+# Asset pipeline (texture compression, mesh optimization)
+include("export/asset_pipeline.jl")
 
 # Scene export (ORSB format for WASM web deployment)
 include("export/scene_export.jl")
@@ -544,6 +554,11 @@ export load_model, load_obj, load_gltf
 export AssetManager, get_asset_manager, reset_asset_manager!, get_model, preload!
 export AsyncAssetLoader, AsyncLoadResult, load_model_async, poll_async_loads!
 export get_async_loader, reset_async_loader!, shutdown_async_loader!
+
+# Export Asset Pipeline
+export TextureFormat, TEX_PNG, TEX_JPEG, TEX_KTX2_BC7, TEX_KTX2_ASTC
+export AssetPipelineConfig, ProcessedAssets
+export process_texture, optimize_mesh, generate_lod_mesh, process_assets
 
 # Export Scene Export (ORSB)
 export export_scene

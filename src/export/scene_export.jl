@@ -150,6 +150,12 @@ function export_scene(scene::Scene, path::String;
         # ---- Animations Section ----
         _write_animations(io, entities, entity_index)
 
+        # ---- Skeletons Section ----
+        _write_skeletons(io, entities, entity_index)
+
+        # ---- Particles Section ----
+        _write_particles(io, entities)
+
         # ---- Physics Config Section ----
         _write_physics_config(io, physics_config)
     end
@@ -474,6 +480,94 @@ function _write_animations(io, entities, entity_index)
         write(io, UInt8(anim.playing ? 1 : 0))
         write(io, UInt8(anim.looping ? 1 : 0))
         write(io, Float32(anim.speed))
+    end
+end
+
+function _write_skeletons(io, entities, entity_index)
+    skinned = EntityID[]
+    for eid in entities
+        has_component(eid, SkinnedMeshComponent) && push!(skinned, eid)
+    end
+
+    write(io, UInt32(length(skinned)))
+    for eid in skinned
+        skin = get_component(eid, SkinnedMeshComponent)
+        num_bones = length(skin.bone_entities)
+        write(io, UInt32(num_bones))
+
+        for (i, bone_eid) in enumerate(skin.bone_entities)
+            # Bone entity index
+            bone_idx = haskey(entity_index, bone_eid) ? entity_index[bone_eid] : typemax(UInt32)
+            write(io, bone_idx)
+
+            # Inverse bind matrix (4x4 Float32 = 64 bytes)
+            if has_component(bone_eid, BoneComponent)
+                bone = get_component(bone_eid, BoneComponent)
+                ibm = bone.inverse_bind_matrix
+                for col in 1:4
+                    for row in 1:4
+                        write(io, Float32(ibm[row, col]))
+                    end
+                end
+                # Bone index
+                write(io, UInt32(bone.bone_index))
+                # Bone name
+                name_bytes = Vector{UInt8}(bone.name)
+                write(io, UInt16(length(name_bytes)))
+                write(io, name_bytes...)
+            else
+                # Default identity inverse bind matrix
+                for j in 1:16
+                    write(io, j in (1, 6, 11, 16) ? Float32(1) : Float32(0))
+                end
+                write(io, UInt32(i - 1))
+                write(io, UInt16(0))
+            end
+        end
+    end
+end
+
+function _write_particles(io, entities)
+    particle_entities = EntityID[]
+    for eid in entities
+        has_component(eid, ParticleSystemComponent) && push!(particle_entities, eid)
+    end
+
+    write(io, UInt32(length(particle_entities)))
+    for eid in particle_entities
+        ps = get_component(eid, ParticleSystemComponent)
+
+        # Emission
+        write(io, UInt32(ps.max_particles))
+        write(io, Float32(ps.emission_rate))
+        write(io, UInt32(ps.burst_count))
+
+        # Lifetime
+        write(io, Float32(ps.lifetime_min))
+        write(io, Float32(ps.lifetime_max))
+
+        # Velocity range
+        write(io, Float32(ps.velocity_min[1]), Float32(ps.velocity_min[2]), Float32(ps.velocity_min[3]))
+        write(io, Float32(ps.velocity_max[1]), Float32(ps.velocity_max[2]), Float32(ps.velocity_max[3]))
+
+        # Physics
+        write(io, Float32(ps.gravity_modifier))
+        write(io, Float32(ps.damping))
+
+        # Size over lifetime
+        write(io, Float32(ps.start_size_min))
+        write(io, Float32(ps.start_size_max))
+        write(io, Float32(ps.end_size))
+
+        # Color over lifetime
+        write(io, Float32(ps.start_color.r), Float32(ps.start_color.g), Float32(ps.start_color.b))
+        write(io, Float32(ps.end_color.r), Float32(ps.end_color.g), Float32(ps.end_color.b))
+        write(io, Float32(ps.start_alpha))
+        write(io, Float32(ps.end_alpha))
+
+        # Blending mode
+        write(io, UInt8(ps.additive ? 1 : 0))
+        write(io, UInt8(0), UInt8(0), UInt8(0))  # padding to 4-byte alignment
     end
 end
 

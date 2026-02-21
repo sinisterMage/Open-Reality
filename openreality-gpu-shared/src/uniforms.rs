@@ -37,7 +37,8 @@ pub struct MaterialUniforms {
     pub has_ao_map: i32,
     pub has_emissive_map: i32,
     pub has_height_map: i32,
-    pub _pad1: i32,
+    /// LOD crossfade alpha (stored as f32 bits in i32 for Pod compat; 0x3f800000 = 1.0 = fully visible).
+    pub lod_alpha_bits: i32,
     pub _pad2: i32,
 }
 
@@ -141,9 +142,25 @@ pub struct PostProcessParams {
     pub gamma: f32,
     pub tone_mapping_mode: i32,
     pub horizontal: i32,
+    pub vignette_intensity: f32,
+    pub vignette_radius: f32,
+    pub vignette_softness: f32,
+    pub color_brightness: f32,
+    pub color_contrast: f32,
+    pub color_saturation: f32,
     pub _pad1: f32,
-    pub _pad2: f32,
-    pub _pad3: f32,
+}
+
+/// Bone matrix uniforms for skeletal animation.
+/// 128 bones * mat4x4 = 8192 bytes + 16-byte header = 8208 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct BoneUniforms {
+    pub has_skinning: i32,
+    pub _pad1: i32,
+    pub _pad2: i32,
+    pub _pad3: i32,
+    pub bone_matrices: [[[f32; 4]; 4]; 128],
 }
 
 /// Shadow cascade data.
@@ -164,6 +181,48 @@ pub struct ShadowUniforms {
     pub cascades: [CascadeData; 4],
     pub num_cascades: i32,
     pub shadow_bias: f32,
+    pub _pad1: f32,
+    pub _pad2: f32,
+}
+
+/// DOF Circle of Confusion parameters.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct DOFCoCParams {
+    pub focus_distance: f32,
+    pub focus_range: f32,
+    pub near_plane: f32,
+    pub far_plane: f32,
+}
+
+/// DOF separable blur parameters.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct DOFBlurParams {
+    pub horizontal: i32,
+    pub bokeh_radius: f32,
+    pub _pad1: f32,
+    pub _pad2: f32,
+}
+
+/// Motion blur velocity buffer parameters.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct VelocityParams {
+    pub inv_view_proj: [[f32; 4]; 4],
+    pub prev_view_proj: [[f32; 4]; 4],
+    pub max_velocity: f32,
+    pub _pad1: f32,
+    pub _pad2: f32,
+    pub _pad3: f32,
+}
+
+/// Motion blur directional blur parameters.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct MotionBlurParams {
+    pub samples: i32,
+    pub intensity: f32,
     pub _pad1: f32,
     pub _pad2: f32,
 }

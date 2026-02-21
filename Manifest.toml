@@ -2,7 +2,7 @@
 
 julia_version = "1.12.4"
 manifest_format = "2.0"
-project_hash = "9fd2e9dc01bab26806de628781c88ae78eeeb2da"
+project_hash = "f3890e1a175b820f4b92337e8d68acb32eacece8"
 
 [[deps.Accessors]]
 deps = ["CompositionsBase", "ConstructionBase", "Dates", "InverseFunctions", "MacroTools"]
@@ -31,6 +31,18 @@ version = "0.1.43"
 [[deps.ArgTools]]
 uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
 version = "1.1.2"
+
+[[deps.Ark]]
+deps = ["FieldViews", "FunctionWrappers", "StaticArrays"]
+git-tree-sha1 = "024cbd7caff9bbd42beff76fd7cdf2e9cf13190c"
+uuid = "56664e29-41e4-4ea5-ab0e-825499acc647"
+version = "0.3.2"
+
+    [deps.Ark.extensions]
+    ArkMooncakeInterop = "Mooncake"
+
+    [deps.Ark.weakdeps]
+    Mooncake = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 
 [[deps.Artifacts]]
 uuid = "56f22d72-fd6d-98f1-02f0-08ddc0907c33"
@@ -231,6 +243,16 @@ git-tree-sha1 = "3097e772bf02dccdd5f4f44e6cdd18566a99300d"
 uuid = "1d38b3a6-207b-531b-80e8-c83f48dafa73"
 version = "1.4.4+0"
 
+[[deps.FieldViews]]
+deps = ["Accessors"]
+git-tree-sha1 = "02c03efa70bf8bad393acd5e873ee2d4c4a841ae"
+uuid = "ff5a1669-b1f2-423e-bbd7-b7fa0f7e0224"
+version = "0.3.3"
+weakdeps = ["StaticArrays"]
+
+    [deps.FieldViews.extensions]
+    StaticArraysExt = "StaticArrays"
+
 [[deps.FileIO]]
 deps = ["Pkg", "Requires", "UUIDs"]
 git-tree-sha1 = "6522cfb3b8fe97bec632252263057996cbd3de20"
@@ -282,6 +304,11 @@ deps = ["Artifacts", "JLLWrappers", "Libdl"]
 git-tree-sha1 = "7a214fdac5ed5f59a22c2d9a885a16da1c74bbc7"
 uuid = "559328eb-81f9-559d-9380-de523a88c83c"
 version = "1.0.17+0"
+
+[[deps.FunctionWrappers]]
+git-tree-sha1 = "d62485945ce5ae9c0c48f124a84998d755bae00e"
+uuid = "069b7b12-0de2-55c6-9aab-29f3d0a68a2e"
+version = "1.1.3"
 
 [[deps.GLFW]]
 deps = ["GLFW_jll"]
@@ -728,7 +755,7 @@ uuid = "18a262bb-aa17-5467-a713-aee519bc75cb"
 version = "3.4.4+0"
 
 [[deps.OpenReality]]
-deps = ["Base64", "ColorTypes", "FileIO", "FreeTypeAbstraction", "GLFW", "GLTF", "GeometryBasics", "ImageIO", "LinearAlgebra", "MeshIO", "ModernGL", "Observables", "OpenAL_jll", "Quaternions", "StaticArrays", "Vulkan", "glslang_jll"]
+deps = ["Ark", "Base64", "ColorTypes", "FileIO", "FreeTypeAbstraction", "GLFW", "GLTF", "GeometryBasics", "ImageIO", "LinearAlgebra", "MeshIO", "ModernGL", "Observables", "OpenAL_jll", "Quaternions", "Serialization", "StaticArrays", "Vulkan", "glslang_jll"]
 path = "."
 uuid = "b08b1914-4d33-46de-8c63-ba029b7f1c5f"
 version = "0.1.0"

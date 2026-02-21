@@ -6,9 +6,13 @@ struct PostProcessParams {
     gamma: f32,
     tone_mapping_mode: i32,
     horizontal: i32,
+    vignette_intensity: f32,
+    vignette_radius: f32,
+    vignette_softness: f32,
+    color_brightness: f32,
+    color_contrast: f32,
+    color_saturation: f32,
     _pad1: f32,
-    _pad2: f32,
-    _pad3: f32,
 };
 
 @group(0) @binding(0) var<uniform> params: PostProcessParams;

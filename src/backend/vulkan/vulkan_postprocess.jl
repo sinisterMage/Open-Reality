@@ -120,7 +120,13 @@ function _vk_bright_extract_frag()
         float gamma;
         int tone_mapping_mode;
         int horizontal;
-        float _pad1, _pad2, _pad3;
+        float vignette_intensity;
+        float vignette_radius;
+        float vignette_softness;
+        float color_brightness;
+        float color_contrast;
+        float color_saturation;
+        float _pad1;
     } params;
 
     layout(set = 0, binding = 1) uniform sampler2D sceneTexture;
@@ -150,7 +156,13 @@ function _vk_bloom_blur_frag()
         float gamma;
         int tone_mapping_mode;
         int horizontal;
-        float _pad1, _pad2, _pad3;
+        float vignette_intensity;
+        float vignette_radius;
+        float vignette_softness;
+        float color_brightness;
+        float color_contrast;
+        float color_saturation;
+        float _pad1;
     } params;
 
     layout(set = 0, binding = 1) uniform sampler2D inputTexture;
@@ -191,7 +203,13 @@ function _vk_composite_frag()
         float gamma;
         int tone_mapping_mode;
         int horizontal;
-        float _pad1, _pad2, _pad3;
+        float vignette_intensity;
+        float vignette_radius;
+        float vignette_softness;
+        float color_brightness;
+        float color_contrast;
+        float color_saturation;
+        float _pad1;
     } params;
 
     layout(set = 0, binding = 1) uniform sampler2D sceneTexture;
@@ -239,6 +257,21 @@ function _vk_composite_frag()
         // Gamma correction
         mapped = pow(mapped, vec3(1.0 / params.gamma));
 
+        // Vignette (radial darkening)
+        if (params.vignette_intensity > 0.0) {
+            vec2 center = fragUV - 0.5;
+            float dist = length(center);
+            float vignette = smoothstep(params.vignette_radius, params.vignette_radius - params.vignette_softness, dist);
+            mapped *= mix(1.0, vignette, params.vignette_intensity);
+        }
+
+        // Color grading (brightness, contrast, saturation)
+        mapped += params.color_brightness;
+        mapped = mix(vec3(0.5), mapped, params.color_contrast);
+        float luma = dot(mapped, vec3(0.2126, 0.7152, 0.0722));
+        mapped = mix(vec3(luma), mapped, params.color_saturation);
+        mapped = clamp(mapped, 0.0, 1.0);
+
         outColor = vec4(mapped, 1.0);
     }
     """
@@ -254,7 +287,13 @@ function _vk_fxaa_frag()
         float gamma;
         int tone_mapping_mode;
         int horizontal;
-        float _pad1, _pad2, _pad3;
+        float vignette_intensity;
+        float vignette_radius;
+        float vignette_softness;
+        float color_brightness;
+        float color_contrast;
+        float color_saturation;
+        float _pad1;
     } params;
 
     layout(set = 0, binding = 1) uniform sampler2D inputTexture;

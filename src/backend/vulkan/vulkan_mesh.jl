@@ -50,12 +50,50 @@ function vk_upload_mesh!(cache::VulkanGPUResourceCache, device::Device,
         BUFFER_USAGE_INDEX_BUFFER_BIT
     )
 
+    # Upload bone weights and indices (if available for skeletal animation)
+    bone_weight_buf = nothing
+    bone_weight_mem = nothing
+    bone_index_buf = nothing
+    bone_index_mem = nothing
+    has_skinning = !isempty(mesh.bone_weights) && !isempty(mesh.bone_indices)
+
+    if has_skinning
+        # Bone weights: vec4 per vertex
+        weight_data = reinterpret(Float32, mesh.bone_weights)
+        weight_size = sizeof(weight_data)
+        bone_weight_buf, bone_weight_mem = _upload_to_device_local(
+            device, physical_device, command_pool, queue,
+            Vector{UInt8}(reinterpret(UInt8, weight_data)), weight_size,
+            BUFFER_USAGE_VERTEX_BUFFER_BIT
+        )
+
+        # Bone indices: 4 x UInt16 per vertex, flattened
+        n_verts = length(mesh.bone_indices)
+        bone_idx_flat = Vector{UInt16}(undef, n_verts * 4)
+        for i in 1:n_verts
+            bi = mesh.bone_indices[i]
+            bone_idx_flat[(i-1)*4 + 1] = bi[1]
+            bone_idx_flat[(i-1)*4 + 2] = bi[2]
+            bone_idx_flat[(i-1)*4 + 3] = bi[3]
+            bone_idx_flat[(i-1)*4 + 4] = bi[4]
+        end
+        idx_size = sizeof(bone_idx_flat)
+        bone_index_buf, bone_index_mem = _upload_to_device_local(
+            device, physical_device, command_pool, queue,
+            Vector{UInt8}(reinterpret(UInt8, bone_idx_flat)), idx_size,
+            BUFFER_USAGE_VERTEX_BUFFER_BIT
+        )
+    end
+
     gpu_mesh = VulkanGPUMesh(
         vertex_buffer, vertex_memory,
         normal_buffer, normal_memory,
         uv_buffer, uv_memory,
         index_buffer, index_memory,
-        Int32(length(mesh.indices))
+        Int32(length(mesh.indices)),
+        bone_weight_buf, bone_weight_mem,
+        bone_index_buf, bone_index_mem,
+        has_skinning
     )
 
     cache.meshes[entity_id] = gpu_mesh
@@ -122,10 +160,18 @@ end
 Bind vertex/index buffers and issue an indexed draw call.
 """
 function vk_bind_and_draw_mesh!(cmd::CommandBuffer, gpu_mesh::VulkanGPUMesh)
-    cmd_bind_vertex_buffers(cmd,
-        [gpu_mesh.vertex_buffer, gpu_mesh.normal_buffer, gpu_mesh.uv_buffer],
-        [UInt64(0), UInt64(0), UInt64(0)]
-    )
+    if gpu_mesh.has_skinning && gpu_mesh.bone_weight_buffer !== nothing && gpu_mesh.bone_index_buffer !== nothing
+        cmd_bind_vertex_buffers(cmd,
+            [gpu_mesh.vertex_buffer, gpu_mesh.normal_buffer, gpu_mesh.uv_buffer,
+             gpu_mesh.bone_weight_buffer, gpu_mesh.bone_index_buffer],
+            [UInt64(0), UInt64(0), UInt64(0), UInt64(0), UInt64(0)]
+        )
+    else
+        cmd_bind_vertex_buffers(cmd,
+            [gpu_mesh.vertex_buffer, gpu_mesh.normal_buffer, gpu_mesh.uv_buffer],
+            [UInt64(0), UInt64(0), UInt64(0)]
+        )
+    end
     cmd_bind_index_buffer(cmd, gpu_mesh.index_buffer, UInt64(0), INDEX_TYPE_UINT32)
     cmd_draw_indexed(cmd, UInt32(gpu_mesh.index_count), UInt32(1), UInt32(0), Int32(0), UInt32(0))
     return nothing
@@ -145,6 +191,14 @@ function vk_destroy_mesh!(device::Device, gpu_mesh::VulkanGPUMesh)
     finalize(gpu_mesh.uv_memory)
     finalize(gpu_mesh.index_buffer)
     finalize(gpu_mesh.index_memory)
+    if gpu_mesh.bone_weight_buffer !== nothing
+        finalize(gpu_mesh.bone_weight_buffer)
+        finalize(gpu_mesh.bone_weight_memory)
+    end
+    if gpu_mesh.bone_index_buffer !== nothing
+        finalize(gpu_mesh.bone_index_buffer)
+        finalize(gpu_mesh.bone_index_memory)
+    end
     return nothing
 end
 

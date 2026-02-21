@@ -9,15 +9,25 @@ layout(set = 0, binding = 0) uniform PresentUBO {
     float bloom_threshold;
     float bloom_intensity;
     float gamma;
-    int tone_mapping_mode;
-    int horizontal;
-    float _pad1, _pad2, _pad3;
+    int tone_mapping_mode;  // 0=reinhard, 1=aces, 2=uncharted2, 3=passthrough
+    int apply_fxaa;
+    float vignette_intensity;
+    float vignette_radius;
+    float vignette_softness;
+    float color_brightness;
+    float color_contrast;
+    float color_saturation;
+    float _pad1;
 } params;
 
 layout(set = 0, binding = 1) uniform sampler2D sceneTexture;
 
 layout(location = 0) in vec2 fragUV;
 layout(location = 0) out vec4 outColor;
+
+vec3 reinhard(vec3 color) {
+    return color / (color + vec3(1.0));
+}
 
 vec3 aces(vec3 x) {
     float a = 2.51;
@@ -28,13 +38,78 @@ vec3 aces(vec3 x) {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
+vec3 uncharted2(vec3 x) {
+    float A = 0.15, B = 0.50, C = 0.10, D = 0.20, E = 0.02, F = 0.30;
+    return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
+}
+
+vec3 sample_with_fxaa(vec2 uv) {
+    vec2 texelSize = 1.0 / textureSize(sceneTexture, 0);
+
+    vec3 rgbNW = texture(sceneTexture, uv + vec2(-1.0, -1.0) * texelSize).rgb;
+    vec3 rgbNE = texture(sceneTexture, uv + vec2(1.0, -1.0) * texelSize).rgb;
+    vec3 rgbSW = texture(sceneTexture, uv + vec2(-1.0, 1.0) * texelSize).rgb;
+    vec3 rgbSE = texture(sceneTexture, uv + vec2(1.0, 1.0) * texelSize).rgb;
+    vec3 rgbM  = texture(sceneTexture, uv).rgb;
+
+    vec3 luma = vec3(0.299, 0.587, 0.114);
+    float lumaNW = dot(rgbNW, luma);
+    float lumaNE = dot(rgbNE, luma);
+    float lumaSW = dot(rgbSW, luma);
+    float lumaSE = dot(rgbSE, luma);
+    float lumaM  = dot(rgbM, luma);
+
+    float lumaMin = min(lumaM, min(min(lumaNW, lumaNE), min(lumaSW, lumaSE)));
+    float lumaMax = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));
+
+    float lumaRange = lumaMax - lumaMin;
+    if (lumaRange < max(0.0312, lumaMax * 0.125)) {
+        return rgbM;
+    }
+
+    vec2 dir;
+    dir.x = -((lumaNW + lumaNE) - (lumaSW + lumaSE));
+    dir.y =  ((lumaNW + lumaSW) - (lumaNE + lumaSE));
+    float dirReduce = max((lumaNW + lumaNE + lumaSW + lumaSE) * 0.25 * 0.25, 1.0/128.0);
+    float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+    dir = min(vec2(8.0), max(vec2(-8.0), dir * rcpDirMin)) * texelSize;
+
+    vec3 rgbA = 0.5 * (
+        texture(sceneTexture, uv + dir * (1.0/3.0 - 0.5)).rgb +
+        texture(sceneTexture, uv + dir * (2.0/3.0 - 0.5)).rgb);
+    vec3 rgbB = rgbA * 0.5 + 0.25 * (
+        texture(sceneTexture, uv + dir * -0.5).rgb +
+        texture(sceneTexture, uv + dir * 0.5).rgb);
+    float lumaB = dot(rgbB, luma);
+
+    if (lumaB < lumaMin || lumaB > lumaMax) {
+        return rgbA;
+    }
+    return rgbB;
+}
+
 void main() {
-    vec3 hdr = texture(sceneTexture, fragUV).rgb;
-    // Tone mapping (ACES)
-    vec3 mapped = aces(hdr);
-    // Gamma correction
-    mapped = pow(mapped, vec3(1.0 / params.gamma));
-    outColor = vec4(mapped, 1.0);
+    vec3 color;
+    if (params.apply_fxaa != 0) {
+        color = sample_with_fxaa(fragUV);
+    } else {
+        color = texture(sceneTexture, fragUV).rgb;
+    }
+
+    if (params.tone_mapping_mode == 0) {
+        color = reinhard(color);
+        color = pow(color, vec3(1.0 / params.gamma));
+    } else if (params.tone_mapping_mode == 1) {
+        color = aces(color);
+        color = pow(color, vec3(1.0 / params.gamma));
+    } else if (params.tone_mapping_mode == 2) {
+        float W = 11.2;
+        color = uncharted2(color * 2.0) / uncharted2(vec3(W));
+        color = pow(color, vec3(1.0 / params.gamma));
+    }
+    // tone_mapping_mode == 3: passthrough (already LDR from composite)
+
+    outColor = vec4(color, 1.0);
 }
 """
 
@@ -123,6 +198,25 @@ mutable struct VulkanBackend <: AbstractBackend
     quad_buffer::Union{Buffer, Nothing}
     quad_memory::Union{DeviceMemory, Nothing}
 
+    # Instance buffer for instanced rendering
+    instance_buffer::VulkanInstanceBuffer
+
+    # UI renderer
+    ui_renderer::VulkanUIRenderer
+
+    # Particle renderer
+    particle_renderer::VulkanParticleRenderer
+
+    # Terrain renderer
+    terrain_renderer::VulkanTerrainRenderer
+
+    # DOF + Motion Blur passes
+    dof_pass::Union{VulkanDOFPass, Nothing}
+    motion_blur_pass::Union{VulkanMotionBlurPass, Nothing}
+
+    # Debug draw renderer
+    debug_draw_renderer::VulkanDebugDrawRenderer
+
     # State
     framebuffer_resized::Bool
     use_deferred::Bool
@@ -156,6 +250,18 @@ function VulkanBackend()
         [Tuple{Buffer, DeviceMemory}[] for _ in 1:VK_MAX_FRAMES_IN_FLIGHT],
         # Quad
         nothing, nothing,
+        # Instance buffer
+        VulkanInstanceBuffer(),
+        # UI renderer
+        VulkanUIRenderer(),
+        # Particle renderer
+        VulkanParticleRenderer(),
+        # Terrain renderer
+        VulkanTerrainRenderer(),
+        # DOF + Motion Blur
+        nothing, nothing,
+        # Debug draw
+        VulkanDebugDrawRenderer(),
         # State
         false, true, nothing,
         # Present
@@ -328,6 +434,36 @@ function initialize!(backend::VulkanBackend; width::Int=1280, height::Int=720, t
             1, width, height
         ))
 
+    # Initialize UI renderer
+    vk_init_ui!(backend.ui_renderer, backend.device, backend.physical_device,
+        backend.command_pool, backend.graphics_queue, backend.swapchain_format, width, height)
+
+    # Initialize particle renderer (shares UI overlay render pass)
+    vk_init_particles!(backend.particle_renderer, backend.device, backend.physical_device,
+        backend.ui_renderer.render_pass, width, height)
+
+    # Initialize terrain renderer (uses G-Buffer render pass)
+    if backend.deferred_pipeline !== nothing && backend.deferred_pipeline.gbuffer !== nothing
+        vk_init_terrain!(backend.terrain_renderer, backend.device, backend.physical_device,
+            backend.deferred_pipeline.gbuffer.render_pass,
+            backend.per_frame_layout, backend.per_material_layout,
+            backend.push_constant_range, width, height)
+    end
+
+    # Create DOF pass
+    backend.dof_pass = vk_create_dof_pass(backend.device, backend.physical_device,
+        width, height, backend.fullscreen_layout, backend.descriptor_pool)
+
+    # Create motion blur pass
+    backend.motion_blur_pass = vk_create_motion_blur_pass(backend.device, backend.physical_device,
+        width, height, backend.fullscreen_layout, backend.descriptor_pool)
+
+    # Initialize debug draw renderer (shares UI overlay render pass)
+    if OPENREALITY_DEBUG && backend.ui_renderer.render_pass !== nothing
+        vk_init_debug_draw!(backend.debug_draw_renderer, backend.device, backend.physical_device,
+            backend.ui_renderer.render_pass, width, height)
+    end
+
     # Setup input callbacks
     setup_input_callbacks!(backend.window, backend.input)
 
@@ -410,6 +546,31 @@ function shutdown!(backend::VulkanBackend)
         end
         empty!(frame_bufs)
     end
+
+    # Destroy DOF pass
+    if backend.dof_pass !== nothing
+        vk_destroy_dof_pass!(backend.device, backend.dof_pass)
+    end
+
+    # Destroy motion blur pass
+    if backend.motion_blur_pass !== nothing
+        vk_destroy_motion_blur_pass!(backend.device, backend.motion_blur_pass)
+    end
+
+    # Destroy debug draw renderer
+    vk_destroy_debug_draw!(backend.device, backend.debug_draw_renderer)
+
+    # Destroy terrain renderer
+    vk_destroy_terrain!(backend.device, backend.terrain_renderer)
+
+    # Destroy particle renderer
+    vk_destroy_particles!(backend.device, backend.particle_renderer)
+
+    # Destroy UI renderer
+    vk_destroy_ui!(backend.device, backend.ui_renderer)
+
+    # Destroy instance buffer
+    vk_destroy_instance_buffer!(backend.device, backend.instance_buffer)
 
     # Destroy quad
     if backend.quad_buffer !== nothing
@@ -553,13 +714,79 @@ function render_frame!(backend::VulkanBackend, scene::Scene)
         _render_gbuffer_pass!(cmd, backend, frame_data, frame_idx, w, h)
     end
 
-    # --- Deferred lighting pass ---
-    if backend.deferred_pipeline !== nothing && backend.deferred_pipeline.lighting_target !== nothing
-        _render_lighting_pass!(cmd, backend, frame_data, frame_idx, w, h)
+    # --- SSAO pass (needs G-Buffer depth + normals) ---
+    ssao_view = nothing
+    pp_config = backend.post_process_config
+    if backend.deferred_pipeline !== nothing && backend.deferred_pipeline.ssao_pass !== nothing &&
+       pp_config !== nothing && pp_config.ssao_enabled
+        ssao_view = _render_ssao_pass!(cmd, backend, vk_proj, frame_idx, w, h)
     end
 
-    # --- Present pass (blit to swapchain) ---
-    _render_present_pass!(cmd, backend, image_index, frame_idx, w, h)
+    # --- Deferred lighting pass (uses SSAO result if available) ---
+    if backend.deferred_pipeline !== nothing && backend.deferred_pipeline.lighting_target !== nothing
+        _render_lighting_pass!(cmd, backend, frame_data, frame_idx, w, h; ssao_view=ssao_view)
+    end
+
+    # Determine source view for downstream passes
+    source_view = nothing
+    if backend.deferred_pipeline !== nothing && backend.deferred_pipeline.lighting_target !== nothing
+        source_view = backend.deferred_pipeline.lighting_target.color_view
+    end
+
+    # --- TAA pass (temporal blend with history) ---
+    if source_view !== nothing && backend.deferred_pipeline !== nothing &&
+       backend.deferred_pipeline.taa_pass !== nothing
+        source_view = _render_taa_pass!(cmd, backend, frame_idx, vk_proj,
+            frame_data.view, w, h, source_view)
+    end
+
+    # --- DOF pass (after TAA, before bloom) ---
+    if source_view !== nothing
+        source_view = _render_dof_pass!(cmd, backend, frame_idx, source_view, w, h)
+    end
+
+    # --- Motion blur pass (after DOF, before bloom) ---
+    if source_view !== nothing
+        source_view = _render_motion_blur_pass!(cmd, backend, frame_idx, source_view,
+            vk_proj, frame_data.view, w, h)
+    end
+
+    # --- Post-process passes (bloom + composite with tone mapping) ---
+    has_post_process = source_view !== nothing && backend.post_process !== nothing
+    if has_post_process
+        source_view = _render_post_process_passes!(cmd, backend, frame_idx, source_view, w, h)
+    end
+
+    # --- Present pass (blit to swapchain with optional FXAA) ---
+    _render_present_pass!(cmd, backend, image_index, frame_idx, w, h;
+        source_view=source_view,
+        use_passthrough=has_post_process,
+        apply_fxaa=has_post_process && pp_config !== nothing && pp_config.fxaa_enabled)
+
+    # --- Particle overlay pass (after present, before UI) ---
+    if !isempty(PARTICLE_POOLS) && backend.particle_renderer.initialized
+        vk_render_particles!(cmd, backend.particle_renderer, backend,
+            frame_data.view, frame_data.proj, image_index)
+    end
+
+    # --- UI overlay pass (after present, on top of swapchain) ---
+    if _UI_CALLBACK[] !== nothing && _UI_CONTEXT[] !== nothing
+        ui_ctx = _UI_CONTEXT[]
+        # Ensure font atlas is ready (first frame)
+        if isempty(ui_ctx.font_atlas.glyphs)
+            vk_ensure_font_atlas!(backend.ui_renderer, backend.device,
+                backend.physical_device, backend.command_pool, backend.graphics_queue, ui_ctx)
+        end
+        clear_ui!(ui_ctx)
+        _UI_CALLBACK[](ui_ctx)
+        vk_render_ui!(cmd, backend.ui_renderer, backend, ui_ctx, image_index, frame_idx)
+    end
+
+    # --- Debug draw overlay (after UI, on top of everything) ---
+    if OPENREALITY_DEBUG && backend.debug_draw_renderer.initialized && !isempty(_DEBUG_LINES)
+        vk_render_debug_draw!(cmd, backend.debug_draw_renderer, backend,
+            frame_data.view, frame_data.proj, image_index)
+    end
 
     # End command buffer
     unwrap(end_command_buffer(cmd))
@@ -667,28 +894,32 @@ function _render_gbuffer_pass!(cmd::CommandBuffer, backend::VulkanBackend,
     cmd_set_scissor(cmd,
         [Rect2D(Offset2D(0, 0), Extent2D(UInt32(width), UInt32(height)))])
 
-    # Render each opaque entity
-    for entity_data in frame_data.opaque_entities
-        eid = entity_data.entity_id
-        mesh = entity_data.mesh
+    # Group entities into instanced batches and singles
+    batches, singles = group_into_batches(frame_data.opaque_entities)
 
-        # Get material and determine shader variant
-        material = get_component(eid, MaterialComponent)
+    # === Render instanced batches ===
+    for batch in batches
+        rep = batch.representative
+        mesh = rep.mesh
+
+        gpu_mesh = vk_get_or_upload_mesh!(backend.gpu_cache, backend.device,
+            backend.physical_device, backend.command_pool, backend.graphics_queue,
+            rep.entity_id, mesh)
+
+        material = get_component(rep.entity_id, MaterialComponent)
         if material === nothing
             material = MaterialComponent()
         end
 
         variant_key = determine_shader_variant(material)
+        variant_key = ShaderVariantKey(union(variant_key.features, Set([FEATURE_INSTANCED])))
         shader = get_or_compile_variant!(dp.gbuffer_shader_library, variant_key)
 
-        # Bind pipeline
         cmd_bind_pipeline(cmd, PIPELINE_BIND_POINT_GRAPHICS, shader.pipeline)
 
-        # Bind per-frame descriptor set (set 0)
         cmd_bind_descriptor_sets(cmd, PIPELINE_BIND_POINT_GRAPHICS, shader.pipeline_layout,
             UInt32(0), [backend.per_frame_ds[frame_idx]], UInt32[])
 
-        # Allocate and update per-material descriptor set (set 1) from transient pool
         mat_ds = vk_allocate_descriptor_set(backend.device,
             backend.transient_pools[frame_idx], backend.per_material_layout)
         mat_uniforms = vk_pack_material(material)
@@ -700,7 +931,77 @@ function _render_gbuffer_pass!(cmd::CommandBuffer, backend::VulkanBackend,
         cmd_bind_descriptor_sets(cmd, PIPELINE_BIND_POINT_GRAPHICS, shader.pipeline_layout,
             UInt32(1), [mat_ds], UInt32[])
 
-        # Push constants (per-object)
+        # Upload instance transforms and draw
+        instance_count = length(batch.model_matrices)
+        vk_upload_instance_data!(backend.device, backend.physical_device,
+            backend.instance_buffer, batch.model_matrices, batch.normal_matrices)
+
+        # Push dummy constants (instanced shader reads transforms from per-instance attributes)
+        push_data = vk_pack_per_object(Mat4f(I), SMatrix{3, 3, Float32, 9}(I))
+        push_ref = Ref(push_data)
+        GC.@preserve push_ref cmd_push_constants(cmd, shader.pipeline_layout,
+            SHADER_STAGE_VERTEX_BIT | SHADER_STAGE_FRAGMENT_BIT,
+            UInt32(0), UInt32(sizeof(push_data)),
+            Base.unsafe_convert(Ptr{Cvoid}, Base.cconvert(Ptr{Cvoid}, push_ref)))
+
+        vk_bind_and_draw_instanced!(cmd, gpu_mesh, backend.instance_buffer.buffer, instance_count)
+
+        push!(backend.frame_temp_buffers[frame_idx], (mat_ubo, mat_mem))
+    end
+
+    # === Render singles (non-instanced entities, including skinned) ===
+    for entity_data in singles
+        eid = entity_data.entity_id
+        mesh = entity_data.mesh
+
+        gpu_mesh = vk_get_or_upload_mesh!(backend.gpu_cache, backend.device,
+            backend.physical_device, backend.command_pool, backend.graphics_queue,
+            eid, mesh)
+
+        is_skinned = gpu_mesh.has_skinning
+        skin = is_skinned ? get_component(eid, SkinnedMeshComponent) : nothing
+        is_skinned = is_skinned && skin !== nothing && !isempty(skin.bone_matrices)
+
+        material = get_component(eid, MaterialComponent)
+        if material === nothing
+            material = MaterialComponent()
+        end
+
+        variant_key = determine_shader_variant(material)
+        if is_skinned
+            variant_key = ShaderVariantKey(union(variant_key.features, Set([FEATURE_SKINNING])))
+        end
+        shader = get_or_compile_variant!(dp.gbuffer_shader_library, variant_key)
+
+        cmd_bind_pipeline(cmd, PIPELINE_BIND_POINT_GRAPHICS, shader.pipeline)
+
+        cmd_bind_descriptor_sets(cmd, PIPELINE_BIND_POINT_GRAPHICS, shader.pipeline_layout,
+            UInt32(0), [backend.per_frame_ds[frame_idx]], UInt32[])
+
+        mat_ds = vk_allocate_descriptor_set(backend.device,
+            backend.transient_pools[frame_idx], backend.per_material_layout)
+        mat_uniforms = vk_pack_material(material)
+        mat_ubo, mat_mem = vk_create_uniform_buffer(backend.device, backend.physical_device, mat_uniforms)
+        vk_update_ubo_descriptor!(backend.device, mat_ds, 0, mat_ubo, sizeof(mat_uniforms))
+        vk_bind_material_textures!(backend.device, mat_ds, material, backend.texture_cache,
+                                    backend.physical_device, backend.command_pool,
+                                    backend.graphics_queue, backend.default_texture)
+        cmd_bind_descriptor_sets(cmd, PIPELINE_BIND_POINT_GRAPHICS, shader.pipeline_layout,
+            UInt32(1), [mat_ds], UInt32[])
+
+        if is_skinned
+            bone_uniforms = vk_pack_bone_uniforms(skin.bone_matrices)
+            bone_ubo, bone_mem = vk_create_uniform_buffer(
+                backend.device, backend.physical_device, bone_uniforms)
+            push!(backend.frame_temp_buffers[frame_idx], (bone_ubo, bone_mem))
+            bone_ds = vk_allocate_descriptor_set(backend.device,
+                backend.transient_pools[frame_idx], backend.per_frame_layout)
+            vk_update_ubo_descriptor!(backend.device, bone_ds, 0,
+                bone_ubo, sizeof(VulkanBoneUniforms))
+            cmd_bind_descriptor_sets(cmd, PIPELINE_BIND_POINT_GRAPHICS, shader.pipeline_layout,
+                UInt32(2), [bone_ds], UInt32[])
+        end
+
         push_data = vk_pack_per_object(entity_data.model, entity_data.normal_matrix)
         push_ref = Ref(push_data)
         GC.@preserve push_ref cmd_push_constants(cmd, shader.pipeline_layout,
@@ -708,14 +1009,15 @@ function _render_gbuffer_pass!(cmd::CommandBuffer, backend::VulkanBackend,
             UInt32(0), UInt32(sizeof(push_data)),
             Base.unsafe_convert(Ptr{Cvoid}, Base.cconvert(Ptr{Cvoid}, push_ref)))
 
-        # Draw mesh
-        gpu_mesh = vk_get_or_upload_mesh!(backend.gpu_cache, backend.device,
-            backend.physical_device, backend.command_pool, backend.graphics_queue,
-            eid, mesh)
         vk_bind_and_draw_mesh!(cmd, gpu_mesh)
 
-        # Defer UBO cleanup until after GPU finishes (freed at start of next frame after fence wait)
         push!(backend.frame_temp_buffers[frame_idx], (mat_ubo, mat_mem))
+    end
+
+    # === Render terrain (within same G-Buffer pass) ===
+    if backend.terrain_renderer.initialized
+        vk_render_terrain_gbuffer!(cmd, backend, frame_idx,
+            frame_data.proj, frame_data.view, frame_data.cam_pos, width, height)
     end
 
     cmd_end_render_pass(cmd)
@@ -723,7 +1025,8 @@ end
 
 function _render_lighting_pass!(cmd::CommandBuffer, backend::VulkanBackend,
                                  frame_data::FrameData, frame_idx::Int,
-                                 width::Int, height::Int)
+                                 width::Int, height::Int;
+                                 ssao_view::Union{ImageView, Nothing}=nothing)
     dp = backend.deferred_pipeline
     lt = dp.lighting_target
 
@@ -760,8 +1063,13 @@ function _render_lighting_pass!(cmd::CommandBuffer, backend::VulkanBackend,
         vk_update_texture_descriptor!(backend.device, lighting_ds, 4, gb.advanced_material)
         vk_update_texture_descriptor!(backend.device, lighting_ds, 5, gb.depth)
 
-        # Binding 6: SSAO (white = no occlusion)
-        vk_update_texture_descriptor!(backend.device, lighting_ds, 6, backend.default_texture)
+        # Binding 6: SSAO (real result or white = no occlusion)
+        if ssao_view !== nothing
+            vk_update_image_sampler_descriptor!(backend.device, lighting_ds, 6,
+                ssao_view, backend.default_texture.sampler)
+        else
+            vk_update_texture_descriptor!(backend.device, lighting_ds, 6, backend.default_texture)
+        end
         # Binding 7: SSR (black/alpha=0 = no reflections)
         vk_update_texture_descriptor!(backend.device, lighting_ds, 7, backend.black_texture)
         # Binding 8: unused
@@ -778,7 +1086,10 @@ end
 
 function _render_present_pass!(cmd::CommandBuffer, backend::VulkanBackend,
                                 image_index::Int, frame_idx::Int,
-                                width::Int, height::Int)
+                                width::Int, height::Int;
+                                source_view::Union{ImageView, Nothing}=nothing,
+                                use_passthrough::Bool=false,
+                                apply_fxaa::Bool=false)
     clear_values = [
         ClearValue(ClearColorValue((0.0f0, 0.0f0, 0.0f0, 1.0f0))),
         ClearValue(ClearDepthStencilValue(1.0f0, UInt32(0)))
@@ -797,23 +1108,28 @@ function _render_present_pass!(cmd::CommandBuffer, backend::VulkanBackend,
     cmd_set_scissor(cmd,
         [Rect2D(Offset2D(0, 0), Extent2D(UInt32(width), UInt32(height)))])
 
-    # Draw deferred lighting result to swapchain with tone mapping
-    if backend.present_pipeline !== nothing && backend.deferred_pipeline !== nothing &&
+    # Determine the source to blit to swapchain
+    actual_source = source_view
+    if actual_source === nothing && backend.deferred_pipeline !== nothing &&
        backend.deferred_pipeline.lighting_target !== nothing
-        dp = backend.deferred_pipeline
+        actual_source = backend.deferred_pipeline.lighting_target.color_view
+    end
 
+    if backend.present_pipeline !== nothing && actual_source !== nothing
         cmd_bind_pipeline(cmd, PIPELINE_BIND_POINT_GRAPHICS, backend.present_pipeline.pipeline)
 
-        # Allocate descriptor set from transient pool
         present_ds = vk_allocate_descriptor_set(backend.device,
             backend.transient_pools[frame_idx], backend.fullscreen_layout)
 
-        # Binding 0: Present pass UBO (post-process params matching PresentUBO layout)
         pp = backend.post_process_config !== nothing ? backend.post_process_config : PostProcessConfig()
+        tone_mode = use_passthrough ? Int32(3) : Int32(pp.tone_mapping)
+        fxaa_flag = apply_fxaa ? Int32(1) : Int32(0)
         present_uniforms = VulkanPostProcessUniforms(
             pp.bloom_threshold, pp.bloom_intensity, pp.gamma,
-            Int32(pp.tone_mapping), Int32(0),
-            0.0f0, 0.0f0, 0.0f0
+            tone_mode, fxaa_flag,
+            0.0f0, 0.0f0, 0.0f0,  # vignette (not used in present)
+            0.0f0, 1.0f0, 1.0f0,  # color grading defaults
+            0.0f0
         )
         present_ubo, present_mem = vk_create_uniform_buffer(
             backend.device, backend.physical_device, present_uniforms)
@@ -821,11 +1137,9 @@ function _render_present_pass!(cmd::CommandBuffer, backend::VulkanBackend,
         vk_update_ubo_descriptor!(backend.device, present_ds, 0,
             present_ubo, sizeof(VulkanPostProcessUniforms))
 
-        # Binding 1: deferred lighting result texture
         vk_update_image_sampler_descriptor!(backend.device, present_ds, 1,
-            dp.lighting_target.color_view, backend.default_texture.sampler)
+            actual_source, backend.default_texture.sampler)
 
-        # Fill unused bindings 2-8 with default texture to avoid validation errors
         for bind_idx in 2:8
             vk_update_texture_descriptor!(backend.device, present_ds, bind_idx, backend.default_texture)
         end
@@ -838,6 +1152,266 @@ function _render_present_pass!(cmd::CommandBuffer, backend::VulkanBackend,
     end
 
     cmd_end_render_pass(cmd)
+end
+
+# ==================================================================
+# Fullscreen Pass Helper
+# ==================================================================
+
+"""
+    _render_fullscreen_pass!(cmd, target, pipeline, descriptor_set, quad_buffer, width, height)
+
+Helper to render a fullscreen quad into a render target with a given pipeline and descriptor set.
+"""
+function _render_fullscreen_pass!(cmd::CommandBuffer, target::VulkanFramebuffer,
+                                   pipeline::VulkanShaderProgram, descriptor_set::DescriptorSet,
+                                   quad_buffer::Buffer, width::Int, height::Int)
+    clear_values = [ClearValue(ClearColorValue((0.0f0, 0.0f0, 0.0f0, 1.0f0)))]
+    if target.depth_view !== nothing
+        push!(clear_values, ClearValue(ClearDepthStencilValue(1.0f0, UInt32(0))))
+    end
+
+    rp_begin = RenderPassBeginInfo(
+        target.render_pass, target.framebuffer,
+        Rect2D(Offset2D(0, 0), Extent2D(UInt32(width), UInt32(height))),
+        clear_values
+    )
+    cmd_begin_render_pass(cmd, rp_begin, SUBPASS_CONTENTS_INLINE)
+
+    cmd_set_viewport(cmd, [Viewport(0.0f0, 0.0f0, Float32(width), Float32(height), 0.0f0, 1.0f0)])
+    cmd_set_scissor(cmd, [Rect2D(Offset2D(0, 0), Extent2D(UInt32(width), UInt32(height)))])
+
+    cmd_bind_pipeline(cmd, PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline)
+    cmd_bind_descriptor_sets(cmd, PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline_layout,
+        UInt32(0), [descriptor_set], UInt32[])
+    vk_draw_fullscreen_quad!(cmd, quad_buffer)
+
+    cmd_end_render_pass(cmd)
+end
+
+# ==================================================================
+# SSAO Pass Execution
+# ==================================================================
+
+"""
+    _render_ssao_pass!(cmd, backend, vk_proj, frame_idx, width, height) -> Union{ImageView, Nothing}
+
+Execute SSAO pass (raw occlusion + blur). Returns the blurred SSAO result view,
+or nothing if SSAO is not available.
+"""
+function _render_ssao_pass!(cmd::CommandBuffer, backend::VulkanBackend,
+                              vk_proj::Mat4f, frame_idx::Int,
+                              width::Int, height::Int)
+    dp = backend.deferred_pipeline
+    ssao = dp.ssao_pass
+    ssao === nothing && return nothing
+    gb = dp.gbuffer
+    gb === nothing && return nothing
+
+    sampler = backend.default_texture.sampler
+
+    # --- SSAO raw pass ---
+    ssao_uniforms = vk_pack_ssao_uniforms(ssao.kernel, vk_proj,
+        ssao.radius, ssao.bias, ssao.power, width, height)
+    ssao_ubo, ssao_mem = vk_create_uniform_buffer(backend.device, backend.physical_device, ssao_uniforms)
+    push!(backend.frame_temp_buffers[frame_idx], (ssao_ubo, ssao_mem))
+
+    ssao_ds = vk_allocate_descriptor_set(backend.device,
+        backend.transient_pools[frame_idx], backend.fullscreen_layout)
+    vk_update_ubo_descriptor!(backend.device, ssao_ds, 0, ssao_ubo, sizeof(VulkanSSAOUniforms))
+    vk_update_texture_descriptor!(backend.device, ssao_ds, 1, gb.depth)
+    vk_update_texture_descriptor!(backend.device, ssao_ds, 2, gb.normal_roughness)
+    vk_update_texture_descriptor!(backend.device, ssao_ds, 3, ssao.noise_texture)
+    for b in 4:8
+        vk_update_texture_descriptor!(backend.device, ssao_ds, b, backend.default_texture)
+    end
+
+    _render_fullscreen_pass!(cmd, ssao.ssao_target, ssao.ssao_pipeline, ssao_ds,
+        backend.quad_buffer, width, height)
+
+    # --- SSAO blur pass ---
+    blur_ds = vk_allocate_descriptor_set(backend.device,
+        backend.transient_pools[frame_idx], backend.fullscreen_layout)
+    vk_update_ubo_descriptor!(backend.device, blur_ds, 0, ssao_ubo, sizeof(VulkanSSAOUniforms))
+    vk_update_image_sampler_descriptor!(backend.device, blur_ds, 1,
+        ssao.ssao_target.color_view, sampler)
+    for b in 2:8
+        vk_update_texture_descriptor!(backend.device, blur_ds, b, backend.default_texture)
+    end
+
+    _render_fullscreen_pass!(cmd, ssao.blur_target, ssao.blur_pipeline, blur_ds,
+        backend.quad_buffer, width, height)
+
+    return ssao.blur_target.color_view
+end
+
+# ==================================================================
+# TAA Pass Execution
+# ==================================================================
+
+"""
+    _render_taa_pass!(cmd, backend, frame_idx, vk_proj, view, width, height, source_view) -> ImageView
+
+Execute TAA pass. Blends current frame with clamped history. Returns the TAA result view.
+"""
+function _render_taa_pass!(cmd::CommandBuffer, backend::VulkanBackend,
+                             frame_idx::Int, vk_proj::Mat4f, view::Mat4f,
+                             width::Int, height::Int,
+                             source_view::ImageView)
+    dp = backend.deferred_pipeline
+    taa = dp.taa_pass
+    taa === nothing && return source_view
+    gb = dp.gbuffer
+    gb === nothing && return source_view
+
+    sampler = backend.default_texture.sampler
+
+    # Compute current frame's inverse view-projection for world-space reconstruction
+    current_vp = vk_proj * view
+    inv_vp = Mat4f(inv(current_vp))
+
+    taa_uniforms = VulkanTAAUniforms(
+        ntuple(i -> taa.prev_view_proj[i], 16),
+        ntuple(i -> inv_vp[i], 16),
+        taa.feedback,
+        taa.first_frame ? Int32(1) : Int32(0),
+        Float32(width), Float32(height)
+    )
+    taa_ubo, taa_mem = vk_create_uniform_buffer(backend.device, backend.physical_device, taa_uniforms)
+    push!(backend.frame_temp_buffers[frame_idx], (taa_ubo, taa_mem))
+
+    taa_ds = vk_allocate_descriptor_set(backend.device,
+        backend.transient_pools[frame_idx], backend.fullscreen_layout)
+    vk_update_ubo_descriptor!(backend.device, taa_ds, 0, taa_ubo, sizeof(VulkanTAAUniforms))
+    vk_update_image_sampler_descriptor!(backend.device, taa_ds, 1, source_view, sampler)
+    vk_update_image_sampler_descriptor!(backend.device, taa_ds, 2,
+        taa.history_target.color_view, sampler)
+    vk_update_texture_descriptor!(backend.device, taa_ds, 3, gb.depth)
+    for b in 4:8
+        vk_update_texture_descriptor!(backend.device, taa_ds, b, backend.default_texture)
+    end
+
+    _render_fullscreen_pass!(cmd, taa.current_target, taa.taa_pipeline, taa_ds,
+        backend.quad_buffer, width, height)
+
+    # Update state for next frame
+    taa.prev_view_proj = vk_proj * view
+    taa.first_frame = false
+    # Swap: current becomes next frame's history
+    taa.history_target, taa.current_target = taa.current_target, taa.history_target
+
+    # After swap, history_target holds the just-rendered result
+    return taa.history_target.color_view
+end
+
+# ==================================================================
+# Post-Process Passes (Bloom + Composite/Tone Mapping)
+# ==================================================================
+
+"""
+    _render_post_process_passes!(cmd, backend, frame_idx, source_view, width, height) -> ImageView
+
+Execute bloom extraction, blur, and composite (tone mapping + gamma).
+Returns the final post-processed result view.
+"""
+function _render_post_process_passes!(cmd::CommandBuffer, backend::VulkanBackend,
+                                        frame_idx::Int, source_view::ImageView,
+                                        width::Int, height::Int)
+    pp = backend.post_process
+    pp === nothing && return source_view
+    config = backend.post_process_config !== nothing ? backend.post_process_config : pp.config
+
+    sampler = backend.default_texture.sampler
+    half_w = max(1, width ÷ 2)
+    half_h = max(1, height ÷ 2)
+
+    bloom_view = backend.black_texture.view  # Default: no bloom
+
+    # --- Bloom ---
+    if config.bloom_enabled
+        # Bright extraction
+        bright_ds = vk_allocate_descriptor_set(backend.device,
+            backend.transient_pools[frame_idx], backend.fullscreen_layout)
+        bright_uniforms = VulkanPostProcessUniforms(
+            config.bloom_threshold, config.bloom_intensity, config.gamma,
+            Int32(config.tone_mapping), Int32(0),
+            0.0f0, 0.0f0, 0.0f0, 0.0f0, 1.0f0, 1.0f0, 0.0f0)
+        bright_ubo, bright_mem = vk_create_uniform_buffer(
+            backend.device, backend.physical_device, bright_uniforms)
+        push!(backend.frame_temp_buffers[frame_idx], (bright_ubo, bright_mem))
+
+        vk_update_ubo_descriptor!(backend.device, bright_ds, 0,
+            bright_ubo, sizeof(VulkanPostProcessUniforms))
+        vk_update_image_sampler_descriptor!(backend.device, bright_ds, 1, source_view, sampler)
+        for b in 2:8
+            vk_update_texture_descriptor!(backend.device, bright_ds, b, backend.default_texture)
+        end
+
+        _render_fullscreen_pass!(cmd, pp.bright_target, pp.bright_extract_pipeline, bright_ds,
+            backend.quad_buffer, half_w, half_h)
+
+        # Bloom blur (ping-pong, 4 passes = 2H + 2V)
+        last_blur_view = pp.bright_target.color_view
+        for i in 1:4
+            is_horizontal = isodd(i)
+            target_idx = is_horizontal ? 1 : 2
+            target = pp.bloom_targets[target_idx]
+
+            blur_ds = vk_allocate_descriptor_set(backend.device,
+                backend.transient_pools[frame_idx], backend.fullscreen_layout)
+            blur_uniforms = VulkanPostProcessUniforms(
+                config.bloom_threshold, config.bloom_intensity, config.gamma,
+                Int32(config.tone_mapping), is_horizontal ? Int32(1) : Int32(0),
+                0.0f0, 0.0f0, 0.0f0, 0.0f0, 1.0f0, 1.0f0, 0.0f0)
+            blur_ubo, blur_mem = vk_create_uniform_buffer(
+                backend.device, backend.physical_device, blur_uniforms)
+            push!(backend.frame_temp_buffers[frame_idx], (blur_ubo, blur_mem))
+
+            vk_update_ubo_descriptor!(backend.device, blur_ds, 0,
+                blur_ubo, sizeof(VulkanPostProcessUniforms))
+            vk_update_image_sampler_descriptor!(backend.device, blur_ds, 1,
+                last_blur_view, sampler)
+            for b in 2:8
+                vk_update_texture_descriptor!(backend.device, blur_ds, b, backend.default_texture)
+            end
+
+            _render_fullscreen_pass!(cmd, target, pp.blur_pipeline, blur_ds,
+                backend.quad_buffer, half_w, half_h)
+
+            last_blur_view = target.color_view
+        end
+
+        bloom_view = last_blur_view
+    end
+
+    # --- Composite (bloom merge + tone mapping + gamma) ---
+    composite_ds = vk_allocate_descriptor_set(backend.device,
+        backend.transient_pools[frame_idx], backend.fullscreen_layout)
+    comp_uniforms = VulkanPostProcessUniforms(
+        config.bloom_threshold, config.bloom_intensity, config.gamma,
+        Int32(config.tone_mapping), Int32(0),
+        config.vignette_enabled ? config.vignette_intensity : 0.0f0,
+        config.vignette_radius, config.vignette_softness,
+        config.color_grading_enabled ? config.color_grading_brightness : 0.0f0,
+        config.color_grading_enabled ? config.color_grading_contrast : 1.0f0,
+        config.color_grading_enabled ? config.color_grading_saturation : 1.0f0,
+        0.0f0)
+    comp_ubo, comp_mem = vk_create_uniform_buffer(
+        backend.device, backend.physical_device, comp_uniforms)
+    push!(backend.frame_temp_buffers[frame_idx], (comp_ubo, comp_mem))
+
+    vk_update_ubo_descriptor!(backend.device, composite_ds, 0,
+        comp_ubo, sizeof(VulkanPostProcessUniforms))
+    vk_update_image_sampler_descriptor!(backend.device, composite_ds, 1, source_view, sampler)
+    vk_update_image_sampler_descriptor!(backend.device, composite_ds, 2, bloom_view, sampler)
+    for b in 3:8
+        vk_update_texture_descriptor!(backend.device, composite_ds, b, backend.default_texture)
+    end
+
+    _render_fullscreen_pass!(cmd, pp.scene_target, pp.composite_pipeline, composite_ds,
+        backend.quad_buffer, width, height)
+
+    return pp.scene_target.color_view
 end
 
 # ==================================================================
@@ -953,10 +1527,14 @@ function backend_create_csm!(backend::VulkanBackend, num_cascades::Int, resoluti
                                near::Float32, far::Float32)
     csm = vk_create_csm(backend.device, backend.physical_device, num_cascades, resolution, near, far)
 
-    # Create depth pipeline for CSM
+    # Create depth pipeline for CSM (regular + skinned)
     csm.depth_pipeline = vk_create_shadow_depth_pipeline(
         backend.device, csm,
         [backend.per_frame_layout],
+        backend.push_constant_range)
+    csm.skinned_depth_pipeline = vk_create_skinned_shadow_depth_pipeline(
+        backend.device, csm,
+        [backend.per_frame_layout, backend.per_frame_layout],
         backend.push_constant_range)
 
     # Bind CSM depth textures to lighting descriptor sets

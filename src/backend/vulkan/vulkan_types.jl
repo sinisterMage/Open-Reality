@@ -44,6 +44,12 @@ mutable struct VulkanGPUMesh <: AbstractGPUMesh
     index_buffer::Buffer
     index_memory::DeviceMemory
     index_count::Int32
+    # Skeletal animation (optional)
+    bone_weight_buffer::Union{Buffer, Nothing}
+    bone_weight_memory::Union{DeviceMemory, Nothing}
+    bone_index_buffer::Union{Buffer, Nothing}
+    bone_index_memory::Union{DeviceMemory, Nothing}
+    has_skinning::Bool
 end
 
 get_index_count(mesh::VulkanGPUMesh) = mesh.index_count
@@ -142,6 +148,7 @@ mutable struct VulkanCascadedShadowMap <: AbstractCascadedShadowMap
     split_distances::Vector{Float32}
     resolution::Int
     depth_pipeline::Union{VulkanShaderProgram, Nothing}
+    skinned_depth_pipeline::Union{VulkanShaderProgram, Nothing}
 end
 
 """
@@ -282,3 +289,150 @@ mutable struct VulkanTextureCache <: AbstractTextureCache
 
     VulkanTextureCache() = new(Dict{String, VulkanGPUTexture}())
 end
+
+"""
+    VulkanUIRenderer
+
+Vulkan-based immediate-mode UI renderer state.
+"""
+mutable struct VulkanUIRenderer
+    render_pass::Union{RenderPass, Nothing}
+    pipeline::Union{VulkanShaderProgram, Nothing}
+    descriptor_set_layout::Union{DescriptorSetLayout, Nothing}
+    push_constant_range::PushConstantRange
+
+    # Dynamic vertex buffer (re-uploaded each frame)
+    vertex_buffer::Union{Buffer, Nothing}
+    vertex_memory::Union{DeviceMemory, Nothing}
+    vertex_capacity::Int  # max bytes allocated
+
+    # Projection UBO (updated each frame)
+    projection_ubo::Union{Buffer, Nothing}
+    projection_ubo_memory::Union{DeviceMemory, Nothing}
+
+    # Font atlas as Vulkan texture
+    font_atlas_texture::Union{VulkanGPUTexture, Nothing}
+
+    # 1x1 white fallback texture for solid-color draws
+    white_texture::Union{VulkanGPUTexture, Nothing}
+
+    # Map UI texture IDs to Vulkan textures (font atlas, images)
+    texture_map::Dict{UInt32, VulkanGPUTexture}
+
+    initialized::Bool
+end
+
+VulkanUIRenderer() = VulkanUIRenderer(
+    nothing, nothing, nothing,
+    PushConstantRange(SHADER_STAGE_FRAGMENT_BIT, UInt32(0), UInt32(8)),
+    nothing, nothing, 0,
+    nothing, nothing,
+    nothing, nothing,
+    Dict{UInt32, VulkanGPUTexture}(),
+    false
+)
+
+"""
+    VulkanParticleRenderer
+
+Vulkan-based CPU particle renderer state.
+"""
+mutable struct VulkanParticleRenderer
+    alpha_pipeline::Union{VulkanShaderProgram, Nothing}
+    additive_pipeline::Union{VulkanShaderProgram, Nothing}
+    push_constant_range::PushConstantRange
+
+    vertex_buffer::Union{Buffer, Nothing}
+    vertex_memory::Union{DeviceMemory, Nothing}
+    vertex_capacity::Int
+
+    initialized::Bool
+end
+
+VulkanParticleRenderer() = VulkanParticleRenderer(
+    nothing, nothing,
+    PushConstantRange(SHADER_STAGE_VERTEX_BIT, UInt32(0), UInt32(128)),
+    nothing, nothing, 0,
+    false
+)
+
+"""
+    VulkanTerrainGPUCache
+
+Per-entity cache of terrain GPU resources (chunk meshes + layer textures + splatmap).
+"""
+mutable struct VulkanTerrainGPUCache
+    chunk_meshes::Dict{Tuple{Int,Int,Int}, VulkanGPUMesh}
+    layer_textures::Vector{Union{VulkanGPUTexture, Nothing}}
+    splatmap_texture::Union{VulkanGPUTexture, Nothing}
+end
+
+VulkanTerrainGPUCache() = VulkanTerrainGPUCache(
+    Dict{Tuple{Int,Int,Int}, VulkanGPUMesh}(),
+    Union{VulkanGPUTexture, Nothing}[],
+    nothing
+)
+
+"""
+    VulkanTerrainRenderer
+
+Vulkan terrain rendering state — shared pipeline + per-entity GPU caches.
+"""
+mutable struct VulkanTerrainRenderer
+    pipeline::Union{VulkanShaderProgram, Nothing}
+    caches::Dict{EntityID, VulkanTerrainGPUCache}
+    initialized::Bool
+end
+
+VulkanTerrainRenderer() = VulkanTerrainRenderer(
+    nothing,
+    Dict{EntityID, VulkanTerrainGPUCache}(),
+    false
+)
+
+"""
+    VulkanDOFPass <: AbstractDOFPass
+
+Vulkan depth of field pass: CoC → separable bokeh blur → composite.
+"""
+mutable struct VulkanDOFPass <: AbstractDOFPass
+    coc_target::VulkanFramebuffer           # R16F full-res CoC
+    blur_h_target::VulkanFramebuffer        # RGBA16F half-res horizontal blur
+    blur_v_target::VulkanFramebuffer        # RGBA16F half-res vertical blur
+    composite_target::VulkanFramebuffer     # RGBA16F full-res composite
+    coc_pipeline::VulkanShaderProgram
+    blur_pipeline::VulkanShaderProgram
+    composite_pipeline::VulkanShaderProgram
+    width::Int
+    height::Int
+end
+
+"""
+    VulkanMotionBlurPass <: AbstractMotionBlurPass
+
+Vulkan motion blur pass: velocity buffer from reprojection + directional blur.
+"""
+mutable struct VulkanMotionBlurPass <: AbstractMotionBlurPass
+    velocity_target::VulkanFramebuffer      # RG16F full-res velocity
+    blur_target::VulkanFramebuffer          # RGBA16F full-res blurred
+    velocity_pipeline::VulkanShaderProgram
+    blur_pipeline::VulkanShaderProgram
+    prev_view_proj::Mat4f
+    width::Int
+    height::Int
+end
+
+"""
+    VulkanDebugDrawRenderer
+
+Vulkan-based debug line renderer. Draws colored lines with no depth test.
+"""
+mutable struct VulkanDebugDrawRenderer
+    pipeline::Union{VulkanShaderProgram, Nothing}
+    vertex_buffer::Union{Buffer, Nothing}
+    vertex_memory::Union{DeviceMemory, Nothing}
+    vertex_capacity::Int  # max bytes allocated
+    initialized::Bool
+end
+
+VulkanDebugDrawRenderer() = VulkanDebugDrawRenderer(nothing, nothing, nothing, 0, false)

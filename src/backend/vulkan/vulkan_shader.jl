@@ -76,6 +76,20 @@ struct VulkanPipelineConfig
     color_attachment_count::Int
     width::Int
     height::Int
+    topology::PrimitiveTopology
+end
+
+# Backward-compatible constructor: topology defaults to TRIANGLE_LIST
+function VulkanPipelineConfig(render_pass, subpass, vertex_bindings, vertex_attributes,
+                               descriptor_set_layouts, push_constant_ranges,
+                               blend_enable, depth_test, depth_write,
+                               cull_mode, front_face, color_attachment_count, width, height;
+                               topology=PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
+    VulkanPipelineConfig(render_pass, subpass, vertex_bindings, vertex_attributes,
+                          descriptor_set_layouts, push_constant_ranges,
+                          blend_enable, depth_test, depth_write,
+                          cull_mode, front_face, color_attachment_count, width, height,
+                          topology)
 end
 
 """
@@ -101,6 +115,77 @@ function vk_standard_vertex_attributes()
         VertexInputAttributeDescription(UInt32(0), UInt32(0), FORMAT_R32G32B32_SFLOAT, UInt32(0)),
         VertexInputAttributeDescription(UInt32(1), UInt32(1), FORMAT_R32G32B32_SFLOAT, UInt32(0)),
         VertexInputAttributeDescription(UInt32(2), UInt32(2), FORMAT_R32G32_SFLOAT, UInt32(0)),
+    ]
+end
+
+"""
+    vk_skinned_vertex_bindings() -> Vector{VertexInputBindingDescription}
+
+Vertex input bindings for skinned meshes: positions (0), normals (1), UVs (2),
+bone weights (3), bone indices (4).
+"""
+function vk_skinned_vertex_bindings()
+    return [
+        VertexInputBindingDescription(UInt32(0), UInt32(sizeof(Point3f)), VERTEX_INPUT_RATE_VERTEX),
+        VertexInputBindingDescription(UInt32(1), UInt32(sizeof(Vec3f)), VERTEX_INPUT_RATE_VERTEX),
+        VertexInputBindingDescription(UInt32(2), UInt32(sizeof(Vec2f)), VERTEX_INPUT_RATE_VERTEX),
+        VertexInputBindingDescription(UInt32(3), UInt32(4 * sizeof(Float32)), VERTEX_INPUT_RATE_VERTEX),  # vec4 bone weights
+        VertexInputBindingDescription(UInt32(4), UInt32(4 * sizeof(UInt16)), VERTEX_INPUT_RATE_VERTEX),   # uvec4 bone indices
+    ]
+end
+
+"""
+    vk_skinned_vertex_attributes() -> Vector{VertexInputAttributeDescription}
+
+Vertex attributes for skinned meshes: position (0), normal (1), UV (2),
+bone weights (3, vec4 float), bone indices (4, uvec4 uint16).
+"""
+function vk_skinned_vertex_attributes()
+    return [
+        VertexInputAttributeDescription(UInt32(0), UInt32(0), FORMAT_R32G32B32_SFLOAT, UInt32(0)),
+        VertexInputAttributeDescription(UInt32(1), UInt32(1), FORMAT_R32G32B32_SFLOAT, UInt32(0)),
+        VertexInputAttributeDescription(UInt32(2), UInt32(2), FORMAT_R32G32_SFLOAT, UInt32(0)),
+        VertexInputAttributeDescription(UInt32(3), UInt32(3), FORMAT_R32G32B32A32_SFLOAT, UInt32(0)),
+        VertexInputAttributeDescription(UInt32(4), UInt32(4), FORMAT_R16G16B16A16_UINT, UInt32(0)),
+    ]
+end
+
+"""
+    vk_instanced_vertex_bindings() -> Vector{VertexInputBindingDescription}
+
+Vertex input bindings for instanced rendering: positions (0), normals (1), UVs (2),
+instance data (3, per-instance rate: model mat4 + normal mat3 = 100 bytes stride).
+"""
+function vk_instanced_vertex_bindings()
+    return [
+        VertexInputBindingDescription(UInt32(0), UInt32(sizeof(Point3f)), VERTEX_INPUT_RATE_VERTEX),
+        VertexInputBindingDescription(UInt32(1), UInt32(sizeof(Vec3f)), VERTEX_INPUT_RATE_VERTEX),
+        VertexInputBindingDescription(UInt32(2), UInt32(sizeof(Vec2f)), VERTEX_INPUT_RATE_VERTEX),
+        VertexInputBindingDescription(UInt32(3), UInt32(VK_INSTANCE_STRIDE), VERTEX_INPUT_RATE_INSTANCE),
+    ]
+end
+
+"""
+    vk_instanced_vertex_attributes() -> Vector{VertexInputAttributeDescription}
+
+Vertex attributes for instanced rendering: position (0), normal (1), UV (2),
+model matrix columns (5-8, per-instance), normal matrix columns (9-11, per-instance).
+"""
+function vk_instanced_vertex_attributes()
+    return [
+        # Per-vertex
+        VertexInputAttributeDescription(UInt32(0), UInt32(0), FORMAT_R32G32B32_SFLOAT, UInt32(0)),
+        VertexInputAttributeDescription(UInt32(1), UInt32(1), FORMAT_R32G32B32_SFLOAT, UInt32(0)),
+        VertexInputAttributeDescription(UInt32(2), UInt32(2), FORMAT_R32G32_SFLOAT, UInt32(0)),
+        # Per-instance: model matrix columns (binding 3, locations 5-8)
+        VertexInputAttributeDescription(UInt32(5), UInt32(3), FORMAT_R32G32B32A32_SFLOAT, UInt32(0)),
+        VertexInputAttributeDescription(UInt32(6), UInt32(3), FORMAT_R32G32B32A32_SFLOAT, UInt32(16)),
+        VertexInputAttributeDescription(UInt32(7), UInt32(3), FORMAT_R32G32B32A32_SFLOAT, UInt32(32)),
+        VertexInputAttributeDescription(UInt32(8), UInt32(3), FORMAT_R32G32B32A32_SFLOAT, UInt32(48)),
+        # Per-instance: normal matrix columns (binding 3, locations 9-11)
+        VertexInputAttributeDescription(UInt32(9), UInt32(3), FORMAT_R32G32B32_SFLOAT, UInt32(64)),
+        VertexInputAttributeDescription(UInt32(10), UInt32(3), FORMAT_R32G32B32_SFLOAT, UInt32(76)),
+        VertexInputAttributeDescription(UInt32(11), UInt32(3), FORMAT_R32G32B32_SFLOAT, UInt32(88)),
     ]
 end
 
@@ -149,7 +234,7 @@ function vk_create_graphics_pipeline(device::Device, vert_spirv::Vector{UInt32},
     )
 
     input_assembly = PipelineInputAssemblyStateCreateInfo(
-        PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, false
+        config.topology, false
     )
 
     viewport = Viewport(0.0f0, 0.0f0, Float32(config.width), Float32(config.height), 0.0f0, 1.0f0)

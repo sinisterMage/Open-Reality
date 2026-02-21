@@ -20,6 +20,7 @@ function vk_create_taa_pass(device::Device, physical_device::PhysicalDevice,
 
     layout(set = 0, binding = 0) uniform TAAParams {
         mat4 prev_view_proj;
+        mat4 inv_view_proj;
         float feedback;
         int first_frame;
         float screen_width;
@@ -41,16 +42,26 @@ function vk_create_taa_pass(device::Device, physical_device::PhysicalDevice,
             return;
         }
 
-        // Simple reprojection using previous view-projection
+        // Reconstruct world position from depth + inverse view-projection
         float depth = texture(depthTexture, fragUV).r;
         vec4 clipPos = vec4(fragUV * 2.0 - 1.0, depth, 1.0);
-        // For a proper implementation, we'd need inv_view_proj * prev_view_proj
-        // Simplified: use direct UV lookup with slight motion estimation
-        vec2 historyUV = fragUV;  // Simplified — no motion vectors
+        vec4 worldPos = params.inv_view_proj * clipPos;
+        worldPos /= worldPos.w;
+
+        // Reproject to previous frame's screen space
+        vec4 prevClip = params.prev_view_proj * worldPos;
+        vec2 historyUV = prevClip.xy / prevClip.w * 0.5 + 0.5;
+
+        // Reject pixels that reproject outside the screen
+        if (historyUV.x < 0.0 || historyUV.x > 1.0 ||
+            historyUV.y < 0.0 || historyUV.y > 1.0) {
+            outColor = currentColor;
+            return;
+        }
 
         vec4 historyColor = texture(historyFrame, historyUV);
 
-        // Neighborhood clamping (3x3 AABB)
+        // Neighborhood clamping (3x3 AABB) to reduce ghosting
         vec2 texelSize = 1.0 / vec2(params.screen_width, params.screen_height);
         vec3 minColor = currentColor.rgb;
         vec3 maxColor = currentColor.rgb;
