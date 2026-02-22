@@ -144,10 +144,15 @@ Returns nothing if the entity doesn't have this component type.
 function get_component(ark_entity::EntityID, ::Type{T})::Union{T, Nothing} where T <: Component
     world = World()
     ark_entity === nothing && return nothing
-    if !Ark.has_components(world, ark_entity, (T,))
-        return nothing
+    try
+        if !Ark.has_components(world, ark_entity, (T,))
+            return nothing
+        end
+        return Ark.get_components(world, ark_entity, (T,))[1]
+    catch e
+        e isa ArgumentError && return nothing
+        rethrow()
     end
-    return Ark.get_components(world, ark_entity, (T,))[1]
 end
 
 
@@ -159,7 +164,12 @@ Check if an entity has a component of the specified type.
 function has_component(ark_entity::EntityID, ::Type{T})::Bool where T <: Component
     world = World()
     ark_entity === nothing && return false
-    return Ark.has_components(world, ark_entity, (T,))
+    try
+        return Ark.has_components(world, ark_entity, (T,))
+    catch e
+        e isa ArgumentError && return false
+        rethrow()
+    end
 end
 
 """

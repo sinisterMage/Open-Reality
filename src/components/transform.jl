@@ -82,3 +82,10 @@ function with_parent(t::TransformComponent, parent::EntityID)
         parent
     )
 end
+
+function Base.:(==)(a::TransformComponent, b::TransformComponent)
+    return a.position[] == b.position[] &&
+           a.rotation[] == b.rotation[] &&
+           a.scale[] == b.scale[] &&
+           a.parent == b.parent
+end

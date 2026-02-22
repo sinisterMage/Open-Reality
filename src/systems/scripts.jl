@@ -38,7 +38,11 @@ function update_scripts!(dt::Float64, ctx)
         if !comp._started
             if comp.on_start !== nothing
                 try
-                    comp.on_start(eid, ctx)
+                    if ctx === nothing
+                        comp.on_start(eid)
+                    else
+                        comp.on_start(eid, ctx)
+                    end
                 catch e
                     _script_record_error!(comp, eid, "on_start", e)
                 end
@@ -48,10 +52,22 @@ function update_scripts!(dt::Float64, ctx)
 
         if comp.on_update !== nothing
             try
-                comp.on_update(eid, dt, ctx)
+                if ctx === nothing
+                    comp.on_update(eid, dt)
+                else
+                    comp.on_update(eid, dt, ctx)
+                end
             catch e
                 _script_record_error!(comp, eid, "on_update", e)
             end
         end
     end
 end
+
+"""
+    update_scripts!(dt)
+
+Convenience overload that passes `nothing` as the game context.
+Useful for testing or running scripts outside the render loop.
+"""
+update_scripts!(dt::Float64) = update_scripts!(dt, nothing)
