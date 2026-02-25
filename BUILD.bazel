@@ -26,7 +26,9 @@ julia_test(
     name = "julia_tests",
     src = "//test:runtests.jl",
     project_toml = "//:Project.toml",
+    manifest_toml = "//:Manifest.toml",
     srcs = ["//src:julia_sources"],
+    depot = [":precompile"],
     data = [
         "//openreality-wgpu:openreality_wgpu",
     ] + select({

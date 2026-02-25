@@ -8,6 +8,7 @@ julia_run(
     src = "basic_scene.jl",
     project_toml = "//:Project.toml",
     srcs = ["//src:julia_sources"],
+    depot = ["//:precompile"],
 )
 
 julia_run(
@@ -15,6 +16,7 @@ julia_run(
     src = "pbr_showcase.jl",
     project_toml = "//:Project.toml",
     srcs = ["//src:julia_sources"],
+    depot = ["//:precompile"],
 )
 
 julia_run(
@@ -22,6 +24,7 @@ julia_run(
     src = "features_showcase.jl",
     project_toml = "//:Project.toml",
     srcs = ["//src:julia_sources"],
+    depot = ["//:precompile"],
 )
 
 julia_run(
@@ -29,6 +32,7 @@ julia_run(
     src = "physics_demo.jl",
     project_toml = "//:Project.toml",
     srcs = ["//src:julia_sources"],
+    depot = ["//:precompile"],
 )
 
 julia_run(
@@ -36,6 +40,7 @@ julia_run(
     src = "boulder_scene.jl",
     project_toml = "//:Project.toml",
     srcs = ["//src:julia_sources"],
+    depot = ["//:precompile"],
 )
 
 julia_run(
@@ -43,6 +48,7 @@ julia_run(
     src = "postfx_demo.jl",
     project_toml = "//:Project.toml",
     srcs = ["//src:julia_sources"],
+    depot = ["//:precompile"],
 )
 
 julia_run(
@@ -50,6 +56,7 @@ julia_run(
     src = "terrain_demo.jl",
     project_toml = "//:Project.toml",
     srcs = ["//src:julia_sources"],
+    depot = ["//:precompile"],
 )
 
 julia_run(
@@ -57,6 +64,7 @@ julia_run(
     src = "lod_demo.jl",
     project_toml = "//:Project.toml",
     srcs = ["//src:julia_sources"],
+    depot = ["//:precompile"],
 )
 
 julia_run(
@@ -64,6 +72,7 @@ julia_run(
     src = "instancing_demo.jl",
     project_toml = "//:Project.toml",
     srcs = ["//src:julia_sources"],
+    depot = ["//:precompile"],
 )
 
 julia_run(
@@ -72,6 +81,7 @@ julia_run(
     project_toml = "//:Project.toml",
     srcs = ["//src:julia_sources"],
     data = ["//openreality-wgpu:openreality_wgpu"],
+    depot = ["//:precompile"],
 )
 
 julia_run(
@@ -83,6 +93,7 @@ julia_run(
         "@platforms//os:macos": ["//metal_bridge:MetalBridge"],
         "//conditions:default": [],
     }),
+    depot = ["//:precompile"],
 )
 
 julia_run(
@@ -90,6 +101,7 @@ julia_run(
     src = "vulkan_test.jl",
     project_toml = "//:Project.toml",
     srcs = ["//src:julia_sources"],
+    depot = ["//:precompile"],
 )
 
 julia_run(
@@ -97,6 +109,7 @@ julia_run(
     src = "vulkan_minimal_test.jl",
     project_toml = "//:Project.toml",
     srcs = ["//src:julia_sources"],
+    depot = ["//:precompile"],
 )
 
 julia_run(
@@ -104,4 +117,5 @@ julia_run(
     src = "wasm_export_test.jl",
     project_toml = "//:Project.toml",
     srcs = ["//src:julia_sources"],
+    depot = ["//:precompile"],
 )

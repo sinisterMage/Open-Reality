@@ -36,6 +36,22 @@ crate.from_cargo(
 use_repo(crate, "crates")
 
 # ============================================================
+# Julia toolchain (hermetic)
+# ============================================================
+julia = use_extension("//bazel/julia:extensions.bzl", "julia")
+julia.toolchain(version = "1.12.4")
+use_repo(julia, "julia_toolchains")
+register_toolchains("@julia_toolchains//:julia_toolchain")
+
+# ============================================================
+# Bun toolchain (hermetic)
+# ============================================================
+bun = use_extension("//bazel/bun:extensions.bzl", "bun")
+bun.toolchain(version = "1.3.8")
+use_repo(bun, "bun_toolchains")
+register_toolchains("@bun_toolchains//:bun_toolchain")
+
+# ============================================================
 # Swift (macOS only, for Metal bridge)
 # ============================================================
 bazel_dep(name = "rules_swift", version = "3.4.2")

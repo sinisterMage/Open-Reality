@@ -5,33 +5,51 @@ that produces a binary artifact. These rules wrap the Julia interpreter for:
   - Precompilation (Pkg.instantiate + Pkg.precompile)
   - Testing (julia --project=. test/runtests.jl)
   - Running scripts (julia --project=. examples/foo.jl)
+
+The Julia binary is resolved from a registered toolchain (see bazel/julia/)
+rather than from the host PATH, ensuring hermetic builds.
 """
 
+_TOOLCHAIN_TYPE = "//bazel/julia:toolchain_type"
+
+def _get_julia_bin(ctx):
+    """Resolves the Julia binary from the registered toolchain."""
+    julia_info = ctx.toolchains[_TOOLCHAIN_TYPE].julia_info
+    return julia_info.julia_bin
+
 def _julia_precompile_impl(ctx):
+    julia_bin = _get_julia_bin(ctx)
     project_toml = ctx.file.project_toml
     manifest_toml = ctx.file.manifest_toml
     srcs = ctx.files.srcs
     marker = ctx.actions.declare_file(ctx.label.name + ".precompiled")
+    depot = ctx.actions.declare_directory(ctx.label.name + "_depot")
 
     ctx.actions.run_shell(
         inputs = [project_toml, manifest_toml] + srcs,
-        outputs = [marker],
+        tools = [julia_bin],
+        outputs = [marker, depot],
         command = """
+            set -e
+            export JULIA_DEPOT_PATH="{depot}"
             export JULIA_PROJECT="{project_dir}"
-            {julia} -e '
+            "{julia}" -e '
                 using Pkg
                 Pkg.instantiate()
                 Pkg.precompile()
             '
-            touch {marker}
+            touch "{marker}"
         """.format(
+            depot = depot.path,
             project_dir = project_toml.dirname,
-            julia = ctx.attr.julia_bin,
+            julia = julia_bin.path,
             marker = marker.path,
         ),
-        use_default_shell_env = True,
+        mnemonic = "JuliaPrecompile",
+        progress_message = "Precompiling Julia packages",
+        execution_requirements = {"requires-network": "1"},
     )
-    return [DefaultInfo(files = depset([marker]))]
+    return [DefaultInfo(files = depset([marker, depot]))]
 
 julia_precompile = rule(
     implementation = _julia_precompile_impl,
@@ -39,54 +57,62 @@ julia_precompile = rule(
         "project_toml": attr.label(allow_single_file = True, mandatory = True),
         "manifest_toml": attr.label(allow_single_file = True, mandatory = True),
         "srcs": attr.label_list(allow_files = [".jl"]),
-        "julia_bin": attr.string(default = "julia"),
     },
+    toolchains = [_TOOLCHAIN_TYPE],
 )
 
 def _julia_test_impl(ctx):
+    julia_bin = _get_julia_bin(ctx)
     test_file = ctx.file.src
     project_toml = ctx.file.project_toml
+    manifest_toml = ctx.file.manifest_toml
     srcs = ctx.files.srcs
     data = ctx.files.data
+    depot_files = ctx.files.depot
 
     runner = ctx.actions.declare_file(ctx.label.name + "_runner.sh")
+
+    # Build the depot path clause — if a precompiled depot is provided, use it;
+    # otherwise fall back to a temp depot that will be populated on first run.
+    if depot_files:
+        depot_clause = 'export JULIA_DEPOT_PATH="${{RUNFILES_DIR}}/_main/{depot}"'.format(
+            depot = depot_files[0].short_path,
+        )
+    else:
+        depot_clause = 'export JULIA_DEPOT_PATH="${TEST_TMPDIR:-.}/.julia"'
+
     ctx.actions.write(
         output = runner,
         content = """#!/bin/bash
 set -e
 
-# Resolve the real workspace directory.
-# Julia's package depot is tied to the original source tree path,
-# so we must point Julia at the real workspace, not Bazel's runfiles copy.
-if [[ -n "${{BUILD_WORKSPACE_DIRECTORY}}" ]]; then
-    PROJECT_DIR="${{BUILD_WORKSPACE_DIRECTORY}}"
-elif [[ -n "${{TEST_SRCDIR}}" ]]; then
-    # Resolve the Project.toml symlink to find the real workspace root
-    REAL_TOML="$(readlink -f "${{TEST_SRCDIR}}/_main/{project_toml}")"
-    PROJECT_DIR="$(dirname "${{REAL_TOML}}")"
-else
-    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    PROJECT_DIR="${{SCRIPT_DIR}}/{project_dir}"
-fi
+# Set up Julia environment within the Bazel runfiles sandbox.
+RUNFILES_DIR="${{RUNFILES_DIR:-$0.runfiles}}"
+PROJECT_DIR="${{RUNFILES_DIR}}/_main"
+
+{depot_clause}
+export JULIA_PROJECT="${{PROJECT_DIR}}"
 
 # Forward DISPLAY/WAYLAND_DISPLAY for tests that load GPU/windowing libraries
 export DISPLAY="${{DISPLAY:-:0}}"
-if [[ -n "${{WAYLAND_DISPLAY}}" ]]; then
+if [ -n "${{WAYLAND_DISPLAY}}" ]; then
     export WAYLAND_DISPLAY
 fi
 
-export JULIA_PROJECT="${{PROJECT_DIR}}"
-{julia} --project="${{PROJECT_DIR}}" "${{PROJECT_DIR}}/{test_file}"
+"${{RUNFILES_DIR}}/_main/{julia}" --project="${{PROJECT_DIR}}" "${{PROJECT_DIR}}/{test_file}"
 """.format(
-            project_dir = project_toml.dirname if project_toml.dirname else ".",
-            project_toml = project_toml.short_path,
-            julia = ctx.attr.julia_bin,
+            julia = julia_bin.short_path,
             test_file = test_file.short_path,
+            depot_clause = depot_clause,
         ),
         is_executable = True,
     )
 
-    runfiles = ctx.runfiles(files = [project_toml, test_file] + srcs + data)
+    all_runfiles = [project_toml, test_file, julia_bin] + srcs + data + depot_files
+    if manifest_toml:
+        all_runfiles.append(manifest_toml)
+
+    runfiles = ctx.runfiles(files = all_runfiles)
     return [DefaultInfo(executable = runner, runfiles = runfiles)]
 
 julia_test = rule(
@@ -95,34 +121,55 @@ julia_test = rule(
     attrs = {
         "src": attr.label(allow_single_file = [".jl"], mandatory = True),
         "project_toml": attr.label(allow_single_file = True, mandatory = True),
+        "manifest_toml": attr.label(allow_single_file = True),
         "srcs": attr.label_list(allow_files = [".jl"]),
         "data": attr.label_list(allow_files = True),
-        "julia_bin": attr.string(default = "julia"),
+        "depot": attr.label_list(
+            allow_files = True,
+            doc = "Precompiled Julia depot (output of julia_precompile).",
+        ),
     },
+    toolchains = [_TOOLCHAIN_TYPE],
 )
 
 def _julia_run_impl(ctx):
+    julia_bin = _get_julia_bin(ctx)
     script = ctx.file.src
     project_toml = ctx.file.project_toml
     srcs = ctx.files.srcs
     data = ctx.files.data
+    depot_files = ctx.files.depot
+
+    if depot_files:
+        depot_clause = 'export JULIA_DEPOT_PATH="${{RUNFILES_DIR}}/_main/{depot}"'.format(
+            depot = depot_files[0].short_path,
+        )
+    else:
+        depot_clause = 'export JULIA_DEPOT_PATH="${TMPDIR:-/tmp}/.julia-bazel"'
 
     runner = ctx.actions.declare_file(ctx.label.name + "_runner.sh")
     ctx.actions.write(
         output = runner,
         content = """#!/bin/bash
 set -e
-export JULIA_PROJECT="{project_dir}"
-{julia} --project="{project_dir}" "{script}"
+
+RUNFILES_DIR="${{RUNFILES_DIR:-$0.runfiles}}"
+PROJECT_DIR="${{RUNFILES_DIR}}/_main"
+
+{depot_clause}
+export JULIA_PROJECT="${{PROJECT_DIR}}"
+
+"${{RUNFILES_DIR}}/_main/{julia}" --project="${{PROJECT_DIR}}" "${{PROJECT_DIR}}/{script}"
 """.format(
-            project_dir = project_toml.dirname,
-            julia = ctx.attr.julia_bin,
+            julia = julia_bin.short_path,
             script = script.short_path,
+            depot_clause = depot_clause,
         ),
         is_executable = True,
     )
 
-    runfiles = ctx.runfiles(files = [project_toml, script] + srcs + data)
+    all_runfiles = [project_toml, script, julia_bin] + srcs + data + depot_files
+    runfiles = ctx.runfiles(files = all_runfiles)
     return [DefaultInfo(executable = runner, runfiles = runfiles)]
 
 julia_run = rule(
@@ -133,6 +180,10 @@ julia_run = rule(
         "project_toml": attr.label(allow_single_file = True, mandatory = True),
         "srcs": attr.label_list(allow_files = [".jl"]),
         "data": attr.label_list(allow_files = True),
-        "julia_bin": attr.string(default = "julia"),
+        "depot": attr.label_list(
+            allow_files = True,
+            doc = "Precompiled Julia depot (output of julia_precompile).",
+        ),
     },
+    toolchains = [_TOOLCHAIN_TYPE],
 )

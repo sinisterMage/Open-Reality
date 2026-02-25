@@ -5,8 +5,6 @@ build:macos --apple_platform_type=macos
 # Test output
 test --test_output=errors
 
-# Forward DISPLAY for Julia tests (GLFW requires X11/Wayland)
-test --test_env=DISPLAY
 
 # Local disk cache
 build --disk_cache=~/.cache/bazel-disk

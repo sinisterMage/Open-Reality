@@ -1,8 +1,15 @@
-load("//bazel:bun.bzl", "bun_test")
+load("//bazel:bun.bzl", "bun_install", "bun_test")
+
+bun_install(
+    name = "node_modules",
+    package_json = "package.json",
+    lockfile = "bun.lock",
+)
 
 bun_test(
     name = "website_tests",
     package_json = "package.json",
+    node_modules = [":node_modules"],
     srcs = glob([
         "app/**/*",
         "__tests__/**/*",
@@ -20,6 +27,7 @@ bun_test(
     name = "storybook_build",
     package_json = "package.json",
     command = "run build-storybook",
+    node_modules = [":node_modules"],
     srcs = glob([
         "app/**/*",
         "stories/**/*",
