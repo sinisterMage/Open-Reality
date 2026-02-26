@@ -75,9 +75,40 @@ def _julia_download_impl(repository_ctx):
         stripPrefix = platform_info["strip_prefix"],
     )
 
+    toolchain_type = repository_ctx.attr.toolchain_type
+
+    # Generate the toolchain rule locally so we don't need cross-repo loads.
+    repository_ctx.file("defs.bzl", content = """\
+\"\"\"Generated Julia toolchain rule.\"\"\"
+
+JuliaInfo = provider(
+    doc = "Information about a Julia toolchain.",
+    fields = {
+        "julia_bin": "The Julia interpreter binary (File).",
+    },
+)
+
+def _julia_toolchain_impl(ctx):
+    julia_info = JuliaInfo(julia_bin = ctx.file.julia_bin)
+    toolchain_info = platform_common.ToolchainInfo(julia_info = julia_info)
+    return [toolchain_info]
+
+julia_toolchain = rule(
+    implementation = _julia_toolchain_impl,
+    attrs = {
+        "julia_bin": attr.label(
+            allow_single_file = True,
+            mandatory = True,
+            doc = "The Julia interpreter binary.",
+        ),
+    },
+    provides = [platform_common.ToolchainInfo],
+)
+""")
+
     # Write the BUILD file that defines the toolchain
     repository_ctx.file("BUILD.bazel", content = """\
-load("@_main//bazel/julia:toolchain.bzl", "julia_toolchain")
+load(":defs.bzl", "julia_toolchain")
 
 exports_files(["bin/julia"])
 
@@ -90,15 +121,16 @@ julia_toolchain(
 toolchain(
     name = "julia_toolchain",
     toolchain = ":julia_toolchain_impl",
-    toolchain_type = "@_main//bazel/julia:toolchain_type",
+    toolchain_type = "{toolchain_type}",
     visibility = ["//visibility:public"],
 )
-""")
+""".format(toolchain_type = toolchain_type))
 
 julia_download = repository_rule(
     implementation = _julia_download_impl,
     attrs = {
         "version": attr.string(mandatory = True),
+        "toolchain_type": attr.string(mandatory = True),
     },
     doc = "Downloads a hermetic Julia binary for the host platform.",
 )

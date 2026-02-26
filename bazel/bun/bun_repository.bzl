@@ -74,9 +74,40 @@ def _bun_download_impl(repository_ctx):
         stripPrefix = platform_info["strip_prefix"],
     )
 
+    toolchain_type = repository_ctx.attr.toolchain_type
+
+    # Generate the toolchain rule locally so we don't need cross-repo loads.
+    repository_ctx.file("defs.bzl", content = """\
+\"\"\"Generated Bun toolchain rule.\"\"\"
+
+BunInfo = provider(
+    doc = "Information about a Bun toolchain.",
+    fields = {
+        "bun_bin": "The Bun runtime binary (File).",
+    },
+)
+
+def _bun_toolchain_impl(ctx):
+    bun_info = BunInfo(bun_bin = ctx.file.bun_bin)
+    toolchain_info = platform_common.ToolchainInfo(bun_info = bun_info)
+    return [toolchain_info]
+
+bun_toolchain = rule(
+    implementation = _bun_toolchain_impl,
+    attrs = {
+        "bun_bin": attr.label(
+            allow_single_file = True,
+            mandatory = True,
+            doc = "The Bun runtime binary.",
+        ),
+    },
+    provides = [platform_common.ToolchainInfo],
+)
+""")
+
     # Write the BUILD file that defines the toolchain
     repository_ctx.file("BUILD.bazel", content = """\
-load("@_main//bazel/bun:toolchain.bzl", "bun_toolchain")
+load(":defs.bzl", "bun_toolchain")
 
 exports_files(["bun"])
 
@@ -89,15 +120,16 @@ bun_toolchain(
 toolchain(
     name = "bun_toolchain",
     toolchain = ":bun_toolchain_impl",
-    toolchain_type = "@_main//bazel/bun:toolchain_type",
+    toolchain_type = "{toolchain_type}",
     visibility = ["//visibility:public"],
 )
-""")
+""".format(toolchain_type = toolchain_type))
 
 bun_download = repository_rule(
     implementation = _bun_download_impl,
     attrs = {
         "version": attr.string(mandatory = True),
+        "toolchain_type": attr.string(mandatory = True),
     },
     doc = "Downloads a hermetic Bun binary for the host platform.",
 )
