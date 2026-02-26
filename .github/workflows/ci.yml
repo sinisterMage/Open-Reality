@@ -11,13 +11,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test-linux:
-    name: Tests (Linux)
-    runs-on: ubuntu-latest
+  julia-tests:
+    name: Julia Tests
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1"
+
+      - uses: julia-actions/cache@v2
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -31,43 +42,68 @@ jobs:
             mesa-vulkan-drivers \
             libfreetype6-dev
 
-      - name: Mount Bazel cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/bazel-disk
-          key: bazel-linux-${{ hashFiles('MODULE.bazel', 'Cargo.lock', 'Manifest.toml') }}
-          restore-keys: |
-            bazel-linux-
-
-      - name: Run all tests
+      - name: Run tests (Linux)
+        if: runner.os == 'Linux'
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" \
-            bazel test //... \
-              --test_tag_filters=-visual \
-              --build_tag_filters=-manual \
-              --action_env=DISPLAY \
-              --test_env=DISPLAY \
-              --test_env=OPENREALITY_NO_SHADER_CACHE=1 \
-              --local_test_jobs=1
+            julia --project=. -e '
+              using Pkg
+              Pkg.instantiate()
+              Pkg.test()
+            '
+        env:
+          OPENREALITY_NO_SHADER_CACHE: "1"
 
-  test-macos:
-    name: Tests (macOS)
+      - name: Run tests (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          julia --project=. -e '
+            using Pkg
+            Pkg.instantiate()
+            Pkg.test()
+          '
+        env:
+          OPENREALITY_NO_SHADER_CACHE: "1"
+
+  rust-tests:
+    name: Rust Tests
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --workspace
+
+  swift-tests:
+    name: Swift Tests (macOS)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Mount Bazel cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/bazel-disk
-          key: bazel-macos-${{ hashFiles('MODULE.bazel', 'Cargo.lock', 'Manifest.toml') }}
-          restore-keys: |
-            bazel-macos-
+      - name: Run tests
+        working-directory: metal_bridge
+        run: swift test
 
-      - name: Run all tests
-        run: |
-          bazel test //... \
-            --test_tag_filters=-visual \
-            --build_tag_filters=-manual \
-            --test_env=OPENREALITY_NO_SHADER_CACHE=1 \
-            --local_test_jobs=1
+  bun-tests:
+    name: Bun Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        working-directory: open-reality-website
+        run: bun install --frozen-lockfile
+
+      - name: Run tests
+        working-directory: open-reality-website
+        run: bun test
