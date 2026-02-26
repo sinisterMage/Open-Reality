@@ -6,9 +6,6 @@ load("@rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 swift_library(
     name = "MetalBridge",
     srcs = glob(["Sources/MetalBridge/**/*.swift"]),
-    copts = [
-        "-target", "arm64-apple-macosx13.0",
-    ],
     linkopts = [
         "-framework", "Metal",
         "-framework", "MetalKit",
@@ -25,9 +22,6 @@ swift_library(
 swift_test(
     name = "MetalBridgeTests",
     srcs = glob(["Tests/MetalBridgeTests/**/*.swift"]),
-    copts = [
-        "-target", "arm64-apple-macosx13.0",
-    ],
     deps = [":MetalBridge"],
     target_compatible_with = [
         "@platforms//os:macos",

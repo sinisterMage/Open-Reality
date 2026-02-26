@@ -97,39 +97,45 @@ if [ ! -d "${{PROJECT_DIR}}/node_modules" ]; then
 fi
 """.format(bun = bun_bin.short_path)
 
-    # Use a working copy so Bun only sees project files + node_modules
-    # (prevents test discovery inside the tree artifact's sibling dir).
+    # Run tests from a clean working copy so Bun's test discovery doesn't
+    # pick up spec files inside the tree-artifact node_modules directory
+    # that sits as a sibling in the runfiles tree.
     ctx.actions.write(
         output = runner,
         content = """#!/bin/bash
 set -e
 
 RUNFILES_DIR="${{RUNFILES_DIR:-$0.runfiles}}"
+# Resolve to absolute so paths survive 'cd' to WORK_DIR
+RUNFILES_DIR="$(cd "$RUNFILES_DIR" && pwd)"
 PROJECT_DIR="${{RUNFILES_DIR}}/_main/{pkg_dir}"
 
-# Build a clean working copy with only project sources + node_modules
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-# Copy project sources (excludes the tree-artifact sibling directory)
-cp -r "${{PROJECT_DIR}}/." "$WORK_DIR/"
-# Remove any stale node_modules from the copy
-rm -rf "$WORK_DIR/node_modules"
+# Copy only project sources — skip tree artifact dirs (*_node_modules)
+for item in "$PROJECT_DIR"/* "$PROJECT_DIR"/.*; do
+    name="$(basename "$item")"
+    case "$name" in
+        .|..|node_modules|*_node_modules) continue ;;
+    esac
+    cp -r "$item" "$WORK_DIR/" 2>/dev/null || true
+done
 
 {nm_setup_work}
 
 cd "$WORK_DIR"
-"${{RUNFILES_DIR}}/_main/{bun}" {command}
+"$RUNFILES_DIR/_main/{bun}" {command}
 """.format(
             pkg_dir = package_json.dirname if package_json.dirname else ".",
             bun = bun_bin.short_path,
             command = ctx.attr.command,
             nm_setup_work = """
 # Link pre-installed node_modules into the working copy
-ln -s "${{RUNFILES_DIR}}/_main/{node_modules}" "$WORK_DIR/node_modules"
+ln -s "$RUNFILES_DIR/_main/{node_modules}" "$WORK_DIR/node_modules"
 """.format(node_modules = node_modules_files[0].short_path) if node_modules_files else """
-# No pre-installed node_modules provided; install if missing
-cd "$WORK_DIR" && "${{RUNFILES_DIR}}/_main/{bun}" install --frozen-lockfile
+# No pre-installed node_modules; install
+cd "$WORK_DIR" && "$RUNFILES_DIR/_main/{bun}" install --frozen-lockfile
 """.format(bun = bun_bin.short_path),
         ),
         is_executable = True,
