@@ -4,12 +4,15 @@ load("//bazel:julia.bzl", "julia_precompile", "julia_test")
 # Exported manifest files (referenced by other BUILD files)
 # ============================================================
 
-exports_files([
-    "Project.toml",
-    "Manifest.toml",
-    "Cargo.toml",
-    "Cargo.lock",
-])
+exports_files(
+    [
+        "Project.toml",
+        "Manifest.toml",
+        "Cargo.toml",
+        "Cargo.lock",
+    ],
+    visibility = ["//visibility:public"],
+)
 
 # ============================================================
 # Julia Engine
@@ -20,6 +23,7 @@ julia_precompile(
     project_toml = "//:Project.toml",
     manifest_toml = "//:Manifest.toml",
     srcs = ["//src:julia_sources"],
+    visibility = ["//visibility:public"],
 )
 
 julia_test(
