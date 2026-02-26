@@ -76,7 +76,7 @@ def _bun_download_impl(repository_ctx):
 
     # Write the BUILD file that defines the toolchain
     repository_ctx.file("BUILD.bazel", content = """\
-load("//bazel/bun:toolchain.bzl", "bun_toolchain")
+load("@_main//bazel/bun:toolchain.bzl", "bun_toolchain")
 
 exports_files(["bun"])
 
@@ -89,7 +89,7 @@ bun_toolchain(
 toolchain(
     name = "bun_toolchain",
     toolchain = ":bun_toolchain_impl",
-    toolchain_type = "//bazel/bun:toolchain_type",
+    toolchain_type = "@_main//bazel/bun:toolchain_type",
     visibility = ["//visibility:public"],
 )
 """)

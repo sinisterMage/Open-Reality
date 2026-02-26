@@ -77,7 +77,7 @@ def _julia_download_impl(repository_ctx):
 
     # Write the BUILD file that defines the toolchain
     repository_ctx.file("BUILD.bazel", content = """\
-load("//bazel/julia:toolchain.bzl", "julia_toolchain")
+load("@_main//bazel/julia:toolchain.bzl", "julia_toolchain")
 
 exports_files(["bin/julia"])
 
@@ -90,7 +90,7 @@ julia_toolchain(
 toolchain(
     name = "julia_toolchain",
     toolchain = ":julia_toolchain_impl",
-    toolchain_type = "//bazel/julia:toolchain_type",
+    toolchain_type = "@_main//bazel/julia:toolchain_type",
     visibility = ["//visibility:public"],
 )
 """)
