@@ -56,3 +56,9 @@ register_toolchains("@bun_toolchains//:bun_toolchain")
 # ============================================================
 bazel_dep(name = "apple_support", version = "2.3.0")
 bazel_dep(name = "rules_swift", version = "3.4.2")
+
+apple_cc_configure = use_extension(
+    "@apple_support//crosstool:setup.bzl",
+    "apple_cc_configure_extension",
+)
+use_repo(apple_cc_configure, "local_config_apple_cc")

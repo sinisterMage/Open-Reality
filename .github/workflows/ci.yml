@@ -45,6 +45,7 @@ jobs:
             bazel test //... \
               --test_tag_filters=-visual \
               --build_tag_filters=-manual \
+              --action_env=DISPLAY \
               --test_env=DISPLAY \
               --test_env=OPENREALITY_NO_SHADER_CACHE=1 \
               --local_test_jobs=1
