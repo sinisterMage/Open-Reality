@@ -36,7 +36,11 @@ def _julia_precompile_impl(ctx):
             "{julia}" -e '
                 using Pkg
                 Pkg.instantiate()
-                Pkg.precompile()
+                try
+                    Pkg.precompile()
+                catch e
+                    @warn "Some packages failed to precompile (non-fatal)" exception=e
+                end
             '
             touch "{marker}"
         """.format(

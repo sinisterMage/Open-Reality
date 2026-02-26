@@ -113,13 +113,15 @@ PROJECT_DIR="${{RUNFILES_DIR}}/_main/{pkg_dir}"
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-# Copy only project sources — skip tree artifact dirs (*_node_modules)
+# Copy project sources, dereferencing symlinks (-L) so Bun resolves
+# imports relative to WORK_DIR, not the original source tree.
+# Skip tree artifact dirs (*_node_modules) to avoid test discovery there.
 for item in "$PROJECT_DIR"/* "$PROJECT_DIR"/.*; do
     name="$(basename "$item")"
     case "$name" in
         .|..|node_modules|*_node_modules) continue ;;
     esac
-    cp -r "$item" "$WORK_DIR/" 2>/dev/null || true
+    cp -rL "$item" "$WORK_DIR/" 2>/dev/null || true
 done
 
 {nm_setup_work}
