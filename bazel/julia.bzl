@@ -82,10 +82,22 @@ def _julia_test_impl(ctx):
 
     # Build the depot path clause — if a precompiled depot is provided, use it;
     # otherwise fall back to a temp depot that will be populated on first run.
-    if depot_files:
-        depot_clause = 'export JULIA_DEPOT_PATH="${{RUNFILES_DIR}}/_main/{depot}"'.format(
-            depot = depot_files[0].short_path,
-        )
+    # The precompiled depot directory ends with "_depot"; filter out the marker file.
+    depot_dir = None
+    for f in depot_files:
+        if f.short_path.endswith("_depot"):
+            depot_dir = f
+            break
+
+    if depot_dir:
+        # Julia needs a writable first depot entry for JIT/on-the-fly compilation,
+        # followed by the read-only precompiled depot for cached packages.
+        depot_clause = """
+DEPOT_RO="${{RUNFILES_DIR}}/_main/{depot}"
+DEPOT_RW="${{TEST_TMPDIR:-.}}/.julia"
+mkdir -p "$DEPOT_RW"
+export JULIA_DEPOT_PATH="$DEPOT_RW:$DEPOT_RO"
+""".format(depot = depot_dir.short_path)
     else:
         depot_clause = 'export JULIA_DEPOT_PATH="${TEST_TMPDIR:-.}/.julia"'
 
@@ -148,10 +160,19 @@ def _julia_run_impl(ctx):
     data = ctx.files.data
     depot_files = ctx.files.depot
 
-    if depot_files:
-        depot_clause = 'export JULIA_DEPOT_PATH="${{RUNFILES_DIR}}/_main/{depot}"'.format(
-            depot = depot_files[0].short_path,
-        )
+    depot_dir = None
+    for f in depot_files:
+        if f.short_path.endswith("_depot"):
+            depot_dir = f
+            break
+
+    if depot_dir:
+        depot_clause = """
+DEPOT_RO="${{RUNFILES_DIR}}/_main/{depot}"
+DEPOT_RW="${{TMPDIR:-/tmp}}/.julia-bazel"
+mkdir -p "$DEPOT_RW"
+export JULIA_DEPOT_PATH="$DEPOT_RW:$DEPOT_RO"
+""".format(depot = depot_dir.short_path)
     else:
         depot_clause = 'export JULIA_DEPOT_PATH="${TMPDIR:-/tmp}/.julia-bazel"'
 

@@ -133,8 +133,13 @@ cd "$WORK_DIR"
             bun = bun_bin.short_path,
             command = ctx.attr.command,
             nm_setup_work = """
-# Link pre-installed node_modules into the working copy
-ln -s "$RUNFILES_DIR/_main/{node_modules}" "$WORK_DIR/node_modules"
+# Link pre-installed node_modules into the working copy.
+# Also set NODE_PATH so cross-package resolution works — Bun resolves
+# symlinks to real paths, and the tree artifact directory isn't named
+# "node_modules", so the normal walk-up algorithm can't find siblings.
+NM_REAL="$RUNFILES_DIR/_main/{node_modules}"
+ln -s "$NM_REAL" "$WORK_DIR/node_modules"
+export NODE_PATH="$NM_REAL"
 """.format(node_modules = node_modules_files[0].short_path) if node_modules_files else """
 # No pre-installed node_modules; install
 cd "$WORK_DIR" && "$RUNFILES_DIR/_main/{bun}" install --frozen-lockfile
