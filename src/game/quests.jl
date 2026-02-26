@@ -319,7 +319,7 @@ end
 
 function _setup_quest_tracking!()
     # Auto-advance KILL objectives on DeathEvent
-    subscribe!(DeathEvent; priority=200) do event
+    subscribe!(DeathEvent, event -> begin
         mgr = get_quest_manager()
         for (qid, aq) in mgr.active_quests
             aq.state != QUEST_ACTIVE && continue
@@ -331,10 +331,10 @@ function _setup_quest_tracking!()
                 end
             end
         end
-    end
+    end; priority=200)
 
     # Auto-advance COLLECT objectives on ItemPickedUpEvent
-    subscribe!(ItemPickedUpEvent; priority=200) do event
+    subscribe!(ItemPickedUpEvent, event -> begin
         mgr = get_quest_manager()
         for (qid, aq) in mgr.active_quests
             aq.state != QUEST_ACTIVE && continue
@@ -344,7 +344,7 @@ function _setup_quest_tracking!()
                 end
             end
         end
-    end
+    end; priority=200)
 
     return nothing
 end

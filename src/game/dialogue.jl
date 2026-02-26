@@ -143,7 +143,7 @@ Select a dialogue choice by index (1-based). Advances to the next node.
 function select_choice!(index::Int)
     dm = get_dialogue_manager()
     !dm.active && return nothing
-    index < 1 || index > length(dm._available_choices) && return nothing
+    (index < 1 || index > length(dm._available_choices)) && return nothing
 
     choice = dm._available_choices[index]
 

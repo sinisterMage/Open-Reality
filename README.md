@@ -1,4 +1,5 @@
 # OpenReality
+[![codecov](https://codecov.io/github/sinisterMage/Open-Reality/graph/badge.svg?token=Y8XOLVX6C1)](https://codecov.io/github/sinisterMage/Open-Reality)
 
 A declarative, code-first game engine written in Julia.
 

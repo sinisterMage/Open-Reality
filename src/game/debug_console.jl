@@ -134,7 +134,7 @@ end
 function _register_builtin_commands!(console::DebugConsole)
     console.commands["help"] = ((args) -> begin
         lines = ["Available commands:"]
-        for (name, (_, help_text)) in sort(collect(console.commands))
+        for (name, (_, help_text)) in sort(collect(console.commands); by=first)
             push!(lines, "  $name - $help_text")
         end
         join(lines, "\n")

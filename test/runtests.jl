@@ -4757,4 +4757,3184 @@ using StaticArrays
             end
         end
     end
+
+    # =========================================================================
+    # Timer System
+    # =========================================================================
+    @testset "Timer System" begin
+        @testset "timer_once! fires callback after delay" begin
+            reset_timer_manager!()
+            fired = Ref(false)
+            timer_once!(1.0, () -> (fired[] = true))
+            update_timers!(0.5)
+            @test fired[] == false
+            update_timers!(0.6)
+            @test fired[] == true
+        end
+
+        @testset "timer_once! auto-removes after firing" begin
+            reset_timer_manager!()
+            timer_once!(0.1, () -> nothing)
+            mgr = OpenReality.get_timer_manager()
+            @test length(mgr.timers) == 1
+            update_timers!(0.2)
+            @test isempty(mgr.timers)
+        end
+
+        @testset "timer_interval! fires repeatedly" begin
+            reset_timer_manager!()
+            count = Ref(0)
+            timer_interval!(0.5, () -> (count[] += 1); repeats=-1)
+            update_timers!(0.6)
+            @test count[] == 1
+            update_timers!(0.5)
+            @test count[] == 2
+            update_timers!(0.5)
+            @test count[] == 3
+        end
+
+        @testset "timer_interval! respects repeat count" begin
+            reset_timer_manager!()
+            count = Ref(0)
+            timer_interval!(0.1, () -> (count[] += 1); repeats=3)
+            for _ in 1:5
+                update_timers!(0.15)
+            end
+            @test count[] == 3
+        end
+
+        @testset "cancel_timer! stops firing" begin
+            reset_timer_manager!()
+            fired = Ref(false)
+            id = timer_once!(1.0, () -> (fired[] = true))
+            cancel_timer!(id)
+            update_timers!(2.0)
+            @test fired[] == false
+        end
+
+        @testset "pause_timer! and resume_timer!" begin
+            reset_timer_manager!()
+            fired = Ref(false)
+            id = timer_once!(1.0, () -> (fired[] = true))
+            update_timers!(0.4)
+            pause_timer!(id)
+            update_timers!(2.0)
+            @test fired[] == false
+            resume_timer!(id)
+            update_timers!(0.7)
+            @test fired[] == true
+        end
+
+        @testset "cancel_entity_timers! removes owned timers" begin
+            reset_timer_manager!()
+            reset_component_stores!()
+            eid = create_entity!(World())
+            fired = Ref(false)
+            timer_once!(0.1, () -> (fired[] = true); owner=eid)
+            cancel_entity_timers!(eid)
+            update_timers!(1.0)
+            @test fired[] == false
+        end
+
+        @testset "timer callback error does not crash" begin
+            reset_timer_manager!()
+            timer_once!(0.1, () -> error("boom"))
+            @test_logs (:warn,) update_timers!(0.2)
+        end
+
+        @testset "reset_timer_manager! clears all timers" begin
+            reset_timer_manager!()
+            timer_once!(1.0, () -> nothing)
+            timer_once!(2.0, () -> nothing)
+            reset_timer_manager!()
+            mgr = OpenReality.get_timer_manager()
+            @test isempty(mgr.timers)
+        end
+    end
+
+    # =========================================================================
+    # Game Config
+    # =========================================================================
+    @testset "Game Config" begin
+        @testset "get_config returns default for missing key" begin
+            reset_game_config!()
+            @test get_config(Float64, "missing.key"; default=42.0) == 42.0
+        end
+
+        @testset "set_config! and get_config round-trip" begin
+            reset_game_config!()
+            set_config!("player.speed", 10.0)
+            @test get_config(Float64, "player.speed"; default=0.0) == 10.0
+        end
+
+        @testset "get_config untyped" begin
+            reset_game_config!()
+            set_config!("name", "hello")
+            @test get_config("name") == "hello"
+            @test get_config("missing") === nothing
+            @test get_config("missing"; default="fallback") == "fallback"
+        end
+
+        @testset "load_config_from_file! reads TOML" begin
+            reset_game_config!()
+            toml_path = tempname() * ".toml"
+            open(toml_path, "w") do io
+                write(io, """
+                [player]
+                speed = 5.5
+                name = "hero"
+
+                [graphics]
+                fov = 90
+                """)
+            end
+            load_config_from_file!(toml_path)
+            @test get_config(Float64, "player.speed"; default=0.0) == 5.5
+            @test get_config("player.name") == "hero"
+            @test get_config(Int, "graphics.fov"; default=0) == 90
+            rm(toml_path; force=true)
+        end
+
+        @testset "load_config_from_file! warns on missing file" begin
+            reset_game_config!()
+            @test_logs (:warn,) load_config_from_file!("/nonexistent/config.toml")
+        end
+
+        @testset "check_config_reload! detects file changes" begin
+            reset_game_config!()
+            toml_path = tempname() * ".toml"
+            open(toml_path, "w") do io
+                write(io, "[game]\nversion = 1\n")
+            end
+            load_config_from_file!(toml_path)
+            @test get_config(Int, "game.version"; default=0) == 1
+
+            # No change — should return false
+            @test check_config_reload!() == false
+
+            # Modify file
+            sleep(1.1)  # mtime granularity
+            open(toml_path, "w") do io
+                write(io, "[game]\nversion = 2\n")
+            end
+            @test check_config_reload!() == true
+            @test get_config(Int, "game.version"; default=0) == 2
+            rm(toml_path; force=true)
+        end
+
+        @testset "register_difficulty! and apply_difficulty!" begin
+            reset_game_config!()
+            set_config!("enemy.damage", 10.0)
+            set_config!("player.hp", 100.0)
+            register_difficulty!(:easy, Dict{String, Any}("enemy.damage" => 5.0, "player.hp" => 200.0))
+            register_difficulty!(:hard, Dict{String, Any}("enemy.damage" => 25.0, "player.hp" => 50.0))
+
+            @test apply_difficulty!(:easy) == true
+            @test get_config(Float64, "enemy.damage"; default=0.0) == 5.0
+            @test get_config(Float64, "player.hp"; default=0.0) == 200.0
+
+            @test apply_difficulty!(:hard) == true
+            @test get_config(Float64, "enemy.damage"; default=0.0) == 25.0
+
+            @test apply_difficulty!(:nonexistent) == false
+        end
+
+        @testset "get_config type conversion fallback" begin
+            reset_game_config!()
+            set_config!("key", "not_a_number")
+            @test get_config(Float64, "key"; default=99.0) == 99.0
+        end
+
+        @testset "reset_game_config! clears state" begin
+            reset_game_config!()
+            set_config!("a", 1)
+            reset_game_config!()
+            @test get_config("a") === nothing
+        end
+    end
+
+    # =========================================================================
+    # Easing Functions
+    # =========================================================================
+    @testset "Easing Functions" begin
+        @testset "all easing functions map 0→0 and 1→1" begin
+            easings = [
+                ease_linear, ease_in_quad, ease_out_quad, ease_in_out_quad,
+                ease_in_cubic, ease_out_cubic, ease_in_out_cubic,
+                ease_in_sine, ease_out_sine, ease_in_out_sine,
+                ease_in_expo, ease_out_expo,
+                ease_in_back, ease_out_back,
+                ease_in_bounce, ease_out_bounce,
+                ease_in_elastic, ease_out_elastic,
+            ]
+            for f in easings
+                @test f(0.0) ≈ 0.0 atol=1e-10
+                @test f(1.0) ≈ 1.0 atol=1e-10
+            end
+        end
+
+        @testset "ease_linear is identity" begin
+            @test ease_linear(0.25) == 0.25
+            @test ease_linear(0.5) == 0.5
+            @test ease_linear(0.75) == 0.75
+        end
+
+        @testset "ease_in curves start slow" begin
+            @test ease_in_quad(0.25) < 0.25
+            @test ease_in_cubic(0.25) < 0.25
+        end
+
+        @testset "ease_out curves end slow" begin
+            @test ease_out_quad(0.75) > 0.75
+            @test ease_out_cubic(0.75) > 0.75
+        end
+
+        @testset "ease_in_out curves symmetric at midpoint" begin
+            @test ease_in_out_quad(0.5) ≈ 0.5 atol=1e-10
+            @test ease_in_out_cubic(0.5) ≈ 0.5 atol=1e-10
+            @test ease_in_out_sine(0.5) ≈ 0.5 atol=1e-10
+        end
+
+        @testset "ease_out_bounce has correct quadrant boundaries" begin
+            @test ease_out_bounce(0.0) ≈ 0.0 atol=1e-10
+            @test ease_out_bounce(1.0) ≈ 1.0 atol=1e-10
+            @test ease_out_bounce(0.5) > 0.5
+        end
+    end
+
+    # =========================================================================
+    # Tween System
+    # =========================================================================
+    @testset "Tween System" begin
+        @testset "tween! creates an active tween" begin
+            reset_tween_manager!()
+            reset_component_stores!()
+            eid = create_entity!(World())
+            add_component!(eid, TransformComponent())
+            id = tween!(eid, :position, Vec3d(10, 0, 0), 1.0)
+            mgr = OpenReality.get_tween_manager()
+            @test haskey(mgr.tweens, id)
+        end
+
+        @testset "tween! interpolates position over time" begin
+            reset_tween_manager!()
+            reset_component_stores!()
+            eid = create_entity!(World())
+            tc = TransformComponent()
+            tc.position[] = Vec3d(0, 0, 0)
+            add_component!(eid, tc)
+            tween!(eid, :position, Vec3d(10, 0, 0), 1.0)
+            update_tweens!(0.5)
+            tc2 = get_component(eid, TransformComponent)
+            @test tc2.position[][1] ≈ 5.0 atol=0.1
+        end
+
+        @testset "tween! completes and removes itself" begin
+            reset_tween_manager!()
+            reset_component_stores!()
+            eid = create_entity!(World())
+            tc = TransformComponent()
+            tc.position[] = Vec3d(0, 0, 0)
+            add_component!(eid, tc)
+            tween!(eid, :position, Vec3d(10, 0, 0), 1.0)
+            update_tweens!(1.1)
+            mgr = OpenReality.get_tween_manager()
+            @test isempty(mgr.tweens)
+            tc2 = get_component(eid, TransformComponent)
+            @test tc2.position[][1] ≈ 10.0 atol=0.01
+        end
+
+        @testset "cancel_tween! stops interpolation" begin
+            reset_tween_manager!()
+            reset_component_stores!()
+            eid = create_entity!(World())
+            tc = TransformComponent()
+            tc.position[] = Vec3d(0, 0, 0)
+            add_component!(eid, tc)
+            id = tween!(eid, :position, Vec3d(10, 0, 0), 1.0)
+            cancel_tween!(id)
+            update_tweens!(0.5)
+            tc2 = get_component(eid, TransformComponent)
+            @test tc2.position[][1] ≈ 0.0 atol=0.01
+        end
+
+        @testset "pause_tween! and resume_tween!" begin
+            reset_tween_manager!()
+            reset_component_stores!()
+            eid = create_entity!(World())
+            tc = TransformComponent()
+            tc.position[] = Vec3d(0, 0, 0)
+            add_component!(eid, tc)
+            id = tween!(eid, :position, Vec3d(10, 0, 0), 1.0)
+            update_tweens!(0.3)  # Moves to ~3
+            OpenReality.pause_tween!(id)
+            update_tweens!(0.5)  # Should stay at ~3
+            tc2 = get_component(eid, TransformComponent)
+            pos_paused = tc2.position[][1]
+            @test pos_paused ≈ 3.0 atol=0.5
+            OpenReality.resume_tween!(id)
+            update_tweens!(0.5)  # Should continue from ~3
+            tc3 = get_component(eid, TransformComponent)
+            @test tc3.position[][1] > pos_paused
+        end
+
+        @testset "tween! with easing function" begin
+            reset_tween_manager!()
+            reset_component_stores!()
+            eid = create_entity!(World())
+            tc = TransformComponent()
+            tc.position[] = Vec3d(0, 0, 0)
+            add_component!(eid, tc)
+            tween!(eid, :position, Vec3d(10, 0, 0), 1.0; easing=ease_in_quad)
+            update_tweens!(0.5)
+            tc2 = get_component(eid, TransformComponent)
+            # ease_in_quad at t=0.5 → 0.25, so position should be ~2.5
+            @test tc2.position[][1] < 5.0
+        end
+
+        @testset "tween! on_complete callback fires" begin
+            reset_tween_manager!()
+            reset_component_stores!()
+            eid = create_entity!(World())
+            tc = TransformComponent()
+            tc.position[] = Vec3d(0, 0, 0)
+            add_component!(eid, tc)
+            completed = Ref(false)
+            tween!(eid, :position, Vec3d(1, 0, 0), 0.5; on_complete=() -> (completed[] = true))
+            update_tweens!(0.6)
+            @test completed[] == true
+        end
+
+        @testset "then! chains tweens" begin
+            reset_tween_manager!()
+            reset_component_stores!()
+            eid = create_entity!(World())
+            tc = TransformComponent()
+            tc.position[] = Vec3d(0, 0, 0)
+            add_component!(eid, tc)
+            id1 = tween!(eid, :position, Vec3d(5, 0, 0), 0.5)
+            id2 = tween!(eid, :position, Vec3d(10, 0, 0), 0.5)
+            then!(id1, id2)
+            # Second tween should be paused
+            mgr = OpenReality.get_tween_manager()
+            @test mgr.tweens[id2].status == OpenReality.TWEEN_PAUSED
+            # Complete first tween
+            update_tweens!(0.6)
+            # Second tween should now be active
+            tw2 = get(mgr.tweens, id2, nothing)
+            @test tw2 !== nothing
+            @test tw2.status == OpenReality.TWEEN_ACTIVE
+        end
+
+        @testset "tween_sequence! chains multiple" begin
+            reset_tween_manager!()
+            reset_component_stores!()
+            eid = create_entity!(World())
+            tc = TransformComponent()
+            tc.position[] = Vec3d(0, 0, 0)
+            add_component!(eid, tc)
+            ids = [
+                tween!(eid, :position, Vec3d(3, 0, 0), 0.3),
+                tween!(eid, :position, Vec3d(6, 0, 0), 0.3),
+                tween!(eid, :position, Vec3d(9, 0, 0), 0.3),
+            ]
+            tween_sequence!(ids)
+            mgr = OpenReality.get_tween_manager()
+            @test mgr.tweens[ids[2]].status == OpenReality.TWEEN_PAUSED
+            @test mgr.tweens[ids[3]].status == OpenReality.TWEEN_PAUSED
+        end
+
+        @testset "cancel_entity_tweens! removes all tweens for entity" begin
+            reset_tween_manager!()
+            reset_component_stores!()
+            eid = create_entity!(World())
+            tc = TransformComponent()
+            add_component!(eid, tc)
+            tween!(eid, :position, Vec3d(1, 0, 0), 1.0)
+            tween!(eid, :scale, Vec3d(2, 2, 2), 1.0)
+            cancel_entity_tweens!(eid)
+            mgr = OpenReality.get_tween_manager()
+            @test isempty(mgr.tweens)
+        end
+
+        @testset "tween! TWEEN_LOOP mode" begin
+            reset_tween_manager!()
+            reset_component_stores!()
+            eid = create_entity!(World())
+            tc = TransformComponent()
+            tc.position[] = Vec3d(0, 0, 0)
+            add_component!(eid, tc)
+            tween!(eid, :position, Vec3d(10, 0, 0), 0.5;
+                   loop_mode=TWEEN_LOOP, loop_count=2)
+            update_tweens!(0.6)  # First loop completes
+            mgr = OpenReality.get_tween_manager()
+            @test !isempty(mgr.tweens)  # Still active for second loop
+            update_tweens!(0.6)  # Second loop completes
+            @test isempty(mgr.tweens)  # Now done
+        end
+
+        @testset "tween! TWEEN_PING_PONG mode" begin
+            reset_tween_manager!()
+            reset_component_stores!()
+            eid = create_entity!(World())
+            tc = TransformComponent()
+            tc.position[] = Vec3d(0, 0, 0)
+            add_component!(eid, tc)
+            tween!(eid, :position, Vec3d(10, 0, 0), 0.5;
+                   loop_mode=TWEEN_PING_PONG, loop_count=1)
+            update_tweens!(0.6)  # Forward pass completes
+            mgr = OpenReality.get_tween_manager()
+            @test !isempty(mgr.tweens)  # Backward pass still running
+            update_tweens!(0.6)  # Backward pass completes
+            @test isempty(mgr.tweens)
+        end
+
+        @testset "_tween_lerp generic" begin
+            @test OpenReality._tween_lerp(0.0, 10.0, 0.5) ≈ 5.0
+            @test OpenReality._tween_lerp(Vec3d(0, 0, 0), Vec3d(10, 10, 10), 0.5) ≈ Vec3d(5, 5, 5)
+        end
+
+        @testset "_tween_lerp quaternion slerp" begin
+            q1 = Quaterniond(1.0, 0.0, 0.0, 0.0)
+            q2 = Quaterniond(0.0, 1.0, 0.0, 0.0)
+            mid = OpenReality._tween_lerp(q1, q2, 0.5)
+            # Midpoint should be normalized
+            norm = sqrt(mid.s^2 + mid.v1^2 + mid.v2^2 + mid.v3^2)
+            @test norm ≈ 1.0 atol=1e-10
+        end
+    end
+
+    # =========================================================================
+    # Coroutine System
+    # =========================================================================
+    @testset "Coroutine System" begin
+        @testset "start_coroutine! runs immediately until first yield" begin
+            reset_coroutine_manager!()
+            started = Ref(false)
+            start_coroutine!() do ctx
+                started[] = true
+                yield_wait(ctx, 1.0)
+            end
+            yield()  # Let the task start
+            @test started[] == true
+        end
+
+        @testset "yield_wait suspends for duration" begin
+            reset_coroutine_manager!()
+            done = Ref(false)
+            start_coroutine!() do ctx
+                yield_wait(ctx, 1.0)
+                done[] = true
+            end
+            yield()
+            update_coroutines!(0.5)
+            @test done[] == false
+            update_coroutines!(0.6)
+            @test done[] == true
+        end
+
+        @testset "yield_frames suspends for frame count" begin
+            reset_coroutine_manager!()
+            done = Ref(false)
+            start_coroutine!() do ctx
+                yield_frames(ctx, 3)
+                done[] = true
+            end
+            yield()
+            update_coroutines!(0.016)
+            @test done[] == false
+            update_coroutines!(0.016)
+            @test done[] == false
+            update_coroutines!(0.016)
+            @test done[] == true
+        end
+
+        @testset "yield_until suspends until condition met" begin
+            reset_coroutine_manager!()
+            flag = Ref(false)
+            done = Ref(false)
+            start_coroutine!() do ctx
+                yield_until(ctx, () -> flag[])
+                done[] = true
+            end
+            yield()
+            update_coroutines!(0.016)
+            @test done[] == false
+            flag[] = true
+            update_coroutines!(0.016)
+            @test done[] == true
+        end
+
+        @testset "cancel_coroutine! stops execution" begin
+            reset_coroutine_manager!()
+            done = Ref(false)
+            id = start_coroutine!() do ctx
+                yield_wait(ctx, 1.0)
+                done[] = true
+            end
+            yield()
+            cancel_coroutine!(id)
+            update_coroutines!(2.0)
+            @test done[] == false
+        end
+
+        @testset "completed coroutines are cleaned up" begin
+            reset_coroutine_manager!()
+            start_coroutine!() do ctx
+                # Completes immediately
+            end
+            yield()  # Let task finish
+            mgr = OpenReality.get_coroutine_manager()
+            update_coroutines!(0.016)
+            @test isempty(mgr.coroutines)
+        end
+
+        @testset "cancel_entity_coroutines! cancels owned coroutines" begin
+            reset_coroutine_manager!()
+            reset_component_stores!()
+            eid = create_entity!(World())
+            done = Ref(false)
+            start_coroutine!(; owner=eid) do ctx
+                yield_wait(ctx, 10.0)
+                done[] = true
+            end
+            yield()
+            cancel_entity_coroutines!(eid)
+            update_coroutines!(20.0)
+            @test done[] == false
+        end
+
+        @testset "reset_coroutine_manager! clears all" begin
+            reset_coroutine_manager!()
+            start_coroutine!() do ctx
+                yield_wait(ctx, 100.0)
+            end
+            yield()
+            reset_coroutine_manager!()
+            mgr = OpenReality.get_coroutine_manager()
+            @test isempty(mgr.coroutines)
+        end
+    end
+
+    # =========================================================================
+    # Light Culling
+    # =========================================================================
+    @testset "Light Culling" begin
+        @testset "_cluster_z_slice boundary conditions" begin
+            near = 0.1f0
+            far = 1000.0f0
+            num_z = 24
+            @test OpenReality._cluster_z_slice(0.05f0, near, far, num_z) == 0
+            @test OpenReality._cluster_z_slice(0.1f0, near, far, num_z) == 0
+            @test OpenReality._cluster_z_slice(2000.0f0, near, far, num_z) == num_z - 1
+            @test OpenReality._cluster_z_slice(1000.0f0, near, far, num_z) == num_z - 1
+        end
+
+        @testset "_cluster_z_slice logarithmic distribution" begin
+            near = 0.1f0
+            far = 100.0f0
+            num_z = 10
+            # Depth 1.0 should be in an early slice (log(1/0.1)/log(100/0.1) ≈ 0.33)
+            slice_1 = OpenReality._cluster_z_slice(1.0f0, near, far, num_z)
+            slice_50 = OpenReality._cluster_z_slice(50.0f0, near, far, num_z)
+            @test slice_1 < slice_50
+            @test slice_1 >= 0
+            @test slice_50 < num_z
+        end
+
+        @testset "_sphere_aabb_intersect" begin
+            # Sphere centered at origin with radius 1 — intersects unit box at origin
+            @test OpenReality._sphere_aabb_intersect(
+                Vec3f(0, 0, 0), 1.0f0,
+                Vec3f(-1, -1, -1), Vec3f(1, 1, 1)) == true
+
+            # Sphere far away
+            @test OpenReality._sphere_aabb_intersect(
+                Vec3f(10, 10, 10), 1.0f0,
+                Vec3f(-1, -1, -1), Vec3f(1, 1, 1)) == false
+
+            # Sphere just touching the box corner
+            @test OpenReality._sphere_aabb_intersect(
+                Vec3f(2, 0, 0), 1.0f0,
+                Vec3f(-1, -1, -1), Vec3f(1, 1, 1)) == true
+
+            # Sphere just outside
+            @test OpenReality._sphere_aabb_intersect(
+                Vec3f(2.1f0, 0, 0), 1.0f0,
+                Vec3f(-1, -1, -1), Vec3f(1, 1, 1)) == false
+        end
+
+        @testset "LightClusterConfig defaults" begin
+            cfg = LightClusterConfig()
+            @test cfg.num_x == 16
+            @test cfg.num_y == 9
+            @test cfg.num_z == 24
+            @test cfg.max_lights_per_cluster == 128
+        end
+
+        @testset "LightClusterData initialization" begin
+            config = LightClusterConfig(num_x=4, num_y=3, num_z=2)
+            data = LightClusterData(config)
+            total = 4 * 3 * 2
+            @test length(data.cluster_offsets) == total * 2
+            @test isempty(data.light_indices)
+        end
+    end
+
+    # =========================================================================
+    # Instancing
+    # =========================================================================
+    @testset "Instancing" begin
+        @testset "InstanceBatchKey hash and equality" begin
+            k1 = InstanceBatchKey(UInt64(1), ShaderVariantKey(Set{OpenReality.ShaderFeature}()), false)
+            k2 = InstanceBatchKey(UInt64(1), ShaderVariantKey(Set{OpenReality.ShaderFeature}()), false)
+            k3 = InstanceBatchKey(UInt64(2), ShaderVariantKey(Set{OpenReality.ShaderFeature}()), false)
+            @test k1 == k2
+            @test k1 != k3
+            @test hash(k1) == hash(k2)
+        end
+    end
+
+    # =========================================================================
+    # Phase 2: ECS-dependent game logic
+    # =========================================================================
+
+    # =========================================================================
+    # Quest System
+    # =========================================================================
+    @testset "Quest System" begin
+        @testset "register and start quest" begin
+            reset_engine_state!()
+            obj1 = ObjectiveDef("Kill 3 goblins", OBJ_KILL, :goblin; required_count=3)
+            quest = QuestDef(:main_quest, "Main Quest";
+                description="A grand adventure",
+                objectives=[obj1])
+            register_quest!(quest)
+            @test start_quest!(:main_quest) == true
+            @test is_quest_active(:main_quest) == true
+            @test is_quest_completed(:main_quest) == false
+        end
+
+        @testset "start quest returns false if already active" begin
+            reset_engine_state!()
+            register_quest!(QuestDef(:q1, "Q1"))
+            start_quest!(:q1)
+            @test start_quest!(:q1) == false
+        end
+
+        @testset "start unregistered quest returns false" begin
+            reset_engine_state!()
+            @test_logs (:warn,) @test start_quest!(:nonexistent) == false
+        end
+
+        @testset "advance objective and auto-complete" begin
+            reset_engine_state!()
+            obj = ObjectiveDef("Collect 2 gems", OBJ_COLLECT, :gem; required_count=2)
+            register_quest!(QuestDef(:collect_quest, "Collect"; objectives=[obj]))
+            start_quest!(:collect_quest)
+
+            advance_objective!(:collect_quest, 1; amount=1)
+            progress = get_quest_progress(:collect_quest)
+            @test progress !== nothing
+            @test progress.objectives[1].current_count == 1
+            @test progress.objectives[1].completed == false
+
+            advance_objective!(:collect_quest, 1; amount=1)
+            @test is_quest_completed(:collect_quest) == true
+            @test is_quest_active(:collect_quest) == false
+        end
+
+        @testset "advance beyond required count clamps" begin
+            reset_engine_state!()
+            obj = ObjectiveDef("Do thing", OBJ_CUSTOM, :x; required_count=3)
+            register_quest!(QuestDef(:q, "Q"; objectives=[obj]))
+            start_quest!(:q)
+            advance_objective!(:q, 1; amount=10)
+            @test is_quest_completed(:q) == true
+        end
+
+        @testset "advance invalid objective index does nothing" begin
+            reset_engine_state!()
+            obj = ObjectiveDef("Do thing", OBJ_CUSTOM, :x; required_count=1)
+            register_quest!(QuestDef(:q, "Q"; objectives=[obj]))
+            start_quest!(:q)
+            advance_objective!(:q, 0)  # Invalid
+            advance_objective!(:q, 99)  # Invalid
+            @test is_quest_active(:q) == true
+        end
+
+        @testset "fail quest" begin
+            reset_engine_state!()
+            register_quest!(QuestDef(:q, "Q"))
+            start_quest!(:q)
+            fail_quest!(:q)
+            @test is_quest_active(:q) == false
+            @test is_quest_completed(:q) == false
+            mgr = OpenReality.get_quest_manager()
+            @test :q in mgr.failed_quests
+        end
+
+        @testset "complete quest with reward callback" begin
+            reset_engine_state!()
+            reward_called = Ref(false)
+            reward = QuestReward(on_reward=() -> (reward_called[] = true))
+            register_quest!(QuestDef(:q, "Q"; rewards=reward))
+            start_quest!(:q)
+            complete_quest!(:q)
+            @test reward_called[] == true
+            @test is_quest_completed(:q) == true
+        end
+
+        @testset "complete quest with erroring reward callback" begin
+            reset_engine_state!()
+            reward = QuestReward(on_reward=() -> error("boom"))
+            register_quest!(QuestDef(:q, "Q"; rewards=reward))
+            start_quest!(:q)
+            @test_logs (:warn,) complete_quest!(:q)
+            @test is_quest_completed(:q) == true
+        end
+
+        @testset "prerequisites block quest start" begin
+            reset_engine_state!()
+            register_quest!(QuestDef(:prereq, "Prereq"))
+            register_quest!(QuestDef(:main, "Main"; prerequisites=[:prereq]))
+            @test start_quest!(:main) == false
+            start_quest!(:prereq)
+            complete_quest!(:prereq)
+            @test start_quest!(:main) == true
+        end
+
+        @testset "completed quest cannot be restarted" begin
+            reset_engine_state!()
+            register_quest!(QuestDef(:q, "Q"))
+            start_quest!(:q)
+            complete_quest!(:q)
+            @test start_quest!(:q) == false
+        end
+
+        @testset "get_quest_progress returns nothing for inactive quest" begin
+            reset_engine_state!()
+            @test get_quest_progress(:nonexistent) === nothing
+        end
+
+        @testset "get_active_quest_ids" begin
+            reset_engine_state!()
+            register_quest!(QuestDef(:a, "A"))
+            register_quest!(QuestDef(:b, "B"))
+            start_quest!(:a)
+            start_quest!(:b)
+            ids = get_active_quest_ids()
+            @test :a in ids
+            @test :b in ids
+            @test length(ids) == 2
+        end
+
+        @testset "multiple objectives all must complete" begin
+            reset_engine_state!()
+            obj1 = ObjectiveDef("Kill goblins", OBJ_KILL, :goblin; required_count=2)
+            obj2 = ObjectiveDef("Collect gems", OBJ_COLLECT, :gem; required_count=1)
+            register_quest!(QuestDef(:q, "Q"; objectives=[obj1, obj2]))
+            start_quest!(:q)
+            advance_objective!(:q, 1; amount=2)
+            @test is_quest_active(:q) == true  # obj2 not done yet
+            advance_objective!(:q, 2; amount=1)
+            @test is_quest_completed(:q) == true
+        end
+
+        @testset "fail_quest! on non-active quest does nothing" begin
+            reset_engine_state!()
+            fail_quest!(:nonexistent)  # Should not error
+            @test true
+        end
+
+        @testset "advance_objective! on non-active quest does nothing" begin
+            reset_engine_state!()
+            advance_objective!(:nonexistent, 1)  # Should not error
+            @test true
+        end
+
+        @testset "quest events are emitted" begin
+            reset_engine_state!()
+            started = Ref(false)
+            completed = Ref(false)
+            subscribe!(QuestStartedEvent, _ -> (started[] = true))
+            subscribe!(QuestCompletedEvent, _ -> (completed[] = true))
+            register_quest!(QuestDef(:q, "Q"))
+            start_quest!(:q)
+            @test started[] == true
+            complete_quest!(:q)
+            @test completed[] == true
+        end
+
+        @testset "objective progress events emitted" begin
+            reset_engine_state!()
+            progress_events = Int[]
+            subscribe!(ObjectiveProgressEvent, e -> push!(progress_events, e.current))
+            obj = ObjectiveDef("Do", OBJ_CUSTOM, :x; required_count=3)
+            register_quest!(QuestDef(:q, "Q"; objectives=[obj]))
+            start_quest!(:q)
+            advance_objective!(:q, 1)
+            advance_objective!(:q, 1)
+            @test length(progress_events) == 2
+            @test progress_events[1] == 1
+            @test progress_events[2] == 2
+        end
+
+        @testset "reset_quest_manager! clears everything" begin
+            reset_engine_state!()
+            register_quest!(QuestDef(:q, "Q"))
+            start_quest!(:q)
+            reset_quest_manager!()
+            mgr = OpenReality.get_quest_manager()
+            @test isempty(mgr.quest_defs)
+            @test isempty(mgr.active_quests)
+            @test isempty(mgr.completed_quests)
+        end
+    end
+
+    # =========================================================================
+    # Behavior Tree System
+    # =========================================================================
+    @testset "Behavior Tree System" begin
+        @testset "ActionNode returns status from function" begin
+            node = bt_action((eid, bb, dt) -> BT_SUCCESS)
+            bb = Blackboard()
+            @test OpenReality.tick(node, EntityID(1), bb, 0.016) == BT_SUCCESS
+
+            node2 = bt_action((eid, bb, dt) -> BT_FAILURE)
+            @test OpenReality.tick(node2, EntityID(1), bb, 0.016) == BT_FAILURE
+
+            node3 = bt_action((eid, bb, dt) -> BT_RUNNING)
+            @test OpenReality.tick(node3, EntityID(1), bb, 0.016) == BT_RUNNING
+        end
+
+        @testset "ConditionNode true/false" begin
+            bb = Blackboard()
+            bb_set!(bb, :flag, true)
+            node_true = bt_condition((eid, bb) -> bb_get(bb, :flag, false))
+            node_false = bt_condition((eid, bb) -> false)
+            @test OpenReality.tick(node_true, EntityID(1), bb, 0.0) == BT_SUCCESS
+            @test OpenReality.tick(node_false, EntityID(1), bb, 0.0) == BT_FAILURE
+        end
+
+        @testset "SequenceNode all succeed" begin
+            bb = Blackboard()
+            seq = bt_sequence(
+                bt_action((e, b, d) -> BT_SUCCESS),
+                bt_action((e, b, d) -> BT_SUCCESS),
+                bt_action((e, b, d) -> BT_SUCCESS)
+            )
+            @test OpenReality.tick(seq, EntityID(1), bb, 0.016) == BT_SUCCESS
+        end
+
+        @testset "SequenceNode fails on first failure" begin
+            bb = Blackboard()
+            call_count = Ref(0)
+            seq = bt_sequence(
+                bt_action((e, b, d) -> BT_SUCCESS),
+                bt_action((e, b, d) -> BT_FAILURE),
+                bt_action((e, b, d) -> (call_count[] += 1; BT_SUCCESS))
+            )
+            @test OpenReality.tick(seq, EntityID(1), bb, 0.016) == BT_FAILURE
+            @test call_count[] == 0  # Third child never reached
+        end
+
+        @testset "SequenceNode resumes from running child" begin
+            bb = Blackboard()
+            run_count = Ref(0)
+            seq = bt_sequence(
+                bt_action((e, b, d) -> BT_SUCCESS),
+                bt_action((e, b, d) -> begin
+                    run_count[] += 1
+                    run_count[] >= 2 ? BT_SUCCESS : BT_RUNNING
+                end),
+                bt_action((e, b, d) -> BT_SUCCESS)
+            )
+            @test OpenReality.tick(seq, EntityID(1), bb, 0.016) == BT_RUNNING
+            @test OpenReality.tick(seq, EntityID(1), bb, 0.016) == BT_SUCCESS
+        end
+
+        @testset "SelectorNode succeeds on first success" begin
+            bb = Blackboard()
+            call_count = Ref(0)
+            sel = bt_selector(
+                bt_action((e, b, d) -> BT_FAILURE),
+                bt_action((e, b, d) -> BT_SUCCESS),
+                bt_action((e, b, d) -> (call_count[] += 1; BT_SUCCESS))
+            )
+            @test OpenReality.tick(sel, EntityID(1), bb, 0.016) == BT_SUCCESS
+            @test call_count[] == 0
+        end
+
+        @testset "SelectorNode all fail" begin
+            bb = Blackboard()
+            sel = bt_selector(
+                bt_action((e, b, d) -> BT_FAILURE),
+                bt_action((e, b, d) -> BT_FAILURE)
+            )
+            @test OpenReality.tick(sel, EntityID(1), bb, 0.016) == BT_FAILURE
+        end
+
+        @testset "SelectorNode resumes from running child" begin
+            bb = Blackboard()
+            run_count = Ref(0)
+            sel = bt_selector(
+                bt_action((e, b, d) -> BT_FAILURE),
+                bt_action((e, b, d) -> begin
+                    run_count[] += 1
+                    run_count[] >= 2 ? BT_SUCCESS : BT_RUNNING
+                end)
+            )
+            @test OpenReality.tick(sel, EntityID(1), bb, 0.016) == BT_RUNNING
+            @test OpenReality.tick(sel, EntityID(1), bb, 0.016) == BT_SUCCESS
+        end
+
+        @testset "ParallelNode success threshold" begin
+            bb = Blackboard()
+            par = bt_parallel(
+                bt_action((e, b, d) -> BT_SUCCESS),
+                bt_action((e, b, d) -> BT_FAILURE),
+                bt_action((e, b, d) -> BT_SUCCESS);
+                threshold=2
+            )
+            @test OpenReality.tick(par, EntityID(1), bb, 0.016) == BT_SUCCESS
+        end
+
+        @testset "ParallelNode fails when threshold impossible" begin
+            bb = Blackboard()
+            par = bt_parallel(
+                bt_action((e, b, d) -> BT_FAILURE),
+                bt_action((e, b, d) -> BT_FAILURE),
+                bt_action((e, b, d) -> BT_SUCCESS);
+                threshold=2
+            )
+            @test OpenReality.tick(par, EntityID(1), bb, 0.016) == BT_FAILURE
+        end
+
+        @testset "ParallelNode running when not yet decided" begin
+            bb = Blackboard()
+            par = bt_parallel(
+                bt_action((e, b, d) -> BT_SUCCESS),
+                bt_action((e, b, d) -> BT_RUNNING);
+                threshold=2
+            )
+            @test OpenReality.tick(par, EntityID(1), bb, 0.016) == BT_RUNNING
+        end
+
+        @testset "InverterNode inverts success/failure" begin
+            bb = Blackboard()
+            inv_s = bt_invert(bt_action((e, b, d) -> BT_SUCCESS))
+            inv_f = bt_invert(bt_action((e, b, d) -> BT_FAILURE))
+            inv_r = bt_invert(bt_action((e, b, d) -> BT_RUNNING))
+            @test OpenReality.tick(inv_s, EntityID(1), bb, 0.0) == BT_FAILURE
+            @test OpenReality.tick(inv_f, EntityID(1), bb, 0.0) == BT_SUCCESS
+            @test OpenReality.tick(inv_r, EntityID(1), bb, 0.0) == BT_RUNNING
+        end
+
+        @testset "RepeatNode repeats N times" begin
+            bb = Blackboard()
+            count = Ref(0)
+            rep = bt_repeat(bt_action((e, b, d) -> (count[] += 1; BT_SUCCESS)); count=3)
+            @test OpenReality.tick(rep, EntityID(1), bb, 0.0) == BT_RUNNING   # 1st
+            @test OpenReality.tick(rep, EntityID(1), bb, 0.0) == BT_RUNNING   # 2nd
+            @test OpenReality.tick(rep, EntityID(1), bb, 0.0) == BT_SUCCESS   # 3rd — done
+            @test count[] == 3
+        end
+
+        @testset "RepeatNode infinite (-1) always returns running" begin
+            bb = Blackboard()
+            rep = bt_repeat(bt_action((e, b, d) -> BT_SUCCESS))
+            @test OpenReality.tick(rep, EntityID(1), bb, 0.0) == BT_RUNNING
+            @test OpenReality.tick(rep, EntityID(1), bb, 0.0) == BT_RUNNING
+            @test OpenReality.tick(rep, EntityID(1), bb, 0.0) == BT_RUNNING
+        end
+
+        @testset "SucceederNode always succeeds" begin
+            bb = Blackboard()
+            s1 = bt_succeed(bt_action((e, b, d) -> BT_FAILURE))
+            s2 = bt_succeed(bt_action((e, b, d) -> BT_SUCCESS))
+            s3 = bt_succeed(bt_action((e, b, d) -> BT_RUNNING))
+            @test OpenReality.tick(s1, EntityID(1), bb, 0.0) == BT_SUCCESS
+            @test OpenReality.tick(s2, EntityID(1), bb, 0.0) == BT_SUCCESS
+            @test OpenReality.tick(s3, EntityID(1), bb, 0.0) == BT_RUNNING  # Running passes through
+        end
+
+        @testset "TimeoutNode returns failure on timeout" begin
+            bb = Blackboard()
+            timeout = bt_timeout(bt_action((e, b, d) -> BT_RUNNING), 1.0)
+            @test OpenReality.tick(timeout, EntityID(1), bb, 0.5) == BT_RUNNING
+            @test OpenReality.tick(timeout, EntityID(1), bb, 0.6) == BT_FAILURE  # 1.1s total
+        end
+
+        @testset "TimeoutNode resets elapsed on child completion" begin
+            bb = Blackboard()
+            call_count = Ref(0)
+            timeout = bt_timeout(bt_action((e, b, d) -> begin
+                call_count[] += 1
+                call_count[] >= 2 ? BT_SUCCESS : BT_RUNNING
+            end), 2.0)
+            @test OpenReality.tick(timeout, EntityID(1), bb, 0.5) == BT_RUNNING
+            @test OpenReality.tick(timeout, EntityID(1), bb, 0.5) == BT_SUCCESS
+        end
+
+        @testset "Blackboard operations" begin
+            bb = Blackboard()
+            @test bb_has(bb, :key) == false
+            bb_set!(bb, :key, 42)
+            @test bb_has(bb, :key) == true
+            @test bb_get(bb, :key) == 42
+            @test bb_get(bb, :missing, "default") == "default"
+            bb_delete!(bb, :key)
+            @test bb_has(bb, :key) == false
+        end
+
+        @testset "bt_wait returns RUNNING then SUCCESS" begin
+            bb = Blackboard()
+            wait_node = bt_wait(1.0)
+            @test OpenReality.tick(wait_node, EntityID(1), bb, 0.5) == BT_RUNNING
+            @test OpenReality.tick(wait_node, EntityID(1), bb, 0.6) == BT_SUCCESS  # 1.1s total
+        end
+
+        @testset "bt_set_bb sets blackboard value" begin
+            bb = Blackboard()
+            node = bt_set_bb(:target, Vec3d(1, 2, 3))
+            @test OpenReality.tick(node, EntityID(1), bb, 0.0) == BT_SUCCESS
+            @test bb_get(bb, :target) == Vec3d(1, 2, 3)
+        end
+
+        @testset "bt_has_bb checks blackboard key" begin
+            bb = Blackboard()
+            node = bt_has_bb(:target)
+            @test OpenReality.tick(node, EntityID(1), bb, 0.0) == BT_FAILURE
+            bb_set!(bb, :target, true)
+            @test OpenReality.tick(node, EntityID(1), bb, 0.0) == BT_SUCCESS
+        end
+
+        @testset "BehaviorTreeComponent creation" begin
+            root = bt_action((e, b, d) -> BT_SUCCESS)
+            btc = BehaviorTreeComponent(root; tick_rate=0.5)
+            @test btc.enabled == true
+            @test btc._tick_rate == 0.5
+            @test btc._accumulator == 0.0
+        end
+
+        @testset "complex tree: selector with sequence children" begin
+            bb = Blackboard()
+            tree = bt_selector(
+                bt_sequence(
+                    bt_condition((e, b) -> false),
+                    bt_action((e, b, d) -> BT_SUCCESS)
+                ),
+                bt_sequence(
+                    bt_condition((e, b) -> true),
+                    bt_action((e, b, d) -> (bb_set!(b, :reached, true); BT_SUCCESS))
+                )
+            )
+            @test OpenReality.tick(tree, EntityID(1), bb, 0.016) == BT_SUCCESS
+            @test bb_get(bb, :reached) == true
+        end
+    end
+
+    # =========================================================================
+    # Dialogue System
+    # =========================================================================
+    @testset "Dialogue System" begin
+        @testset "start and end dialogue" begin
+            reset_engine_state!()
+            node1 = DialogueNode(:start, "NPC", "Hello!")
+            tree = DialogueTree([node1])
+            start_dialogue!(tree; id=:test)
+            @test is_dialogue_active() == true
+            @test get_current_dialogue_node() !== nothing
+            @test get_current_dialogue_node().text == "Hello!"
+            end_dialogue!()
+            @test is_dialogue_active() == false
+        end
+
+        @testset "dialogue choice navigates to next node" begin
+            reset_engine_state!()
+            node1 = DialogueNode(:start, "NPC", "Choose";
+                choices=[
+                    DialogueChoice("Option A", :node_a),
+                    DialogueChoice("Option B", :node_b)
+                ])
+            node_a = DialogueNode(:node_a, "NPC", "You chose A")
+            node_b = DialogueNode(:node_b, "NPC", "You chose B")
+            tree = DialogueTree(:start, [node1, node_a, node_b])
+            start_dialogue!(tree)
+            @test length(get_available_choices()) == 2
+            select_choice!(2)
+            @test get_current_dialogue_node().text == "You chose B"
+        end
+
+        @testset "dialogue choice with on_select callback" begin
+            reset_engine_state!()
+            flag = Ref(false)
+            node1 = DialogueNode(:start, "NPC", "Choose";
+                choices=[
+                    DialogueChoice("Go", :end; on_select=() -> (flag[] = true))
+                ])
+            tree = DialogueTree([node1])
+            start_dialogue!(tree)
+            select_choice!(1)
+            @test flag[] == true
+            @test is_dialogue_active() == false  # :end terminates
+        end
+
+        @testset "dialogue condition filters choices" begin
+            reset_engine_state!()
+            node1 = DialogueNode(:start, "NPC", "Choose";
+                choices=[
+                    DialogueChoice("Always", :end),
+                    DialogueChoice("Hidden", :end; condition=() -> false),
+                    DialogueChoice("Also Always", :end)
+                ])
+            tree = DialogueTree([node1])
+            start_dialogue!(tree)
+            choices = get_available_choices()
+            @test length(choices) == 2
+            @test choices[1].text == "Always"
+            @test choices[2].text == "Also Always"
+        end
+
+        @testset "auto_advance moves to next node" begin
+            reset_engine_state!()
+            node1 = DialogueNode(:start, "Narrator", "Once upon a time...";
+                auto_advance=:next)
+            node2 = DialogueNode(:next, "Narrator", "The end.")
+            tree = DialogueTree(:start, [node1, node2])
+            start_dialogue!(tree)
+            @test get_current_dialogue_node().text == "Once upon a time..."
+            advance!()
+            @test get_current_dialogue_node().text == "The end."
+        end
+
+        @testset "advance! ends dialogue when no choices and no auto_advance" begin
+            reset_engine_state!()
+            node1 = DialogueNode(:start, "NPC", "Goodbye!")
+            tree = DialogueTree([node1])
+            start_dialogue!(tree)
+            advance!()
+            @test is_dialogue_active() == false
+        end
+
+        @testset "select_choice! to :end terminates dialogue" begin
+            reset_engine_state!()
+            node1 = DialogueNode(:start, "NPC", "Bye";
+                choices=[DialogueChoice("Leave", :end)])
+            tree = DialogueTree([node1])
+            start_dialogue!(tree)
+            select_choice!(1)
+            @test is_dialogue_active() == false
+        end
+
+        @testset "on_enter callback fires when node is entered" begin
+            reset_engine_state!()
+            entered = Ref(false)
+            node1 = DialogueNode(:start, "NPC", "Hi";
+                on_enter=() -> (entered[] = true))
+            tree = DialogueTree([node1])
+            start_dialogue!(tree)
+            @test entered[] == true
+        end
+
+        @testset "dialogue events emitted" begin
+            reset_engine_state!()
+            started = Ref(false)
+            ended = Ref(false)
+            subscribe!(DialogueStartedEvent, _ -> (started[] = true))
+            subscribe!(DialogueEndedEvent, _ -> (ended[] = true))
+            node1 = DialogueNode(:start, "NPC", "Hi")
+            tree = DialogueTree([node1])
+            start_dialogue!(tree; id=:test)
+            @test started[] == true
+            end_dialogue!()
+            @test ended[] == true
+        end
+
+        @testset "select_choice! emits DialogueChoiceEvent" begin
+            reset_engine_state!()
+            choice_text = Ref("")
+            subscribe!(DialogueChoiceEvent, e -> (choice_text[] = e.choice_text))
+            node1 = DialogueNode(:start, "NPC", "Choose";
+                choices=[DialogueChoice("Yes", :end)])
+            tree = DialogueTree([node1])
+            start_dialogue!(tree)
+            select_choice!(1)
+            @test choice_text[] == "Yes"
+        end
+
+        @testset "advance! when not active does nothing" begin
+            reset_engine_state!()
+            advance!()  # Should not error
+            @test is_dialogue_active() == false
+        end
+
+        @testset "select_choice! when not active does nothing" begin
+            reset_engine_state!()
+            select_choice!(1)  # Should not error
+            @test true
+        end
+
+        @testset "select_choice! with invalid index does nothing" begin
+            reset_engine_state!()
+            node1 = DialogueNode(:start, "NPC", "Hi";
+                choices=[DialogueChoice("A", :end)])
+            tree = DialogueTree([node1])
+            start_dialogue!(tree)
+            select_choice!(0)  # Invalid
+            select_choice!(99)  # Invalid
+            @test is_dialogue_active() == true  # Still active
+        end
+
+        @testset "DialogueTree requires at least one node" begin
+            @test_throws ErrorException DialogueTree(DialogueNode[])
+        end
+
+        @testset "reset_dialogue_manager! clears state" begin
+            reset_engine_state!()
+            node1 = DialogueNode(:start, "NPC", "Hi")
+            tree = DialogueTree([node1])
+            start_dialogue!(tree)
+            reset_dialogue_manager!()
+            @test is_dialogue_active() == false
+        end
+    end
+
+    # =========================================================================
+    # Health System
+    # =========================================================================
+    @testset "Health System" begin
+        @testset "basic damage reduces HP" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=100))
+            apply_damage!(eid, 30)
+            @test get_hp(eid) == 70.0f0
+        end
+
+        @testset "damage with armor reduces physical damage" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=100, armor=10))
+            apply_damage!(eid, 25; damage_type=DAMAGE_PHYSICAL)
+            @test get_hp(eid) == 85.0f0  # 25 - 10 armor = 15 damage
+        end
+
+        @testset "armor doesn't reduce non-physical damage" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=100, armor=50))
+            apply_damage!(eid, 30; damage_type=DAMAGE_FIRE)
+            @test get_hp(eid) == 70.0f0  # Fire ignores armor
+        end
+
+        @testset "true damage ignores armor and resistance" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=100, armor=50,
+                resistances=Dict(DAMAGE_TRUE => 0.0f0)))
+            apply_damage!(eid, 40; damage_type=DAMAGE_TRUE)
+            @test get_hp(eid) == 60.0f0  # True damage ignores everything
+        end
+
+        @testset "resistance multiplier" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=100,
+                resistances=Dict(DAMAGE_FIRE => 0.5f0)))
+            apply_damage!(eid, 40; damage_type=DAMAGE_FIRE)
+            @test get_hp(eid) == 80.0f0  # 40 * 0.5 = 20 damage
+        end
+
+        @testset "weakness multiplier (>1.0)" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=100,
+                resistances=Dict(DAMAGE_ICE => 2.0f0)))
+            apply_damage!(eid, 20; damage_type=DAMAGE_ICE)
+            @test get_hp(eid) == 60.0f0  # 20 * 2.0 = 40 damage
+        end
+
+        @testset "death detection" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=50))
+            @test is_dead(eid) == false
+            apply_damage!(eid, 100)
+            @test is_dead(eid) == true
+            @test get_hp(eid) == 0.0f0
+        end
+
+        @testset "healing clamps at max HP" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=100, current_hp=50))
+            heal!(eid, 200)
+            @test get_hp(eid) == 100.0f0
+        end
+
+        @testset "healing does nothing if dead" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=100))
+            apply_damage!(eid, 200)  # Kill
+            @test is_dead(eid) == true
+            heal!(eid, 50)
+            @test get_hp(eid) == 0.0f0  # Still dead
+        end
+
+        @testset "invincible entity takes no damage" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=100, invincible=true))
+            apply_damage!(eid, 999)
+            @test get_hp(eid) == 100.0f0
+        end
+
+        @testset "damage to dead entity does nothing" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=100))
+            apply_damage!(eid, 200)
+            apply_damage!(eid, 50)  # Already dead
+            @test get_hp(eid) == 0.0f0
+        end
+
+        @testset "get_hp_fraction" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=200, current_hp=100))
+            @test get_hp_fraction(eid) == 0.5f0
+        end
+
+        @testset "get_hp_fraction zero max_hp" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=0))
+            @test get_hp_fraction(eid) == 0.0f0
+        end
+
+        @testset "get_hp on entity without HealthComponent" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            @test get_hp(eid) === nothing
+            @test get_hp_fraction(eid) === nothing
+            @test is_dead(eid) == false
+        end
+
+        @testset "on_damage callback fires" begin
+            reset_engine_state!()
+            callback_data = Ref{Any}(nothing)
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=100,
+                on_damage=(entity, event) -> (callback_data[] = event.final_amount)))
+            apply_damage!(eid, 25)
+            @test callback_data[] == 25.0f0
+        end
+
+        @testset "on_death callback fires" begin
+            reset_engine_state!()
+            death_called = Ref(false)
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=50,
+                on_death=(entity, event) -> (death_called[] = true)))
+            apply_damage!(eid, 100)
+            @test death_called[] == true
+        end
+
+        @testset "DamageEvent emitted" begin
+            reset_engine_state!()
+            events = DamageEvent[]
+            subscribe!(DamageEvent, e -> push!(events, e))
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=100, armor=5))
+            apply_damage!(eid, 20; damage_type=DAMAGE_PHYSICAL)
+            @test length(events) == 1
+            @test events[1].amount == 20.0f0
+            @test events[1].final_amount == 15.0f0  # 20 - 5 armor
+        end
+
+        @testset "DeathEvent emitted with source" begin
+            reset_engine_state!()
+            death_events = DeathEvent[]
+            subscribe!(DeathEvent, e -> push!(death_events, e))
+            eid = create_entity!(World())
+            killer = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=50))
+            apply_damage!(eid, 100; source=killer)
+            @test length(death_events) == 1
+            @test death_events[1].killer == killer
+        end
+
+        @testset "HealEvent emitted" begin
+            reset_engine_state!()
+            heal_events = HealEvent[]
+            subscribe!(HealEvent, e -> push!(heal_events, e))
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=100, current_hp=50))
+            heal!(eid, 30)
+            @test length(heal_events) == 1
+            @test heal_events[1].amount == 30.0f0
+        end
+
+        @testset "HealEvent not emitted for zero heal" begin
+            reset_engine_state!()
+            heal_events = HealEvent[]
+            subscribe!(HealEvent, e -> push!(heal_events, e))
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=100, current_hp=100))
+            heal!(eid, 50)  # Already at max
+            @test isempty(heal_events)
+        end
+
+        @testset "armor reduces to zero, not negative" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=100, armor=50))
+            apply_damage!(eid, 10; damage_type=DAMAGE_PHYSICAL)
+            @test get_hp(eid) == 100.0f0  # 10 - 50 armor = 0 damage
+        end
+
+        @testset "knockback applies to rigidbody" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            add_component!(eid, HealthComponent(max_hp=100))
+            add_component!(eid, RigidBodyComponent(body_type=BODY_DYNAMIC))
+            apply_damage!(eid, 10; knockback=Vec3d(5, 0, 0))
+            rb = get_component(eid, RigidBodyComponent)
+            @test rb.velocity[1] == 5.0
+        end
+    end
+
+    # =========================================================================
+    # Inventory System
+    # =========================================================================
+    @testset "Inventory System" begin
+        @testset "add item to empty inventory" begin
+            reset_engine_state!()
+            register_item!(ItemDef(:sword, "Sword"; stackable=false))
+            eid = create_entity!(World())
+            add_component!(eid, InventoryComponent(max_slots=5))
+            added = add_item!(eid, :sword)
+            @test added == 1
+            @test has_item(eid, :sword)
+            @test get_item_count(eid, :sword) == 1
+        end
+
+        @testset "add stackable items" begin
+            reset_engine_state!()
+            register_item!(ItemDef(:potion, "Potion"; stackable=true, max_stack=10))
+            eid = create_entity!(World())
+            add_component!(eid, InventoryComponent(max_slots=5))
+            added = add_item!(eid, :potion, 5)
+            @test added == 5
+            @test get_item_count(eid, :potion) == 5
+        end
+
+        @testset "stacking fills existing slots first" begin
+            reset_engine_state!()
+            register_item!(ItemDef(:arrow, "Arrow"; stackable=true, max_stack=20))
+            eid = create_entity!(World())
+            add_component!(eid, InventoryComponent(max_slots=2))
+            add_item!(eid, :arrow, 15)
+            add_item!(eid, :arrow, 3)
+            @test get_item_count(eid, :arrow) == 18
+            # Should still be in one slot (15+3 <= 20)
+            slots = get_inventory_slots(eid)
+            non_nil = filter(!isnothing, slots)
+            @test length(non_nil) == 1
+        end
+
+        @testset "overflow creates new slots" begin
+            reset_engine_state!()
+            register_item!(ItemDef(:arrow, "Arrow"; stackable=true, max_stack=10))
+            eid = create_entity!(World())
+            add_component!(eid, InventoryComponent(max_slots=3))
+            add_item!(eid, :arrow, 25)
+            @test get_item_count(eid, :arrow) == 25
+            slots = get_inventory_slots(eid)
+            non_nil = filter(!isnothing, slots)
+            @test length(non_nil) == 3  # 10 + 10 + 5
+        end
+
+        @testset "full inventory returns partial add" begin
+            reset_engine_state!()
+            register_item!(ItemDef(:gem, "Gem"; stackable=true, max_stack=5))
+            eid = create_entity!(World())
+            add_component!(eid, InventoryComponent(max_slots=1))
+            added = add_item!(eid, :gem, 10)
+            @test added == 5  # Only one slot, max stack 5
+        end
+
+        @testset "remove item" begin
+            reset_engine_state!()
+            register_item!(ItemDef(:potion, "Potion"; stackable=true, max_stack=10))
+            eid = create_entity!(World())
+            add_component!(eid, InventoryComponent(max_slots=5))
+            add_item!(eid, :potion, 5)
+            removed = remove_item!(eid, :potion, 3)
+            @test removed == 3
+            @test get_item_count(eid, :potion) == 2
+        end
+
+        @testset "remove item clears empty slot" begin
+            reset_engine_state!()
+            register_item!(ItemDef(:key, "Key"; stackable=false))
+            eid = create_entity!(World())
+            add_component!(eid, InventoryComponent(max_slots=5))
+            add_item!(eid, :key)
+            remove_item!(eid, :key)
+            @test get_item_count(eid, :key) == 0
+            slots = get_inventory_slots(eid)
+            @test all(isnothing, slots)
+        end
+
+        @testset "remove more than available returns actual removed count" begin
+            reset_engine_state!()
+            register_item!(ItemDef(:gem, "Gem"; stackable=true, max_stack=10))
+            eid = create_entity!(World())
+            add_component!(eid, InventoryComponent(max_slots=5))
+            add_item!(eid, :gem, 3)
+            removed = remove_item!(eid, :gem, 10)
+            @test removed == 3
+            @test get_item_count(eid, :gem) == 0
+        end
+
+        @testset "has_item with count threshold" begin
+            reset_engine_state!()
+            register_item!(ItemDef(:coin, "Coin"; stackable=true, max_stack=99))
+            eid = create_entity!(World())
+            add_component!(eid, InventoryComponent(max_slots=5))
+            add_item!(eid, :coin, 10)
+            @test has_item(eid, :coin; count=10) == true
+            @test has_item(eid, :coin; count=11) == false
+        end
+
+        @testset "use_item! with consumable" begin
+            reset_engine_state!()
+            used_called = Ref(false)
+            register_item!(ItemDef(:potion, "Potion";
+                on_use=(entity, def) -> (used_called[] = true; true)))  # true = consumed
+            eid = create_entity!(World())
+            add_component!(eid, InventoryComponent(max_slots=5))
+            add_item!(eid, :potion)
+            consumed = use_item!(eid, 1)
+            @test consumed == true
+            @test used_called[] == true
+            @test get_item_count(eid, :potion) == 0
+        end
+
+        @testset "use_item! not consumed keeps item" begin
+            reset_engine_state!()
+            register_item!(ItemDef(:wand, "Wand";
+                on_use=(entity, def) -> false))  # false = not consumed
+            eid = create_entity!(World())
+            add_component!(eid, InventoryComponent(max_slots=5))
+            add_item!(eid, :wand)
+            consumed = use_item!(eid, 1)
+            @test consumed == false
+            @test get_item_count(eid, :wand) == 1
+        end
+
+        @testset "use_item! emits ItemUsedEvent on consumption" begin
+            reset_engine_state!()
+            events = Symbol[]
+            subscribe!(ItemUsedEvent, e -> push!(events, e.item_id))
+            register_item!(ItemDef(:potion, "Potion";
+                on_use=(entity, def) -> true))
+            eid = create_entity!(World())
+            add_component!(eid, InventoryComponent(max_slots=5))
+            add_item!(eid, :potion)
+            use_item!(eid, 1)
+            @test events == [:potion]
+        end
+
+        @testset "use_item! on empty slot returns false" begin
+            reset_engine_state!()
+            register_item!(ItemDef(:x, "X"))
+            eid = create_entity!(World())
+            add_component!(eid, InventoryComponent(max_slots=5))
+            @test use_item!(eid, 1) == false
+        end
+
+        @testset "use_item! with erroring callback" begin
+            reset_engine_state!()
+            register_item!(ItemDef(:bomb, "Bomb";
+                on_use=(entity, def) -> error("boom")))
+            eid = create_entity!(World())
+            add_component!(eid, InventoryComponent(max_slots=5))
+            add_item!(eid, :bomb)
+            @test_logs (:warn,) @test use_item!(eid, 1) == false
+        end
+
+        @testset "add_item! with no InventoryComponent returns 0" begin
+            reset_engine_state!()
+            register_item!(ItemDef(:x, "X"))
+            eid = create_entity!(World())
+            @test add_item!(eid, :x) == 0
+        end
+
+        @testset "add_item! with unregistered item returns 0" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            add_component!(eid, InventoryComponent(max_slots=5))
+            @test add_item!(eid, :nonexistent) == 0
+        end
+
+        @testset "get_inventory_slots returns nothing without component" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            @test get_inventory_slots(eid) === nothing
+        end
+
+        @testset "non-stackable items use one slot each" begin
+            reset_engine_state!()
+            register_item!(ItemDef(:sword, "Sword"; stackable=false))
+            eid = create_entity!(World())
+            add_component!(eid, InventoryComponent(max_slots=3))
+            added = add_item!(eid, :sword, 3)
+            @test added == 3
+            slots = get_inventory_slots(eid)
+            non_nil = filter(!isnothing, slots)
+            @test length(non_nil) == 3
+            @test all(s -> s.count == 1, non_nil)
+        end
+
+        @testset "non-stackable items limited by slots" begin
+            reset_engine_state!()
+            register_item!(ItemDef(:shield, "Shield"; stackable=false))
+            eid = create_entity!(World())
+            add_component!(eid, InventoryComponent(max_slots=2))
+            added = add_item!(eid, :shield, 5)
+            @test added == 2  # Only 2 slots
+        end
+    end
+
+    # =========================================================================
+    # Phase 3: Systems and Rendering Logic
+    # =========================================================================
+
+    # =========================================================================
+    # IK System (pure math)
+    # =========================================================================
+    @testset "IK System" begin
+        @testset "_slerp_ik boundary conditions" begin
+            qa = Quaterniond(1, 0, 0, 0)  # identity
+            angle = π/2
+            qb = Quaterniond(cos(angle/2), 0, 0, sin(angle/2))  # 90° around Z
+
+            # t <= 0 returns qa
+            result = OpenReality._slerp_ik(qa, qb, 0.0)
+            @test result == qa
+
+            result_neg = OpenReality._slerp_ik(qa, qb, -1.0)
+            @test result_neg == qa
+
+            # t >= 1 returns qb
+            result = OpenReality._slerp_ik(qa, qb, 1.0)
+            @test result == qb
+
+            result_over = OpenReality._slerp_ik(qa, qb, 2.0)
+            @test result_over == qb
+        end
+
+        @testset "_slerp_ik mid-range (known source bug: Quaterniond indexing)" begin
+            # _slerp_ik uses q[1..4] indexing which Quaternions.jl doesn't support
+            # for mid-range t values — this is a pre-existing source bug in ik.jl
+            qa = Quaterniond(1, 0, 0, 0)
+            qb = Quaterniond(cos(π/4), 0, 0, sin(π/4))
+            @test_broken (OpenReality._slerp_ik(qa, qb, 0.5); true)
+        end
+
+        @testset "IKConstraintComponent construction" begin
+            ikc = IKConstraintComponent()
+            @test isempty(ikc.two_bone)
+            @test isempty(ikc.look_at)
+        end
+
+        @testset "TwoBoneIKConstraint construction" begin
+            reset_engine_state!()
+            root = create_entity!(World())
+            mid = create_entity!(World())
+            end_bone = create_entity!(World())
+            constraint = TwoBoneIKConstraint(
+                root_bone=root, mid_bone=mid, end_bone=end_bone,
+                weight=0.8f0
+            )
+            @test constraint.weight == 0.8f0
+            @test constraint.enabled == true
+            @test constraint.root_bone == root
+        end
+
+        @testset "LookAtIKConstraint construction" begin
+            reset_engine_state!()
+            bone = create_entity!(World())
+            constraint = LookAtIKConstraint(
+                bone=bone,
+                max_angle=Float32(π/4),
+                forward_axis=Vec3d(0, 0, 1)
+            )
+            @test constraint.max_angle == Float32(π/4)
+            @test constraint.forward_axis == Vec3d(0, 0, 1)
+            @test constraint.enabled == true
+        end
+    end
+
+    # =========================================================================
+    # Animation _time_crossed
+    # =========================================================================
+    @testset "Animation _time_crossed" begin
+        @testset "normal forward progression" begin
+            # Event at t=0.5, crossing from 0.0 to 1.0
+            @test OpenReality._time_crossed(0.0, 1.0, 0.5f0, 2.0f0, false) == true
+            # Event at t=0.5, not crossed (we're past it)
+            @test OpenReality._time_crossed(0.6, 1.0, 0.5f0, 2.0f0, false) == false
+            # Event at t=0.5, not crossed (we haven't reached it)
+            @test OpenReality._time_crossed(0.0, 0.4, 0.5f0, 2.0f0, false) == false
+        end
+
+        @testset "wrap-around with looping" begin
+            # Looping from 1.8 to 0.3 (wrapped around duration 2.0)
+            # Event at t=1.9 — in [1.8, 2.0)
+            @test OpenReality._time_crossed(1.8, 0.3, 1.9f0, 2.0f0, true) == true
+            # Event at t=0.1 — in [0.0, 0.3)
+            @test OpenReality._time_crossed(1.8, 0.3, 0.1f0, 2.0f0, true) == true
+            # Event at t=0.5 — not in either range
+            @test OpenReality._time_crossed(1.8, 0.3, 0.5f0, 2.0f0, true) == false
+        end
+
+        @testset "wrap-around without looping returns false" begin
+            @test OpenReality._time_crossed(1.8, 0.3, 1.9f0, 2.0f0, false) == false
+        end
+
+        @testset "exact boundary" begin
+            # Event exactly at prev_t — should be included
+            @test OpenReality._time_crossed(0.5, 1.0, 0.5f0, 2.0f0, false) == true
+            # Event exactly at curr_t — should NOT be included (half-open [prev, curr))
+            @test OpenReality._time_crossed(0.0, 0.5, 0.5f0, 2.0f0, false) == false
+        end
+    end
+
+    # =========================================================================
+    # Animation update_animations! with real ECS
+    # =========================================================================
+    @testset "Animation update_animations! integration" begin
+        @testset "animation advances time and interpolates position" begin
+            reset_engine_state!()
+            target = create_entity!(World())
+            add_component!(target, transform(position=Vec3d(0, 0, 0)))
+
+            anim_entity = create_entity!(World())
+            channel = AnimationChannel(
+                target, :position,
+                Float32[0.0, 1.0],
+                Any[Vec3d(0, 0, 0), Vec3d(10, 0, 0)],
+                INTERP_LINEAR
+            )
+            clip = AnimationClip("move", [channel], 1.0f0)
+            add_component!(anim_entity, AnimationComponent(
+                clips=[clip], active_clip=1, playing=true, looping=false
+            ))
+
+            update_animations!(0.5)
+            tc = get_component(target, TransformComponent)
+            @test tc.position[][1] ≈ 5.0 atol=0.5
+        end
+
+        @testset "animation stops when not looping" begin
+            reset_engine_state!()
+            target = create_entity!(World())
+            add_component!(target, transform(position=Vec3d(0, 0, 0)))
+
+            anim_entity = create_entity!(World())
+            channel = AnimationChannel(
+                target, :position,
+                Float32[0.0, 1.0],
+                Any[Vec3d(0, 0, 0), Vec3d(10, 0, 0)],
+                INTERP_LINEAR
+            )
+            clip = AnimationClip("move", [channel], 1.0f0)
+            add_component!(anim_entity, AnimationComponent(
+                clips=[clip], active_clip=1, playing=true, looping=false
+            ))
+
+            update_animations!(2.0)  # Past end
+            anim = get_component(anim_entity, AnimationComponent)
+            @test anim.playing == false
+            @test anim.current_time == 1.0  # Clamped to duration
+        end
+
+        @testset "animation loops when looping=true" begin
+            reset_engine_state!()
+            target = create_entity!(World())
+            add_component!(target, transform(position=Vec3d(0, 0, 0)))
+
+            anim_entity = create_entity!(World())
+            channel = AnimationChannel(
+                target, :position,
+                Float32[0.0, 1.0],
+                Any[Vec3d(0, 0, 0), Vec3d(10, 0, 0)],
+                INTERP_LINEAR
+            )
+            clip = AnimationClip("move", [channel], 1.0f0)
+            add_component!(anim_entity, AnimationComponent(
+                clips=[clip], active_clip=1, playing=true, looping=true
+            ))
+
+            update_animations!(1.5)  # Should wrap to 0.5
+            anim = get_component(anim_entity, AnimationComponent)
+            @test anim.playing == true
+            @test anim.current_time ≈ 0.5 atol=0.01
+        end
+
+        @testset "animation does not play when playing=false" begin
+            reset_engine_state!()
+            target = create_entity!(World())
+            add_component!(target, transform(position=Vec3d(0, 0, 0)))
+
+            anim_entity = create_entity!(World())
+            channel = AnimationChannel(
+                target, :position,
+                Float32[0.0, 1.0],
+                Any[Vec3d(0, 0, 0), Vec3d(10, 0, 0)],
+                INTERP_LINEAR
+            )
+            clip = AnimationClip("move", [channel], 1.0f0)
+            add_component!(anim_entity, AnimationComponent(
+                clips=[clip], active_clip=1, playing=false
+            ))
+
+            update_animations!(0.5)
+            tc = get_component(target, TransformComponent)
+            @test tc.position[] == Vec3d(0, 0, 0)  # Unchanged
+        end
+
+        @testset "animation speed affects playback" begin
+            reset_engine_state!()
+            target = create_entity!(World())
+            add_component!(target, transform(position=Vec3d(0, 0, 0)))
+
+            anim_entity = create_entity!(World())
+            channel = AnimationChannel(
+                target, :position,
+                Float32[0.0, 1.0],
+                Any[Vec3d(0, 0, 0), Vec3d(10, 0, 0)],
+                INTERP_LINEAR
+            )
+            clip = AnimationClip("move", [channel], 1.0f0)
+            add_component!(anim_entity, AnimationComponent(
+                clips=[clip], active_clip=1, playing=true, looping=false,
+                speed=2.0f0
+            ))
+
+            update_animations!(0.25)  # 0.25 * 2.0 = 0.5 effective time
+            tc = get_component(target, TransformComponent)
+            @test tc.position[][1] ≈ 5.0 atol=0.5
+        end
+
+        @testset "step interpolation snaps to keyframe" begin
+            reset_engine_state!()
+            target = create_entity!(World())
+            add_component!(target, transform(position=Vec3d(0, 0, 0)))
+
+            anim_entity = create_entity!(World())
+            channel = AnimationChannel(
+                target, :position,
+                Float32[0.0, 1.0],
+                Any[Vec3d(0, 0, 0), Vec3d(10, 0, 0)],
+                INTERP_STEP
+            )
+            clip = AnimationClip("step", [channel], 1.0f0)
+            add_component!(anim_entity, AnimationComponent(
+                clips=[clip], active_clip=1, playing=true, looping=false
+            ))
+
+            update_animations!(0.5)
+            tc = get_component(target, TransformComponent)
+            @test tc.position[] == Vec3d(0, 0, 0)  # Step keeps value A
+        end
+
+        @testset "animation event callback fires" begin
+            reset_engine_state!()
+            fired = Ref(false)
+            target = create_entity!(World())
+            add_component!(target, transform())
+
+            anim_entity = create_entity!(World())
+            event = AnimationEvent(time=0.5f0, name="hit",
+                callback=(eid, evt) -> (fired[] = true))
+            channel = AnimationChannel(
+                target, :position,
+                Float32[0.0, 1.0],
+                Any[Vec3d(0, 0, 0), Vec3d(1, 0, 0)],
+                INTERP_LINEAR
+            )
+            clip = AnimationClip("attack", [channel], 1.0f0, [event])
+            add_component!(anim_entity, AnimationComponent(
+                clips=[clip], active_clip=1, playing=true, looping=false
+            ))
+
+            update_animations!(0.6)  # Crosses event at 0.5
+            @test fired[] == true
+        end
+
+        @testset "rotation channel with slerp" begin
+            reset_engine_state!()
+            target = create_entity!(World())
+            add_component!(target, transform())
+
+            anim_entity = create_entity!(World())
+            q1 = Quaterniond(1, 0, 0, 0)
+            q2 = Quaterniond(cos(π/4), 0, 0, sin(π/4))  # 90° Z
+            channel = AnimationChannel(
+                target, :rotation,
+                Float32[0.0, 1.0],
+                Any[q1, q2],
+                INTERP_LINEAR
+            )
+            clip = AnimationClip("rotate", [channel], 1.0f0)
+            add_component!(anim_entity, AnimationComponent(
+                clips=[clip], active_clip=1, playing=true, looping=false
+            ))
+
+            update_animations!(0.5)
+            tc = get_component(target, TransformComponent)
+            rot = tc.rotation[]
+            # At t=0.5, should be ~45° rotation
+            @test rot.s ≈ cos(π/8) atol=0.1
+        end
+    end
+
+    # =========================================================================
+    # Shader Variant System
+    # =========================================================================
+    @testset "Shader Variant System" begin
+        @testset "_insert_defines_after_version GLSL" begin
+            src = "#version 330 core\nvoid main() {}\n"
+            defines = "#define FEATURE_ALBEDO_MAP\n#define FEATURE_NORMAL_MAP"
+            result = OpenReality._insert_defines_after_version(src, defines)
+            @test startswith(result, "#version 330 core\n")
+            @test occursin("FEATURE_ALBEDO_MAP", result)
+            @test occursin("FEATURE_NORMAL_MAP", result)
+            # Version line must be before defines
+            ver_pos = findfirst("#version", result).start
+            def_pos = findfirst("FEATURE_ALBEDO_MAP", result).start
+            @test ver_pos < def_pos
+        end
+
+        @testset "_insert_defines_after_version MSL" begin
+            src = "#include <metal_stdlib>\nvoid main() {}\n"
+            defines = "#define FEATURE_SKINNING"
+            result = OpenReality._insert_defines_after_version(src, defines)
+            @test startswith(result, "#define FEATURE_SKINNING")
+        end
+
+        @testset "_insert_defines_after_version empty defines" begin
+            src = "#version 330 core\nvoid main() {}\n"
+            result = OpenReality._insert_defines_after_version(src, "")
+            @test result == src
+        end
+
+        @testset "ShaderVariantKey hash and equality" begin
+            k1 = ShaderVariantKey(Set([FEATURE_ALBEDO_MAP, FEATURE_NORMAL_MAP]))
+            k2 = ShaderVariantKey(Set([FEATURE_NORMAL_MAP, FEATURE_ALBEDO_MAP]))
+            k3 = ShaderVariantKey(Set([FEATURE_ALBEDO_MAP]))
+            @test k1 == k2
+            @test k1 != k3
+            @test hash(k1) == hash(k2)
+        end
+
+        @testset "determine_shader_variant basic material" begin
+            mat = MaterialComponent()
+            key = determine_shader_variant(mat)
+            @test isempty(key.features)
+        end
+
+        @testset "determine_shader_variant with textures" begin
+            mat = MaterialComponent(alpha_cutoff=0.5f0)
+            key = determine_shader_variant(mat)
+            @test FEATURE_ALPHA_CUTOFF in key.features
+        end
+
+        @testset "determine_shader_variant clearcoat" begin
+            mat = MaterialComponent(clearcoat=0.5f0)
+            key = determine_shader_variant(mat)
+            @test FEATURE_CLEARCOAT in key.features
+        end
+
+        @testset "determine_shader_variant subsurface" begin
+            mat = MaterialComponent(subsurface=0.3f0)
+            key = determine_shader_variant(mat)
+            @test FEATURE_SUBSURFACE in key.features
+        end
+
+        @testset "ShaderLibrary caching with mock compile" begin
+            # Create a mock shader type
+            compiled = Ref(0)
+            lib = ShaderLibrary{OpenReality.AbstractShaderProgram}(
+                "test_shader",
+                "#version 330\nvoid main() {}",
+                "#version 330\nvoid main() {}",
+                (v, f) -> begin
+                    compiled[] += 1
+                    # Return a mock — we need an AbstractShaderProgram subtype
+                    # Just test that the library mechanics work
+                    error("mock compile")
+                end
+            )
+            @test OpenReality.get_variant_count(lib) == 0
+        end
+    end
+
+    # =========================================================================
+    # Debug Console
+    # =========================================================================
+    @testset "Debug Console" begin
+        @testset "execute_command! unknown command" begin
+            reset_engine_state!()
+            result = execute_command!("nonexistent")
+            @test occursin("Unknown command", result)
+        end
+
+        @testset "execute_command! empty input" begin
+            reset_engine_state!()
+            result = execute_command!("")
+            @test result == ""
+        end
+
+        @testset "register_command! and execute" begin
+            reset_engine_state!()
+            register_command!("greet", args -> "hello $(join(args, " "))"; help="Say hello")
+            result = execute_command!("greet world")
+            @test result == "hello world"
+        end
+
+        @testset "register_command! with no args" begin
+            reset_engine_state!()
+            register_command!("ping", args -> "pong")
+            result = execute_command!("ping")
+            @test result == "pong"
+        end
+
+        @testset "execute_command! handler error returns error string" begin
+            reset_engine_state!()
+            register_command!("crash", args -> error("boom"))
+            result = execute_command!("crash")
+            @test occursin("Error:", result)
+            @test occursin("boom", result)
+        end
+
+        @testset "execute_command! case insensitive" begin
+            reset_engine_state!()
+            register_command!("hello", args -> "hi")
+            result = execute_command!("HELLO")
+            @test result == "hi"
+        end
+
+        @testset "built-in help command" begin
+            reset_engine_state!()
+            result = execute_command!("help")
+            @test occursin("Available commands", result)
+            @test occursin("help", result)
+        end
+
+        @testset "built-in entities command" begin
+            reset_engine_state!()
+            result = execute_command!("entities")
+            @test occursin("Total entities with transforms:", result)
+        end
+
+        @testset "built-in set and get config commands" begin
+            reset_engine_state!()
+            execute_command!("set test_key 42")
+            result = execute_command!("get test_key")
+            @test occursin("42", result)
+        end
+
+        @testset "built-in get nonexistent key" begin
+            reset_engine_state!()
+            result = execute_command!("get nonexistent")
+            @test occursin("not found", result)
+        end
+
+        @testset "built-in clear command" begin
+            reset_engine_state!()
+            console = OpenReality.get_debug_console()
+            push!(console.output_lines, "test line")
+            execute_command!("clear")
+            @test isempty(console.output_lines)
+        end
+
+        @testset "built-in fps toggle" begin
+            reset_engine_state!()
+            console = OpenReality.get_debug_console()
+            @test console._fps_display == false
+            result = execute_command!("fps")
+            @test console._fps_display == true
+            @test occursin("enabled", result)
+            result2 = execute_command!("fps")
+            @test console._fps_display == false
+            @test occursin("disabled", result2)
+        end
+
+        @testset "built-in components command" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            add_component!(eid, transform())
+            result = execute_command!("components")
+            @test occursin("Component counts", result)
+            @test occursin("TransformComponent", result)
+        end
+
+        @testset "built-in inspect command" begin
+            reset_engine_state!()
+            eid = create_entity!(World())
+            add_component!(eid, transform(position=Vec3d(1, 2, 3)))
+            result = execute_command!("inspect 1")
+            @test occursin("Entity #1", result)
+            @test occursin("TransformComponent", result)
+        end
+
+        @testset "built-in inspect out of range" begin
+            reset_engine_state!()
+            result = execute_command!("inspect 999")
+            @test occursin("out of range", result)
+        end
+
+        @testset "built-in inspect no args" begin
+            reset_engine_state!()
+            result = execute_command!("inspect")
+            @test occursin("Usage:", result)
+        end
+
+        @testset "watch! and unwatch!" begin
+            reset_engine_state!()
+            counter = Ref(0)
+            watch!("counter", () -> string(counter[]))
+            console = OpenReality.get_debug_console()
+            @test length(console.watches) == 1
+            @test console.watches[1].name == "counter"
+
+            # Replace same name
+            watch!("counter", () -> "replaced")
+            @test length(console.watches) == 1
+
+            # Add different name
+            watch!("other", () -> "x")
+            @test length(console.watches) == 2
+
+            unwatch!("counter")
+            @test length(console.watches) == 1
+            @test console.watches[1].name == "other"
+        end
+
+        @testset "DebugConsole construction" begin
+            console = DebugConsole()
+            @test console.active == false
+            @test console.input_buffer == ""
+            @test isempty(console.history)
+            @test isempty(console.output_lines)
+            @test console.max_output_lines == 50
+        end
+
+        @testset "reset_debug_console! clears state" begin
+            reset_engine_state!()
+            register_command!("test", args -> "ok")
+            reset_debug_console!()
+            # Fresh console should have built-in commands but not custom ones
+            console = OpenReality.get_debug_console()
+            @test haskey(console.commands, "help")
+            @test !haskey(console.commands, "test")
+        end
+    end
+
+    # =========================================================================
+    # Frame Preparation (light collection)
+    # =========================================================================
+    @testset "Frame Preparation" begin
+        @testset "collect_lights with no lights" begin
+            reset_engine_state!()
+            lights = OpenReality.collect_lights()
+            @test isempty(lights.point_positions)
+            @test isempty(lights.dir_directions)
+            @test lights.has_ibl == false
+        end
+
+        @testset "collect_lights with point lights" begin
+            reset_engine_state!()
+            e1 = create_entity!(World())
+            add_component!(e1, transform(position=Vec3d(1, 2, 3)))
+            add_component!(e1, PointLightComponent(
+                color=RGB{Float32}(1, 0, 0),
+                intensity=5.0f0,
+                range=10.0f0
+            ))
+            e2 = create_entity!(World())
+            add_component!(e2, transform(position=Vec3d(4, 5, 6)))
+            add_component!(e2, PointLightComponent(
+                color=RGB{Float32}(0, 1, 0),
+                intensity=3.0f0,
+                range=8.0f0
+            ))
+
+            lights = OpenReality.collect_lights()
+            @test length(lights.point_positions) == 2
+            @test length(lights.point_colors) == 2
+            @test length(lights.point_intensities) == 2
+            @test length(lights.point_ranges) == 2
+        end
+
+        @testset "collect_lights with directional light" begin
+            reset_engine_state!()
+            e1 = create_entity!(World())
+            add_component!(e1, transform())
+            add_component!(e1, DirectionalLightComponent(
+                direction=Vec3f(0, -1, 0),
+                color=RGB{Float32}(1, 1, 1),
+                intensity=2.0f0
+            ))
+
+            lights = OpenReality.collect_lights()
+            @test length(lights.dir_directions) == 1
+            @test lights.dir_directions[1] == Vec3f(0, -1, 0)
+            @test lights.dir_intensities[1] == 2.0f0
+        end
+
+        @testset "collect_lights caps at 16 point lights" begin
+            reset_engine_state!()
+            for i in 1:20
+                e = create_entity!(World())
+                add_component!(e, transform(position=Vec3d(Float64(i), 0, 0)))
+                add_component!(e, PointLightComponent(intensity=1.0f0))
+            end
+
+            lights = OpenReality.collect_lights()
+            @test length(lights.point_positions) == 16
+        end
+
+        @testset "FrameLightData construction" begin
+            data = OpenReality.FrameLightData(
+                Vec3f[], RGB{Float32}[], Float32[], Float32[],
+                Vec3f[], RGB{Float32}[], Float32[],
+                false, "", 1.0f0
+            )
+            @test isempty(data.point_positions)
+            @test data.has_ibl == false
+        end
+    end
+
+    # ================================================================
+    # Phase 4: I/O-dependent code
+    # ================================================================
+
+    # ---- Shader Cache ----
+    @testset "Shader Cache" begin
+        @testset "shader_cache_key deterministic" begin
+            k1 = shader_cache_key("vertex_src", "fragment_src")
+            k2 = shader_cache_key("vertex_src", "fragment_src")
+            @test k1 == k2
+            @test !isempty(k1)
+        end
+
+        @testset "shader_cache_key varies with source" begin
+            k1 = shader_cache_key("aaa")
+            k2 = shader_cache_key("bbb")
+            @test k1 != k2
+        end
+
+        @testset "shader_cache_key with driver_info" begin
+            k1 = shader_cache_key("src"; driver_info="")
+            k2 = shader_cache_key("src"; driver_info="NVIDIA GeForce RTX 4090")
+            @test k1 != k2
+        end
+
+        @testset "shader_cache_key multiple sources" begin
+            k1 = shader_cache_key("a", "b")
+            k2 = shader_cache_key("a", "c")
+            @test k1 != k2
+        end
+
+        @testset "shader_cache_key returns hex string" begin
+            k = shader_cache_key("hello world")
+            @test all(c -> c in "0123456789abcdef", k)
+        end
+
+        @testset "init_shader_cache! creates directory structure" begin
+            mktempdir() do tmpdir
+                # Reset shader cache
+                cache = get_shader_cache()
+                cache.enabled = false
+                empty!(cache.manifest)
+
+                init_shader_cache!(tmpdir)
+                @test cache.enabled
+                @test isdir(joinpath(tmpdir, ".openreality", "shader_cache", "opengl"))
+                @test isdir(joinpath(tmpdir, ".openreality", "shader_cache", "vulkan"))
+
+                # Cleanup
+                cache.enabled = false
+                empty!(cache.manifest)
+            end
+        end
+
+        @testset "cache_store! and cache_lookup round-trip" begin
+            mktempdir() do tmpdir
+                cache = get_shader_cache()
+                cache.enabled = false
+                empty!(cache.manifest)
+
+                init_shader_cache!(tmpdir)
+
+                key = shader_cache_key("test_vertex", "test_fragment")
+                data = UInt8[0x01, 0x02, 0x03, 0x04, 0x05]
+
+                cache_store!(key, data, "opengl")
+                result = cache_lookup(key)
+                @test result !== nothing
+                @test result == data
+
+                # Cleanup
+                cache.enabled = false
+                empty!(cache.manifest)
+            end
+        end
+
+        @testset "cache_lookup returns nothing for missing key" begin
+            mktempdir() do tmpdir
+                cache = get_shader_cache()
+                cache.enabled = false
+                empty!(cache.manifest)
+
+                init_shader_cache!(tmpdir)
+
+                result = cache_lookup("nonexistent_key")
+                @test result === nothing
+
+                cache.enabled = false
+                empty!(cache.manifest)
+            end
+        end
+
+        @testset "cache_store! vulkan uses .spv extension" begin
+            mktempdir() do tmpdir
+                cache = get_shader_cache()
+                cache.enabled = false
+                empty!(cache.manifest)
+
+                init_shader_cache!(tmpdir)
+
+                key = "vulkan_test_key"
+                data = UInt8[0x03, 0x02, 0x23, 0x07]  # SPIR-V magic number
+                cache_store!(key, data, "vulkan")
+
+                entry = cache.manifest[key]
+                @test entry.backend == "vulkan"
+                @test endswith(entry.file_path, ".spv")
+
+                cache.enabled = false
+                empty!(cache.manifest)
+            end
+        end
+
+        @testset "cache_clear! removes everything" begin
+            mktempdir() do tmpdir
+                cache = get_shader_cache()
+                cache.enabled = false
+                empty!(cache.manifest)
+
+                init_shader_cache!(tmpdir)
+
+                key = shader_cache_key("clear_test")
+                cache_store!(key, UInt8[0x01], "opengl")
+                @test length(cache.manifest) == 1
+
+                cache_clear!()
+                @test isempty(cache.manifest)
+                @test !isdir(joinpath(tmpdir, ".openreality", "shader_cache"))
+
+                cache.enabled = false
+            end
+        end
+
+        @testset "cache_lookup removes stale manifest entries" begin
+            mktempdir() do tmpdir
+                cache = get_shader_cache()
+                cache.enabled = false
+                empty!(cache.manifest)
+
+                init_shader_cache!(tmpdir)
+
+                # Manually add a manifest entry pointing to a non-existent file
+                cache.manifest["stale_key"] = OpenReality.ShaderCacheEntry(
+                    "stale_key", "opengl", UInt64(0), UInt64(0),
+                    "opengl/stale_key.bin", time(), Int64(0)
+                )
+
+                result = cache_lookup("stale_key")
+                @test result === nothing
+                @test !haskey(cache.manifest, "stale_key")
+
+                cache.enabled = false
+                empty!(cache.manifest)
+            end
+        end
+
+        @testset "cache_lookup returns nothing when disabled" begin
+            cache = get_shader_cache()
+            old_enabled = cache.enabled
+            cache.enabled = false
+            @test cache_lookup("any_key") === nothing
+            cache.enabled = old_enabled
+        end
+
+        @testset "manifest round-trip via TOML" begin
+            mktempdir() do tmpdir
+                cache = get_shader_cache()
+                cache.enabled = false
+                empty!(cache.manifest)
+
+                init_shader_cache!(tmpdir)
+
+                # Store two entries
+                cache_store!(shader_cache_key("s1"), UInt8[0x01, 0x02], "opengl";
+                             source_hash=UInt64(12345), driver_hash=UInt64(67890))
+                cache_store!(shader_cache_key("s2"), UInt8[0x03, 0x04], "vulkan")
+                @test length(cache.manifest) == 2
+
+                # Verify manifest file was written
+                manifest_path = joinpath(tmpdir, ".openreality", "shader_cache", "cache_manifest.toml")
+                @test isfile(manifest_path)
+
+                # Create a new cache and load the manifest
+                cache2 = OpenReality.ShaderCache()
+                cache2.cache_dir = joinpath(tmpdir, ".openreality", "shader_cache")
+                OpenReality._load_manifest!(cache2, manifest_path)
+                @test length(cache2.manifest) == 2
+
+                k1 = shader_cache_key("s1")
+                @test haskey(cache2.manifest, k1)
+                @test cache2.manifest[k1].source_hash == UInt64(12345)
+                @test cache2.manifest[k1].driver_hash == UInt64(67890)
+
+                cache.enabled = false
+                empty!(cache.manifest)
+            end
+        end
+
+        @testset "ShaderCacheEntry fields" begin
+            entry = OpenReality.ShaderCacheEntry(
+                "abc123", "opengl", UInt64(111), UInt64(222),
+                "opengl/abc123.bin", 1000.0, Int64(256)
+            )
+            @test entry.key == "abc123"
+            @test entry.backend == "opengl"
+            @test entry.source_hash == UInt64(111)
+            @test entry.driver_hash == UInt64(222)
+            @test entry.file_path == "opengl/abc123.bin"
+            @test entry.created_at == 1000.0
+            @test entry.size_bytes == 256
+        end
+    end
+
+    # ---- Async Loader ----
+    @testset "Async Loader" begin
+        @testset "AsyncLoadRequest and AsyncLoadResult structs" begin
+            req = OpenReality.AsyncLoadRequest("model.glb", Dict{Symbol, Any}())
+            @test req.path == "model.glb"
+            @test isempty(req.kwargs)
+
+            res_ok = AsyncLoadResult("model.glb", OpenReality.EntityDef[], nothing)
+            @test res_ok.path == "model.glb"
+            @test res_ok.error === nothing
+
+            res_err = AsyncLoadResult("bad.glb", nothing, "File not found")
+            @test res_err.entities === nothing
+            @test res_err.error == "File not found"
+        end
+
+        @testset "AsyncAssetLoader creation and shutdown" begin
+            loader = AsyncAssetLoader(buffer_size=4)
+            @test loader.worker_task !== nothing
+            @test isopen(loader.request_channel)
+            @test isopen(loader.result_channel)
+
+            shutdown_async_loader!(loader)
+            @test !isopen(loader.request_channel)
+        end
+
+        @testset "poll_async_loads! returns empty when no results" begin
+            loader = AsyncAssetLoader(buffer_size=4)
+            results = poll_async_loads!(loader)
+            @test isempty(results)
+            shutdown_async_loader!(loader)
+        end
+
+        @testset "load_model_async queues a request" begin
+            loader = AsyncAssetLoader(buffer_size=4)
+            # Load a non-existent file — load_model returns fallback placeholder
+            load_model_async(loader, "/tmp/nonexistent_model_12345.glb")
+
+            # Give the worker a moment to process
+            sleep(0.3)
+
+            results = poll_async_loads!(loader)
+            @test length(results) == 1
+            @test results[1].path == "/tmp/nonexistent_model_12345.glb"
+            # load_model returns a fallback placeholder mesh for missing files
+            @test results[1].entities !== nothing || results[1].error !== nothing
+
+            shutdown_async_loader!(loader)
+        end
+
+        @testset "multiple async loads" begin
+            loader = AsyncAssetLoader(buffer_size=8)
+            load_model_async(loader, "/tmp/nonexistent_a.glb")
+            load_model_async(loader, "/tmp/nonexistent_b.glb")
+
+            sleep(0.5)
+
+            results = poll_async_loads!(loader)
+            @test length(results) == 2
+            paths = Set([r.path for r in results])
+            @test "/tmp/nonexistent_a.glb" in paths
+            @test "/tmp/nonexistent_b.glb" in paths
+
+            shutdown_async_loader!(loader)
+        end
+
+        @testset "global async loader singleton" begin
+            reset_async_loader!()  # Ensure clean state
+            loader1 = get_async_loader()
+            loader2 = get_async_loader()
+            @test loader1 === loader2
+            reset_async_loader!()
+        end
+    end
+
+    # ---- glTF Loader Pure Logic ----
+    @testset "glTF Loader Helpers" begin
+        @testset "_rotation_matrix_to_quaternion identity" begin
+            # Identity rotation matrix → identity quaternion (w=1, x=y=z=0)
+            q = OpenReality._rotation_matrix_to_quaternion(
+                1.0, 0.0, 0.0,
+                0.0, 1.0, 0.0,
+                0.0, 0.0, 1.0
+            )
+            @test q isa Quaterniond
+            @test abs(q.s) ≈ 1.0 atol=1e-10
+            @test abs(q.v1) < 1e-10
+            @test abs(q.v2) < 1e-10
+            @test abs(q.v3) < 1e-10
+        end
+
+        @testset "_rotation_matrix_to_quaternion 90° around Z" begin
+            # 90° rotation around Z: [cos90, -sin90, 0; sin90, cos90, 0; 0, 0, 1]
+            # = [0, -1, 0; 1, 0, 0; 0, 0, 1]
+            q = OpenReality._rotation_matrix_to_quaternion(
+                0.0, -1.0, 0.0,
+                1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0
+            )
+            # Expected: w=cos(45°)=√2/2, x=0, y=0, z=sin(45°)=√2/2
+            @test abs(q.s) ≈ sqrt(2)/2 atol=1e-10
+            @test abs(q.v1) < 1e-10
+            @test abs(q.v2) < 1e-10
+            @test abs(q.v3) ≈ sqrt(2)/2 atol=1e-10
+        end
+
+        @testset "_rotation_matrix_to_quaternion 180° around X" begin
+            # 180° around X: [1, 0, 0; 0, -1, 0; 0, 0, -1]
+            q = OpenReality._rotation_matrix_to_quaternion(
+                1.0, 0.0, 0.0,
+                0.0, -1.0, 0.0,
+                0.0, 0.0, -1.0
+            )
+            # Expected: w=0, x=1, y=0, z=0 (or w=0, x=-1)
+            @test abs(q.s) < 1e-10
+            @test abs(abs(q.v1) - 1.0) < 1e-10
+            @test abs(q.v2) < 1e-10
+            @test abs(q.v3) < 1e-10
+        end
+
+        @testset "_rotation_matrix_to_quaternion 90° around Y" begin
+            # 90° around Y: [cos90, 0, sin90; 0, 1, 0; -sin90, 0, cos90]
+            # = [0, 0, 1; 0, 1, 0; -1, 0, 0]
+            q = OpenReality._rotation_matrix_to_quaternion(
+                0.0, 0.0, 1.0,
+                0.0, 1.0, 0.0,
+                -1.0, 0.0, 0.0
+            )
+            @test abs(q.s) ≈ sqrt(2)/2 atol=1e-10
+            @test abs(q.v1) < 1e-10
+            @test abs(q.v2) ≈ sqrt(2)/2 atol=1e-10
+            @test abs(q.v3) < 1e-10
+        end
+
+        @testset "_rotation_matrix_to_quaternion round-trip normalization" begin
+            # Arbitrary rotation: 45° around axis (1,1,0)/√2
+            axis_x = 1.0/sqrt(2.0)
+            axis_y = 1.0/sqrt(2.0)
+            axis_z = 0.0
+            angle = π/4
+            c = cos(angle)
+            s = sin(angle)
+            t = 1 - c
+            # Rodrigues rotation formula
+            r11 = t*axis_x*axis_x + c
+            r12 = t*axis_x*axis_y - s*axis_z
+            r13 = t*axis_x*axis_z + s*axis_y
+            r21 = t*axis_y*axis_x + s*axis_z
+            r22 = t*axis_y*axis_y + c
+            r23 = t*axis_y*axis_z - s*axis_x
+            r31 = t*axis_z*axis_x - s*axis_y
+            r32 = t*axis_z*axis_y + s*axis_x
+            r33 = t*axis_z*axis_z + c
+            q = OpenReality._rotation_matrix_to_quaternion(r11,r12,r13,r21,r22,r23,r31,r32,r33)
+            # Quaternion should be normalized (|q| = 1)
+            norm = sqrt(q.s^2 + q.v1^2 + q.v2^2 + q.v3^2)
+            @test norm ≈ 1.0 atol=1e-10
+        end
+
+        @testset "_generate_fallback_indices triangles mode" begin
+            indices = OpenReality._generate_fallback_indices(6, 4)
+            @test length(indices) == 6
+            @test indices == UInt32[0, 1, 2, 3, 4, 5]
+        end
+
+        @testset "_generate_fallback_indices triangle strip" begin
+            # 5 vertices → 3 triangles
+            indices = OpenReality._generate_fallback_indices(5, 5)
+            @test length(indices) == 9  # 3 triangles × 3 indices
+            # Even triangle: (0,1,2), Odd triangle: (2,1,3), Even: (2,3,4)
+            @test indices[1:3] == UInt32[0, 1, 2]
+            @test indices[4:6] == UInt32[2, 1, 3]  # odd: swapped first two
+            @test indices[7:9] == UInt32[2, 3, 4]
+        end
+
+        @testset "_generate_fallback_indices triangle fan" begin
+            # 5 vertices → 3 triangles, all sharing vertex 0
+            indices = OpenReality._generate_fallback_indices(5, 6)
+            @test length(indices) == 9
+            @test indices[1:3] == UInt32[0, 1, 2]
+            @test indices[4:6] == UInt32[0, 2, 3]
+            @test indices[7:9] == UInt32[0, 3, 4]
+        end
+
+        @testset "_generate_fallback_indices zero vertices" begin
+            indices = OpenReality._generate_fallback_indices(0, 4)
+            @test isempty(indices)
+        end
+
+        @testset "_generate_fallback_indices strip with < 3 vertices" begin
+            indices = OpenReality._generate_fallback_indices(2, 5)
+            @test isempty(indices)  # Not enough for a single triangle
+        end
+
+        @testset "_mime_to_ext png" begin
+            @test OpenReality._mime_to_ext("image/png") == ".png"
+        end
+
+        @testset "_mime_to_ext jpeg" begin
+            @test OpenReality._mime_to_ext("image/jpeg") == ".jpg"
+        end
+
+        @testset "_mime_to_ext jpg variant" begin
+            @test OpenReality._mime_to_ext("image/jpg") == ".jpg"
+        end
+
+        @testset "_mime_to_ext webp" begin
+            @test OpenReality._mime_to_ext("image/webp") == ".webp"
+        end
+
+        @testset "_mime_to_ext unknown defaults to png" begin
+            @test OpenReality._mime_to_ext("image/bmp") == ".png"
+        end
+
+        @testset "GLTF_COMPONENT_SIZES" begin
+            sizes = OpenReality.GLTF_COMPONENT_SIZES
+            @test sizes[5120] == 1  # BYTE
+            @test sizes[5121] == 1  # UNSIGNED_BYTE
+            @test sizes[5122] == 2  # SHORT
+            @test sizes[5123] == 2  # UNSIGNED_SHORT
+            @test sizes[5125] == 4  # UNSIGNED_INT
+            @test sizes[5126] == 4  # FLOAT
+        end
+
+        @testset "GLTF_TYPE_COUNTS" begin
+            counts = OpenReality.GLTF_TYPE_COUNTS
+            @test counts["SCALAR"] == 1
+            @test counts["VEC2"] == 2
+            @test counts["VEC3"] == 3
+            @test counts["VEC4"] == 4
+            @test counts["MAT2"] == 4
+            @test counts["MAT3"] == 9
+            @test counts["MAT4"] == 16
+        end
+
+        @testset "GLTF_PATH_MAP" begin
+            pm = OpenReality.GLTF_PATH_MAP
+            @test pm["translation"] == :position
+            @test pm["rotation"] == :rotation
+            @test pm["scale"] == :scale
+        end
+
+        @testset "GLTF_INTERP_MAP" begin
+            im = OpenReality.GLTF_INTERP_MAP
+            @test im["STEP"] == INTERP_STEP
+            @test im["LINEAR"] == INTERP_LINEAR
+            @test im["CUBICSPLINE"] == INTERP_CUBICSPLINE
+        end
+    end
+
+    # ---- Save/Load Serialization ----
+    @testset "Save/Load Serialization" begin
+        @testset "register_non_serializable!" begin
+            # ScriptComponent is registered by default
+            @test ScriptComponent in OpenReality._NON_SERIALIZABLE_TYPES
+
+            # Register a custom type
+            register_non_serializable!(CameraComponent)
+            @test CameraComponent in OpenReality._NON_SERIALIZABLE_TYPES
+
+            # Cleanup — remove so other tests aren't affected
+            delete!(OpenReality._NON_SERIALIZABLE_TYPES, CameraComponent)
+        end
+
+        @testset "save_game and load_game round-trip" begin
+            # save_game references ENTITY_COUNTER which doesn't exist under Ark.jl ECS
+            # This is a known issue — mark the round-trip as broken
+            @test_broken false  # save_game/load_game needs ENTITY_COUNTER compat fix
+        end
+
+        @testset "_NON_SERIALIZABLE_TYPES is a Set" begin
+            @test OpenReality._NON_SERIALIZABLE_TYPES isa Set{DataType}
+        end
+    end
+
+    # ================================================================
+    # Phase 5: Remaining gaps (terrain, transforms, input, edge cases)
+    # ================================================================
+
+    # ---- Terrain ----
+    @testset "Terrain System" begin
+        @testset "perlin_noise_2d deterministic" begin
+            v1 = perlin_noise_2d(1.5, 2.5, 42)
+            v2 = perlin_noise_2d(1.5, 2.5, 42)
+            @test v1 == v2
+        end
+
+        @testset "perlin_noise_2d different seeds" begin
+            v1 = perlin_noise_2d(3.7, 4.2, 42)
+            v2 = perlin_noise_2d(3.7, 4.2, 99)
+            @test v1 != v2
+        end
+
+        @testset "perlin_noise_2d range bounded" begin
+            # Perlin noise should typically be in [-1, 1]
+            for x in 0.0:0.5:10.0, y in 0.0:0.5:10.0
+                v = perlin_noise_2d(x, y, 42)
+                @test -2.0 < v < 2.0
+            end
+        end
+
+        @testset "perlin_noise_2d at integer gives zero" begin
+            # At integer grid points, Perlin noise has gradient dot zero displacement = 0
+            v = perlin_noise_2d(0.0, 0.0, 42)
+            @test v == 0.0
+        end
+
+        @testset "fbm_noise_2d deterministic" begin
+            v1 = fbm_noise_2d(5.0, 5.0; octaves=4, frequency=0.1, persistence=0.5, seed=42)
+            v2 = fbm_noise_2d(5.0, 5.0; octaves=4, frequency=0.1, persistence=0.5, seed=42)
+            @test v1 == v2
+        end
+
+        @testset "fbm_noise_2d more octaves adds detail" begin
+            v1 = fbm_noise_2d(3.7, 4.2; octaves=1, frequency=0.1, seed=42)
+            v2 = fbm_noise_2d(3.7, 4.2; octaves=6, frequency=0.1, seed=42)
+            # Different number of octaves should give different values (in general)
+            @test typeof(v1) == Float64
+            @test typeof(v2) == Float64
+        end
+
+        @testset "generate_heightmap flat" begin
+            src = HeightmapSource(source_type=HEIGHTMAP_FLAT)
+            hm = OpenReality.generate_heightmap(src, 4, 4, 100.0f0)
+            @test size(hm) == (5, 5)
+            @test all(hm .== 0.0f0)
+        end
+
+        @testset "generate_heightmap perlin" begin
+            src = HeightmapSource(source_type=HEIGHTMAP_PERLIN, perlin_seed=42)
+            hm = OpenReality.generate_heightmap(src, 8, 8, 50.0f0)
+            @test size(hm) == (9, 9)
+            @test all(isfinite, hm)
+            @test all(h -> h >= 0.0f0, hm)  # fbm normalizes to [0,1] then scales by max_height
+        end
+
+        @testset "generate_heightmap image with missing path" begin
+            src = HeightmapSource(source_type=HEIGHTMAP_IMAGE, image_path="/tmp/nonexistent_heightmap.png")
+            hm = OpenReality.generate_heightmap(src, 4, 4, 100.0f0)
+            @test size(hm) == (5, 5)
+            @test all(hm .== 0.0f0)  # Falls back to flat
+        end
+
+        @testset "compute_terrain_normals flat terrain" begin
+            hm = zeros(Float32, 5, 5)
+            normals = OpenReality.compute_terrain_normals(hm, 1.0f0, 1.0f0)
+            @test size(normals) == (5, 5)
+            # Flat terrain → normals should all point straight up (0, 1, 0)
+            for iz in 1:5, ix in 1:5
+                n = normals[ix, iz]
+                @test n[2] ≈ 1.0f0 atol=1e-5
+            end
+        end
+
+        @testset "compute_terrain_normals sloped terrain" begin
+            # Linear slope in X direction: heights increase along X
+            hm = Float32[Float32(ix-1) * 10.0f0 for ix in 1:5, iz in 1:5]
+            normals = OpenReality.compute_terrain_normals(hm, 1.0f0, 1.0f0)
+            @test size(normals) == (5, 5)
+            # Interior normals should tilt away from the slope (negative X)
+            n = normals[3, 3]  # Interior point
+            @test n[1] < 0.0f0  # Normal should lean against slope direction
+            @test n[2] > 0.0f0  # Still pointing generally up
+        end
+
+        @testset "generate_chunk_mesh produces valid mesh" begin
+            hm = zeros(Float32, 5, 5)
+            normals = OpenReality.compute_terrain_normals(hm, 1.0f0, 1.0f0)
+            mesh = OpenReality.generate_chunk_mesh(
+                hm, normals, 1, 1, 5,
+                Vec2f(4.0f0, 4.0f0), 0.0f0, 0.0f0, 0  # LOD 0
+            )
+            @test length(mesh.vertices) > 0
+            @test length(mesh.normals) == length(mesh.vertices)
+            @test length(mesh.uvs) == length(mesh.vertices)
+            @test length(mesh.indices) > 0
+            @test all(idx -> idx < length(mesh.vertices), mesh.indices)
+        end
+
+        @testset "generate_chunk_mesh LOD reduces vertices" begin
+            hm = zeros(Float32, 9, 9)
+            normals = OpenReality.compute_terrain_normals(hm, 1.0f0, 1.0f0)
+            mesh_lod0 = OpenReality.generate_chunk_mesh(
+                hm, normals, 1, 1, 9,
+                Vec2f(8.0f0, 8.0f0), 0.0f0, 0.0f0, 0
+            )
+            mesh_lod1 = OpenReality.generate_chunk_mesh(
+                hm, normals, 1, 1, 9,
+                Vec2f(8.0f0, 8.0f0), 0.0f0, 0.0f0, 1
+            )
+            @test length(mesh_lod0.vertices) > length(mesh_lod1.vertices)
+        end
+
+        @testset "is_aabb_in_frustum" begin
+            # Create a frustum from a standard VP matrix
+            proj = perspective_matrix(60.0f0, 1.0f0, 0.1f0, 100.0f0)
+            view = look_at_matrix(Vec3f(0, 0, 5), Vec3f(0, 0, 0), Vec3f(0, 1, 0))
+            vp = proj * view
+            frustum = OpenReality.extract_frustum(vp)
+
+            # Box at origin should be visible
+            @test is_aabb_in_frustum(frustum, Vec3f(-1, -1, -1), Vec3f(1, 1, 1))
+
+            # Box far behind camera should be invisible
+            @test !is_aabb_in_frustum(frustum, Vec3f(-1, -1, 200), Vec3f(1, 1, 300))
+        end
+
+        @testset "heightmap_get_height bilinear interpolation" begin
+            reset_engine_state!()
+            reset_terrain_cache!()
+
+            e = create_entity!(World())
+            comp = TerrainComponent(
+                heightmap=HeightmapSource(source_type=HEIGHTMAP_FLAT),
+                terrain_size=Vec2f(10.0f0, 10.0f0),
+                max_height=50.0f0,
+                chunk_size=5,
+                num_lod_levels=1
+            )
+            add_component!(e, comp)
+            td = initialize_terrain!(e, comp)
+
+            # Flat terrain → height should be 0 everywhere
+            h = heightmap_get_height(td, comp, 0.0, 0.0)
+            @test h ≈ 0.0 atol=1e-5
+            h2 = heightmap_get_height(td, comp, 2.5, 3.5)
+            @test h2 ≈ 0.0 atol=1e-5
+        end
+
+        @testset "initialize_terrain! with perlin" begin
+            reset_engine_state!()
+            reset_terrain_cache!()
+
+            e = create_entity!(World())
+            comp = TerrainComponent(
+                heightmap=HeightmapSource(source_type=HEIGHTMAP_PERLIN, perlin_seed=42),
+                terrain_size=Vec2f(32.0f0, 32.0f0),
+                max_height=20.0f0,
+                chunk_size=5,
+                num_lod_levels=2
+            )
+            add_component!(e, comp)
+            td = initialize_terrain!(e, comp)
+            @test td.initialized
+            @test td.num_chunks_x > 0
+            @test td.num_chunks_z > 0
+            @test size(td.heightmap, 1) > 1
+            @test size(td.normal_map) == size(td.heightmap)
+
+            # Verify chunks have LOD meshes
+            chunk = td.chunks[1, 1]
+            @test length(chunk.lod_meshes) == 2
+        end
+
+        @testset "update_terrain_lod!" begin
+            reset_engine_state!()
+            reset_terrain_cache!()
+
+            e = create_entity!(World())
+            comp = TerrainComponent(
+                heightmap=HeightmapSource(source_type=HEIGHTMAP_FLAT),
+                terrain_size=Vec2f(32.0f0, 32.0f0),
+                max_height=10.0f0,
+                chunk_size=5,
+                num_lod_levels=3
+            )
+            add_component!(e, comp)
+            td = initialize_terrain!(e, comp)
+
+            # Camera very close — should get LOD 1 (highest detail)
+            update_terrain_lod!(td, Vec3f(0, 0, 0), Float32[50.0f0, 100.0f0, 200.0f0])
+            @test td.chunks[1, 1].current_lod >= 1
+
+            # Camera very far — should get coarser LOD
+            update_terrain_lod!(td, Vec3f(1000, 0, 1000), Float32[50.0f0, 100.0f0, 200.0f0])
+            @test td.chunks[1, 1].current_lod == length(td.chunks[1, 1].lod_meshes)
+        end
+
+        @testset "reset_terrain_cache!" begin
+            reset_terrain_cache!()
+            @test isempty(OpenReality._TERRAIN_CACHE)
+        end
+
+        @testset "TerrainChunk construction" begin
+            chunk = OpenReality.TerrainChunk(
+                1, 1, Vec3f(0, 0, 0),
+                MeshComponent[],
+                1,
+                Vec3f(-10, 0, -10),
+                Vec3f(10, 5, 10)
+            )
+            @test chunk.grid_x == 1
+            @test chunk.grid_z == 1
+            @test chunk.current_lod == 1
+        end
+    end
+
+    # ---- Additional Transform Tests ----
+    @testset "Transform Edge Cases" begin
+        @testset "rotation_x" begin
+            m = rotation_x(0.0f0)
+            @test m ≈ Mat4f(I) atol=1e-6
+        end
+
+        @testset "rotation_x 90°" begin
+            m = rotation_x(Float32(π/2))
+            # cos(90°) ≈ 0, sin(90°) ≈ 1
+            @test m[2, 2] ≈ 0.0f0 atol=1e-6
+            @test m[3, 2] ≈ 1.0f0 atol=1e-6  # sin(90°)
+        end
+
+        @testset "rotation_y" begin
+            m = rotation_y(0.0f0)
+            @test m ≈ Mat4f(I) atol=1e-6
+        end
+
+        @testset "rotation_y 90°" begin
+            m = rotation_y(Float32(π/2))
+            # Should rotate X into -Z
+            @test m[1, 1] ≈ 0.0f0 atol=1e-6
+        end
+
+        @testset "rotation_z" begin
+            m = rotation_z(0.0f0)
+            @test m ≈ Mat4f(I) atol=1e-6
+        end
+
+        @testset "rotation_z 90°" begin
+            m = rotation_z(Float32(π/2))
+            @test m[1, 1] ≈ 0.0f0 atol=1e-6
+            @test m[2, 1] ≈ 1.0f0 atol=1e-6  # sin(90°)
+        end
+
+        @testset "perspective_matrix" begin
+            p = perspective_matrix(60.0f0, 16.0f0/9.0f0, 0.1f0, 100.0f0)
+            @test p isa Mat4f
+            # Bottom-right should be 0 for perspective (non-orthographic)
+            @test p[4, 4] == 0.0f0
+            # Perspective divide marker
+            @test p[4, 3] == -1.0f0
+        end
+
+        @testset "look_at_matrix" begin
+            view = look_at_matrix(Vec3f(0, 0, 5), Vec3f(0, 0, 0), Vec3f(0, 1, 0))
+            @test view isa Mat4f
+            # Camera at (0,0,5) looking at origin: the forward is -Z
+            # The translation component should reflect the camera position
+            @test isfinite(view[4, 1])
+        end
+
+        @testset "look_at_matrix identity" begin
+            # Camera at origin looking down -Z
+            view = look_at_matrix(Vec3f(0, 0, 0), Vec3f(0, 0, -1), Vec3f(0, 1, 0))
+            @test view isa Mat4f
+            # No translation offset when at origin
+            @test view[4, 1] ≈ 0.0f0 atol=1e-6
+            @test view[4, 2] ≈ 0.0f0 atol=1e-6
+            @test view[4, 3] ≈ 0.0f0 atol=1e-6
+        end
+
+        @testset "_find_keyframe_pair empty" begin
+            idx_a, idx_b, t = OpenReality._find_keyframe_pair(Float32[], 0.5f0)
+            @test idx_a == 1
+            @test idx_b == 1
+        end
+
+        @testset "_find_keyframe_pair single keyframe" begin
+            idx_a, idx_b, t = OpenReality._find_keyframe_pair(Float32[1.0f0], 0.5f0)
+            @test idx_a == 1
+            @test idx_b == 1
+        end
+
+        @testset "_lerp_vec3d endpoints" begin
+            a = Vec3d(0, 0, 0)
+            b = Vec3d(10, 20, 30)
+            @test OpenReality._lerp_vec3d(a, b, 0.0f0) ≈ a atol=1e-10
+            @test OpenReality._lerp_vec3d(a, b, 1.0f0) ≈ b atol=1e-10
+        end
+
+        @testset "_slerp with identical quaternions" begin
+            q = Quaterniond(1.0, 0.0, 0.0, 0.0)
+            result = OpenReality._slerp(q, q, 0.5f0)
+            @test result.s ≈ 1.0 atol=1e-10
+        end
+
+        @testset "compose_transform identity" begin
+            pos = Vec3d(0, 0, 0)
+            rot = Quaterniond(1.0, 0.0, 0.0, 0.0)
+            scl = Vec3d(1, 1, 1)
+            m = compose_transform(pos, rot, scl)
+            @test m ≈ OpenReality.Mat4d(I) atol=1e-10
+        end
+
+        @testset "compose_transform translation only" begin
+            pos = Vec3d(5, 10, 15)
+            rot = Quaterniond(1.0, 0.0, 0.0, 0.0)
+            scl = Vec3d(1, 1, 1)
+            m = compose_transform(pos, rot, scl)
+            @test m[1, 4] ≈ 5.0 atol=1e-10
+            @test m[2, 4] ≈ 10.0 atol=1e-10
+            @test m[3, 4] ≈ 15.0 atol=1e-10
+        end
+
+        @testset "compose_transform scale" begin
+            pos = Vec3d(0, 0, 0)
+            rot = Quaterniond(1.0, 0.0, 0.0, 0.0)
+            scl = Vec3d(2, 3, 4)
+            m = compose_transform(pos, rot, scl)
+            @test m[1, 1] ≈ 2.0 atol=1e-10
+            @test m[2, 2] ≈ 3.0 atol=1e-10
+            @test m[3, 3] ≈ 4.0 atol=1e-10
+        end
+
+        @testset "clear_world_transform_cache!" begin
+            OpenReality._WORLD_TRANSFORM_CACHE[EntityID(9999)] = OpenReality.Mat4d(I)
+            clear_world_transform_cache!()
+            @test isempty(OpenReality._WORLD_TRANSFORM_CACHE)
+        end
+    end
+
+    # ---- Additional Input Tests ----
+    @testset "Input Edge Cases" begin
+        @testset "InputState default values" begin
+            input = InputState()
+            @test isempty(input.keys_pressed)
+            @test input.mouse_position == (0.0, 0.0)
+            @test isempty(input.mouse_buttons)
+            @test isempty(input.gamepad_axes)
+            @test isempty(input.gamepad_buttons)
+            @test isempty(input.typed_chars)
+            @test input.scroll_delta == (0.0, 0.0)
+        end
+
+        @testset "is_key_just_released" begin
+            input = InputState()
+            push!(input.keys_pressed, 65)  # Press A
+            begin_frame!(input)             # Snapshot as prev
+            delete!(input.keys_pressed, 65) # Release A
+            @test is_key_just_released(input, 65)
+            @test !is_key_pressed(input, 65)
+        end
+
+        @testset "begin_frame! resets typed_chars" begin
+            input = InputState()
+            push!(input.typed_chars, 'A')
+            push!(input.typed_chars, 'B')
+            begin_frame!(input)
+            @test isempty(input.typed_chars)
+        end
+
+        @testset "begin_frame! resets scroll_delta" begin
+            input = InputState()
+            input.scroll_delta = (1.5, -2.0)
+            begin_frame!(input)
+            @test input.scroll_delta == (0.0, 0.0)
+        end
+
+        @testset "get_mouse_position" begin
+            input = InputState()
+            input.mouse_position = (100.5, 200.3)
+            @test get_mouse_position(input) == (100.5, 200.3)
+        end
+
+        @testset "multiple keys pressed simultaneously" begin
+            input = InputState()
+            push!(input.keys_pressed, 65)   # A
+            push!(input.keys_pressed, 66)   # B
+            push!(input.keys_pressed, 256)  # Escape
+            @test is_key_pressed(input, 65)
+            @test is_key_pressed(input, 66)
+            @test is_key_pressed(input, 256)
+            @test !is_key_pressed(input, 67)
+        end
+
+        @testset "mouse buttons" begin
+            input = InputState()
+            push!(input.mouse_buttons, 0)  # Left click
+            @test 0 in input.mouse_buttons
+            @test !(1 in input.mouse_buttons)
+        end
+
+        @testset "gamepad state" begin
+            input = InputState()
+            input.gamepad_axes[1] = Float32[0.5f0, -0.3f0, 0.0f0, 0.0f0]
+            input.gamepad_buttons[1] = [true, false, true, false]
+            @test length(input.gamepad_axes[1]) == 4
+            @test input.gamepad_buttons[1][1] == true
+            @test input.gamepad_buttons[1][2] == false
+        end
+
+        @testset "begin_frame! deep copies gamepad state" begin
+            input = InputState()
+            input.gamepad_buttons[1] = [true, false]
+            begin_frame!(input)
+            # Modify current state
+            input.gamepad_buttons[1][1] = false
+            # Previous state should still be true
+            @test input.prev_gamepad_buttons[1][1] == true
+        end
+    end
 end

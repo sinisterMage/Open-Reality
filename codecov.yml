@@ -1,0 +1,19 @@
+coverage:
+  status:
+    project:
+      default:
+        target: 80%
+    patch:
+      default:
+        target: 70%
+
+ignore:
+  - "src/backend/opengl/**"
+  - "src/backend/opengl.jl"
+  - "src/backend/vulkan/**"
+  - "src/backend/vulkan.jl"
+  - "src/backend/metal/**"
+  - "src/backend/metal.jl"
+  - "src/backend/webgpu/**"
+  - "src/backend/webgpu.jl"
+  - "src/audio/openal_backend.jl"
