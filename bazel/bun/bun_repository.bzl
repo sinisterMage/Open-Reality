@@ -73,10 +73,22 @@ def _bun_download_impl(repository_ctx):
         sha256 = platform_info["sha256"],
     )
 
-    # Move binary from extracted subdirectory to repo root
-    # (don't rely on stripPrefix which can silently fail)
+    # Find the bun binary regardless of archive internal structure
+    result = repository_ctx.execute(["find", ".", "-name", "bun", "-type", "f"])
+    if result.return_code != 0 or not result.stdout.strip():
+        # Debug: show what was actually extracted
+        ls_result = repository_ctx.execute(["find", ".", "-maxdepth", "3"])
+        fail("Could not find bun binary after extracting {}. Contents:\n{}".format(
+            url,
+            ls_result.stdout,
+        ))
+
+    bun_path = result.stdout.strip().split("\n")[0]
+    if bun_path != "./bun":
+        repository_ctx.execute(["mv", bun_path, "bun"])
+
+    # Clean up extracted subdirectories
     subdir = platform_info["strip_prefix"]
-    repository_ctx.execute(["mv", subdir + "/bun", "bun"])
     repository_ctx.execute(["rm", "-rf", subdir])
     repository_ctx.execute(["chmod", "+x", "bun"])
 
