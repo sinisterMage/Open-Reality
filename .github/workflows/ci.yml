@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-linux:
+    name: Tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb \
+            libegl1-mesa-dev \
+            libgl1-mesa-dev \
+            libgles2-mesa-dev \
+            libglfw3-dev \
+            libopenal-dev \
+            libvulkan-dev \
+            mesa-vulkan-drivers \
+            libfreetype6-dev
+
+      - name: Mount Bazel cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: bazel-linux-${{ hashFiles('MODULE.bazel', 'Cargo.lock', 'Manifest.toml') }}
+          restore-keys: |
+            bazel-linux-
+
+      - name: Run all tests
+        run: |
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" \
+            bazel test //... \
+              --test_tag_filters=-visual \
+              --build_tag_filters=-manual \
+              --test_env=DISPLAY \
+              --test_env=OPENREALITY_NO_SHADER_CACHE=1 \
+              --local_test_jobs=1
+
+  test-macos:
+    name: Tests (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mount Bazel cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: bazel-macos-${{ hashFiles('MODULE.bazel', 'Cargo.lock', 'Manifest.toml') }}
+          restore-keys: |
+            bazel-macos-
+
+      - name: Run all tests
+        run: |
+          bazel test //... \
+            --test_tag_filters=-visual \
+            --build_tag_filters=-manual \
+            --test_env=OPENREALITY_NO_SHADER_CACHE=1 \
+            --local_test_jobs=1
