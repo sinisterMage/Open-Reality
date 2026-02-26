@@ -1,0 +1,13 @@
+[package]
+name = "openreality-render"
+version = "0.1.0"
+edition = "2021"
+description = "Platform-independent deferred PBR renderer for OpenReality (shared by native and WASM)"
+
+[dependencies]
+openreality-gpu-shared = { path = "../openreality-gpu-shared" }
+wgpu = "23"
+bytemuck = { version = "1", features = ["derive"] }
+glam = "0.29"
+log = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }

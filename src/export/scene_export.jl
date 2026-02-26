@@ -19,6 +19,8 @@ const SECTION_ANIMATIONS   = UInt32(10)
 const SECTION_SKELETONS    = UInt32(11)
 const SECTION_PARTICLES    = UInt32(12)
 const SECTION_PHYSICS_CFG  = UInt32(13)
+const SECTION_SCRIPTS      = UInt32(14)
+const SECTION_GAME_STATE   = UInt32(15)
 
 # Component mask bit flags
 const CMASK_TRANSFORM    = UInt64(1) << 0
@@ -158,6 +160,12 @@ function export_scene(scene::Scene, path::String;
 
         # ---- Physics Config Section ----
         _write_physics_config(io, physics_config)
+
+        # ---- Scripts Section (from @webscript registry) ----
+        _write_scripts(io, entities, entity_index)
+
+        # ---- Game State Section (from @webref registry) ----
+        _write_game_state(io)
     end
 
     @info "Exported scene to $path ($(num_entities) entities, $(length(unique_meshes)) meshes, $(length(unique_textures)) textures)"
@@ -578,4 +586,74 @@ function _write_physics_config(io, config)
     write(io, UInt32(config.solver_iterations))
     write(io, Float32(config.position_correction))
     write(io, Float32(config.slop))
+end
+
+function _write_scripts(io, entities, entity_index)
+    # Collect scripts from entities with ScriptComponent whose callbacks are registered
+    scripts = Tuple{UInt32, UInt8, Vector{UInt8}}[]  # (entity_index, callback_type, rhai_bytes)
+
+    for eid in entities
+        has_component(eid, ScriptComponent) || continue
+        sc = get_component(eid, ScriptComponent)
+        eidx = entity_index[eid]
+
+        for (callback_type, fn_val) in [(UInt8(0), sc.on_start),
+                                         (UInt8(1), sc.on_update),
+                                         (UInt8(2), sc.on_destroy)]
+            fn_val === nothing && continue
+            fn_id = objectid(fn_val)
+            if haskey(_WEBSCRIPT_REGISTRY, fn_id)
+                expr = _WEBSCRIPT_REGISTRY[fn_id]
+                # Validate
+                issues = validate_webscript(expr)
+                if !isempty(issues)
+                    @warn "Transpilation issues for entity $eidx callback $callback_type" issues
+                end
+                # Transpile to Rhai
+                rhai_src = transpile_to_rhai(expr)
+                push!(scripts, (eidx, callback_type, Vector{UInt8}(rhai_src)))
+            end
+        end
+    end
+
+    # Write count + scripts
+    write(io, UInt32(length(scripts)))
+    for (eidx, cb_type, rhai_bytes) in scripts
+        write(io, eidx)
+        write(io, cb_type)
+        write(io, UInt32(length(rhai_bytes)))
+        write(io, rhai_bytes...)
+    end
+end
+
+function _write_game_state(io)
+    # Write all @webref registered shared state
+    refs = collect(_WEBREF_REGISTRY)
+    write(io, UInt32(length(refs)))
+
+    for (name, (ref_id, type_hint)) in refs
+        name_bytes = Vector{UInt8}(string(name))
+        write(io, UInt16(length(name_bytes)))
+        write(io, name_bytes...)
+
+        # value_type: 0=f64, 1=bool, 2=i64, 3=string
+        if type_hint == :Float64
+            write(io, UInt8(0))
+            # Find the actual Ref by name in the module scope — we store type hint only
+            # The runtime will use default values from the Rhai scripts
+            write(io, Float64(0.0))
+        elseif type_hint == :Bool
+            write(io, UInt8(1))
+            write(io, UInt8(0))
+        elseif type_hint == :Int64
+            write(io, UInt8(2))
+            write(io, Int64(0))
+        elseif type_hint == :String
+            write(io, UInt8(3))
+            write(io, UInt32(0))  # empty string
+        else
+            write(io, UInt8(0))
+            write(io, Float64(0.0))
+        end
+    end
 end

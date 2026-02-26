@@ -1,6 +1,6 @@
 //! Forward PBR pass — render transparent objects with blending.
 
-use crate::backend::RenderTarget;
+use crate::types::RenderTarget;
 use crate::passes::gbuffer::GBufferEntity;
 use openreality_gpu_shared::uniforms::MaterialUniforms;
 

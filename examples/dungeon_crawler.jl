@@ -64,18 +64,18 @@ end
 # Shared Mutable State (Refs for cross-closure access)
 # =============================================================================
 
-const player_hp           = Ref(PLAYER_MAX_HP)
-const player_keys         = Ref(0)
-const player_alive        = Ref(true)
-const attack_cd_timer     = Ref(0.0)
-const damage_cd_timer     = Ref(0.0)
-const player_attacking    = Ref(false)
-const boss_defeated       = Ref(false)
-const boss_door_open      = Ref(false)
-const start_requested     = Ref(false)
-const restart_requested   = Ref(false)
+@webref player_hp           = Ref(PLAYER_MAX_HP)
+@webref player_keys         = Ref(0)
+@webref player_alive        = Ref(true)
+@webref attack_cd_timer     = Ref(0.0)
+@webref damage_cd_timer     = Ref(0.0)
+@webref player_attacking    = Ref(false)
+@webref boss_defeated       = Ref(false)
+@webref boss_door_open      = Ref(false)
+@webref start_requested     = Ref(false)
+@webref restart_requested   = Ref(false)
 
-const prev_mouse_down     = Ref(false)   # manual tracking (input.prev_mouse_buttons is unreliable)
+@webref prev_mouse_down     = Ref(false)   # manual tracking (input.prev_mouse_buttons is unreliable)
 
 const enemy_entities      = Ref(Dict{EntityID, EnemyData}())
 const entities_to_despawn = Ref(EntityID[])
@@ -284,7 +284,7 @@ end
 const ENEMY_ATTACK_RANGE = 1.5  # XZ distance at which enemies deal damage
 
 function make_enemy_ai(data::EnemyData)
-    function(eid, dt, ctx)
+    @webscript function(eid, dt, ctx)
         player_alive[] || return
         tc = get_component(eid, TransformComponent)
         tc === nothing && return
@@ -352,10 +352,10 @@ function build_enemy(pos::Vec3d, data::EnemyData)
     emissive = data.is_boss ? Vec3f(0.5f0, 0.0f0, 0.0f0) : Vec3f(0.2f0, 0.0f0, 0.0f0)
 
     ai_fn = make_enemy_ai(data)
-    start_fn = function(eid, ctx)
+    start_fn = @webscript function(eid, ctx)
         enemy_entities[][eid] = data
     end
-    destroy_fn = function(eid, ctx)
+    destroy_fn = @webscript function(eid, ctx)
         delete!(enemy_entities[], eid)
     end
 
@@ -376,7 +376,7 @@ end
 function build_health_potion(pos::Vec3d)
     bob_time = Ref(0.0)
     base_y = pos[2]
-    bob_fn = function(eid, dt, ctx)
+    bob_fn = @webscript function(eid, dt, ctx)
         bob_time[] += dt
         tc = get_component(eid, TransformComponent)
         tc === nothing && return
@@ -420,7 +420,7 @@ end
 function build_key(pos::Vec3d)
     bob_time = Ref(0.0)
     base_y = pos[2]
-    bob_spin_fn = function(eid, dt, ctx)
+    bob_spin_fn = @webscript function(eid, dt, ctx)
         bob_time[] += dt
         tc = get_component(eid, TransformComponent)
         tc === nothing && return
@@ -453,7 +453,7 @@ end
 # --- Boss Door ---
 
 function build_boss_door(pos::Vec3d)
-    door_fn = function(eid, dt, ctx)
+    door_fn = @webscript function(eid, dt, ctx)
         if player_keys[] >= KEYS_REQUIRED && !boss_door_open[]
             boss_door_open[] = true
             push!(entities_to_despawn[], eid)
@@ -481,7 +481,7 @@ end
 # =============================================================================
 
 function make_player_script()
-    function(eid, dt, ctx)
+    @webscript function(eid, dt, ctx)
         player_alive[] || return
         tc = get_component(eid, TransformComponent)
         tc === nothing && return

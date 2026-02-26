@@ -1,6 +1,6 @@
 //! G-Buffer geometry pass — render all opaque entities to the G-Buffer MRTs.
 
-use crate::backend::{GBuffer, GPUMesh};
+use crate::types::{GBuffer, GPUMesh};
 use openreality_gpu_shared::uniforms::{MaterialUniforms, PerObjectUniforms};
 
 /// Render all opaque entities into the G-Buffer.

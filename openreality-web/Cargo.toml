@@ -9,9 +9,13 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 openreality-gpu-shared = { path = "../openreality-gpu-shared" }
+openreality-render = { path = "../openreality-render" }
+wgpu = { version = "23", features = ["webgpu"] }
 glam = "0.29"
 bytemuck = { version = "1", features = ["derive"] }
 log = "0.4"
+rhai = { version = "1", features = ["sync", "f32_float"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
@@ -19,6 +23,7 @@ wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 console_log = "1"
 console_error_panic_hook = "0.1"
+getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
 version = "0.3"
@@ -33,6 +38,11 @@ features = [
     "EventTarget",
     "Performance",
     "Navigator",
+    "Gpu",
+    "GpuAdapter",
+    "GpuDevice",
+    "GpuQueue",
+    "GpuCanvasContext",
 ]
 
 [profile.release]

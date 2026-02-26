@@ -1,6 +1,6 @@
 //! SSR pass — screen-space reflections via ray marching.
 
-use crate::backend::RenderTarget;
+use crate::types::RenderTarget;
 
 /// Render SSR from G-Buffer depth + normals + lit scene.
 pub fn render_ssr_pass(

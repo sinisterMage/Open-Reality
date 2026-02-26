@@ -165,8 +165,18 @@ async fn build_web(
         PathBuf::from(&scene)
     };
 
+    // The Julia code detects whether the game defines a `scene` variable (simple Scene)
+    // or a `GameStateMachine` named `fsm` (FSM-based), and exports accordingly.
     let julia_code = format!(
-        r#"using OpenReality; include("{scene}"); export_scene(scene, "{orsb}")"#,
+        r#"using OpenReality; include("{scene}");
+if @isdefined(fsm) && fsm isa GameStateMachine
+    _sc = scene(fsm.initial_scene_defs)
+    export_scene(_sc, "{orsb}")
+elseif @isdefined(scene) && scene isa Scene
+    export_scene(scene, "{orsb}")
+else
+    error("No `scene::Scene` or `fsm::GameStateMachine` variable found after including the script.")
+end"#,
         scene = scene_abs.display(),
         orsb = orsb_path.display(),
     );
@@ -334,22 +344,92 @@ fn generate_web_index_html() -> String {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OpenReality</title>
     <style>
-        * { margin: 0; padding: 0; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         canvas { width: 100%; height: 100%; display: block; }
+        #loading {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            color: #aaa; font-family: monospace; font-size: 16px; background: #111;
+        }
+        #loading .spinner {
+            width: 40px; height: 40px; border: 3px solid #333;
+            border-top-color: #aaa; border-radius: 50%;
+            animation: spin 0.8s linear infinite; margin-bottom: 16px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        #error { color: #e55; display: none; text-align: center; padding: 20px; }
     </style>
 </head>
 <body>
-    <canvas id="canvas"></canvas>
+    <div id="loading">
+        <div class="spinner"></div>
+        <div id="status">Checking WebGPU support...</div>
+    </div>
+    <div id="error"></div>
+    <canvas id="canvas" style="display: none;"></canvas>
+
     <script type="module">
-        import init, { start } from './openreality_web.js';
-        async function run() {
-            await init();
-            const resp = await fetch('./scene.orsb');
-            const data = new Uint8Array(await resp.arrayBuffer());
-            start(data);
+        const statusEl = document.getElementById('status');
+        const errorEl = document.getElementById('error');
+        const loadingEl = document.getElementById('loading');
+        const canvas = document.getElementById('canvas');
+
+        function showError(msg) {
+            loadingEl.style.display = 'none';
+            errorEl.style.display = 'block';
+            errorEl.textContent = msg;
         }
-        run().catch(console.error);
+
+        // Check WebGPU support
+        if (!navigator.gpu) {
+            showError(
+                'WebGPU is not supported in this browser. ' +
+                'Please use Chrome 113+, Edge 113+, or a browser with WebGPU enabled.'
+            );
+        } else {
+            (async () => {
+                try {
+                    statusEl.textContent = 'Loading WASM runtime...';
+                    const { default: init, create_app } = await import('./openreality_web.js');
+                    await init();
+
+                    statusEl.textContent = 'Loading scene...';
+                    const resp = await fetch('./scene.orsb');
+                    if (!resp.ok) throw new Error('Failed to fetch scene.orsb: ' + resp.status);
+                    const data = new Uint8Array(await resp.arrayBuffer());
+
+                    // Set canvas size to match window
+                    canvas.width = window.innerWidth;
+                    canvas.height = window.innerHeight;
+
+                    statusEl.textContent = 'Initializing renderer...';
+                    const app = await create_app('canvas', data);
+
+                    // Show canvas, hide loading
+                    loadingEl.style.display = 'none';
+                    canvas.style.display = 'block';
+
+                    // Handle resize
+                    window.addEventListener('resize', () => {
+                        canvas.width = window.innerWidth;
+                        canvas.height = window.innerHeight;
+                        app.resize(canvas.width, canvas.height);
+                    });
+
+                    // Game loop
+                    function loop(time) {
+                        app.frame(time);
+                        requestAnimationFrame(loop);
+                    }
+                    requestAnimationFrame(loop);
+
+                } catch (e) {
+                    console.error(e);
+                    showError('Failed to start: ' + e.message);
+                }
+            })();
+        }
     </script>
 </body>
 </html>

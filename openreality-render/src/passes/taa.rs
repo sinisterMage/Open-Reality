@@ -1,6 +1,6 @@
 //! TAA pass — temporal anti-aliasing with reprojection.
 
-use crate::backend::RenderTarget;
+use crate::types::RenderTarget;
 
 /// Render TAA: blend current frame with reprojected history.
 pub fn render_taa_pass(

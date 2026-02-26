@@ -1,6 +1,6 @@
 //! Post-processing pass — bloom extract/blur/composite, tone mapping, FXAA.
 
-use crate::backend::RenderTarget;
+use crate::types::RenderTarget;
 
 /// Render a generic fullscreen effect (bloom extract, blur, composite, FXAA, etc.).
 pub fn render_fullscreen_effect(

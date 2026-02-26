@@ -314,6 +314,64 @@ pub struct TextureParsed {
     pub data: Vec<u8>,
 }
 
+/// Parsed bone data within a skeleton.
+#[derive(Clone, Debug)]
+pub struct BoneParsed {
+    pub entity_index: u32,
+    pub inverse_bind_matrix: [[f32; 4]; 4],
+    pub bone_index: u32,
+    pub name: String,
+}
+
+/// Parsed skeleton data.
+#[derive(Clone, Debug)]
+pub struct SkeletonParsed {
+    pub bones: Vec<BoneParsed>,
+}
+
+/// Parsed script from the ORSB scripts section.
+#[derive(Clone, Debug)]
+pub struct ScriptParsed {
+    pub entity_index: u32,
+    /// 0 = on_start, 1 = on_update, 2 = on_destroy
+    pub callback_type: u8,
+    pub rhai_source: String,
+}
+
+/// Parsed game state reference (shared mutable state for scripts).
+#[derive(Clone, Debug)]
+pub struct GameRefParsed {
+    pub name: String,
+    /// 0 = f64, 1 = bool, 2 = i64, 3 = string
+    pub value_type: u8,
+    pub default_f64: Option<f64>,
+    pub default_bool: Option<bool>,
+    pub default_i64: Option<i64>,
+    pub default_string: Option<String>,
+}
+
+/// Parsed particle system configuration.
+#[derive(Clone, Debug)]
+pub struct ParticleConfigParsed {
+    pub max_particles: u32,
+    pub emission_rate: f32,
+    pub burst_count: u32,
+    pub lifetime_min: f32,
+    pub lifetime_max: f32,
+    pub velocity_min: [f32; 3],
+    pub velocity_max: [f32; 3],
+    pub gravity_modifier: f32,
+    pub damping: f32,
+    pub start_size_min: f32,
+    pub start_size_max: f32,
+    pub end_size: f32,
+    pub start_color: [f32; 3],
+    pub end_color: [f32; 3],
+    pub start_alpha: f32,
+    pub end_alpha: f32,
+    pub additive: bool,
+}
+
 /// Complete parsed ORSB scene — all sections.
 #[derive(Clone, Debug)]
 pub struct ParsedScene {
@@ -333,7 +391,11 @@ pub struct ParsedScene {
     pub colliders: Vec<ColliderParsed>,
     pub rigidbodies: Vec<RigidBodyData>,
     pub animations: Vec<AnimationParsed>,
+    pub skeletons: Vec<SkeletonParsed>,
+    pub particles: Vec<ParticleConfigParsed>,
     pub physics_config: Option<PhysicsConfigData>,
+    pub scripts: Vec<ScriptParsed>,
+    pub game_refs: Vec<GameRefParsed>,
 }
 
 // ── Cursor-based binary reader helpers ──
@@ -415,6 +477,16 @@ impl<'a> Cursor<'a> {
     fn read_f64(&mut self) -> Option<f64> {
         if self.pos + 8 <= self.data.len() {
             let v = f64::from_le_bytes(self.data[self.pos..self.pos + 8].try_into().ok()?);
+            self.pos += 8;
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    fn read_i64(&mut self) -> Option<i64> {
+        if self.pos + 8 <= self.data.len() {
+            let v = i64::from_le_bytes(self.data[self.pos..self.pos + 8].try_into().ok()?);
             self.pos += 8;
             Some(v)
         } else {
@@ -769,6 +841,91 @@ pub fn parse_orsb(data: &[u8]) -> Result<ParsedScene, String> {
         }
     }
 
+    // ── Skeletons ──
+    let mut skeletons = Vec::new();
+    if c.remaining() >= 4 {
+        let num_skeletons = c.read_u32().unwrap() as usize;
+        for _ in 0..num_skeletons {
+            let num_bones = c.read_u32().ok_or("Truncated skeleton bone count")? as usize;
+            let mut bones = Vec::with_capacity(num_bones);
+            for _ in 0..num_bones {
+                let entity_index = c.read_u32().ok_or("Truncated bone entity index")?;
+                let mut ibm = [[0.0f32; 4]; 4];
+                for col in 0..4 {
+                    for row in 0..4 {
+                        ibm[col][row] = c.read_f32().ok_or("Truncated bone inverse bind matrix")?;
+                    }
+                }
+                let bone_index = c.read_u32().ok_or("Truncated bone index")?;
+                let name_len = c.read_u16().ok_or("Truncated bone name length")? as usize;
+                let name = if name_len > 0 {
+                    let bytes = c.read_bytes(name_len).ok_or("Truncated bone name")?;
+                    String::from_utf8_lossy(bytes).to_string()
+                } else {
+                    String::new()
+                };
+                bones.push(BoneParsed { entity_index, inverse_bind_matrix: ibm, bone_index, name });
+            }
+            skeletons.push(SkeletonParsed { bones });
+        }
+    }
+
+    // ── Particles ──
+    let mut particles = Vec::new();
+    if c.remaining() >= 4 {
+        let num_particles = c.read_u32().unwrap() as usize;
+        for _ in 0..num_particles {
+            let max_particles = c.read_u32().ok_or("Truncated particle config")?;
+            let emission_rate = c.read_f32().ok_or("Truncated particle config")?;
+            let burst_count = c.read_u32().ok_or("Truncated particle config")?;
+            let lifetime_min = c.read_f32().ok_or("Truncated particle config")?;
+            let lifetime_max = c.read_f32().ok_or("Truncated particle config")?;
+            let velocity_min = [
+                c.read_f32().ok_or("Truncated particle velocity")?,
+                c.read_f32().ok_or("Truncated particle velocity")?,
+                c.read_f32().ok_or("Truncated particle velocity")?,
+            ];
+            let velocity_max = [
+                c.read_f32().ok_or("Truncated particle velocity")?,
+                c.read_f32().ok_or("Truncated particle velocity")?,
+                c.read_f32().ok_or("Truncated particle velocity")?,
+            ];
+            let gravity_modifier = c.read_f32().ok_or("Truncated particle config")?;
+            let damping = c.read_f32().ok_or("Truncated particle config")?;
+            let start_size_min = c.read_f32().ok_or("Truncated particle config")?;
+            let start_size_max = c.read_f32().ok_or("Truncated particle config")?;
+            let end_size = c.read_f32().ok_or("Truncated particle config")?;
+            let start_color = [
+                c.read_f32().ok_or("Truncated particle color")?,
+                c.read_f32().ok_or("Truncated particle color")?,
+                c.read_f32().ok_or("Truncated particle color")?,
+            ];
+            let end_color = [
+                c.read_f32().ok_or("Truncated particle color")?,
+                c.read_f32().ok_or("Truncated particle color")?,
+                c.read_f32().ok_or("Truncated particle color")?,
+            ];
+            let start_alpha = c.read_f32().ok_or("Truncated particle alpha")?;
+            let end_alpha = c.read_f32().ok_or("Truncated particle alpha")?;
+            let additive = c.read_u8().ok_or("Truncated particle mode")? != 0;
+            // Skip 3 bytes padding
+            let _ = c.read_u8();
+            let _ = c.read_u8();
+            let _ = c.read_u8();
+
+            particles.push(ParticleConfigParsed {
+                max_particles, emission_rate, burst_count,
+                lifetime_min, lifetime_max,
+                velocity_min, velocity_max,
+                gravity_modifier, damping,
+                start_size_min, start_size_max, end_size,
+                start_color, end_color,
+                start_alpha, end_alpha,
+                additive,
+            });
+        }
+    }
+
     // ── Physics config ──
     let physics_config = if c.remaining() >= 48 {
         let gravity = [c.read_f64().unwrap(), c.read_f64().unwrap(), c.read_f64().unwrap()];
@@ -783,6 +940,44 @@ pub fn parse_orsb(data: &[u8]) -> Result<ParsedScene, String> {
     } else {
         None
     };
+
+    // ── Scripts ──
+    let mut scripts = Vec::new();
+    if c.remaining() >= 4 {
+        let num_scripts = c.read_u32().unwrap() as usize;
+        for _ in 0..num_scripts {
+            let entity_index = c.read_u32().ok_or("Truncated script entity index")?;
+            let callback_type = c.read_u8().ok_or("Truncated script callback type")?;
+            let script_len = c.read_u32().ok_or("Truncated script length")? as usize;
+            let script_bytes = c.read_bytes(script_len).ok_or("Truncated script data")?;
+            let rhai_source = String::from_utf8_lossy(script_bytes).to_string();
+            scripts.push(ScriptParsed { entity_index, callback_type, rhai_source });
+        }
+    }
+
+    // ── Game State (Refs) ──
+    let mut game_refs = Vec::new();
+    if c.remaining() >= 4 {
+        let num_refs = c.read_u32().unwrap() as usize;
+        for _ in 0..num_refs {
+            let name_len = c.read_u16().ok_or("Truncated game ref name length")? as usize;
+            let name_bytes = c.read_bytes(name_len).ok_or("Truncated game ref name")?;
+            let name = String::from_utf8_lossy(name_bytes).to_string();
+            let value_type = c.read_u8().ok_or("Truncated game ref type")?;
+            let (default_f64, default_bool, default_i64, default_string) = match value_type {
+                0 => (Some(c.read_f64().ok_or("Truncated game ref f64")?), None, None, None),
+                1 => (None, Some(c.read_u8().ok_or("Truncated game ref bool")? != 0), None, None),
+                2 => (None, None, Some(c.read_i64().ok_or("Truncated game ref i64")?), None),
+                3 => {
+                    let slen = c.read_u32().ok_or("Truncated game ref string length")? as usize;
+                    let sbytes = c.read_bytes(slen).ok_or("Truncated game ref string")?;
+                    (None, None, None, Some(String::from_utf8_lossy(sbytes).to_string()))
+                }
+                _ => (Some(0.0), None, None, None),
+            };
+            game_refs.push(GameRefParsed { name, value_type, default_f64, default_bool, default_i64, default_string });
+        }
+    }
 
     Ok(ParsedScene {
         header,
@@ -801,7 +996,11 @@ pub fn parse_orsb(data: &[u8]) -> Result<ParsedScene, String> {
         colliders,
         rigidbodies,
         animations,
+        skeletons,
+        particles,
         physics_config,
+        scripts,
+        game_refs,
     })
 }
 

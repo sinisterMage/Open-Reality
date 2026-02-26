@@ -4,11 +4,14 @@
 //! All public functions use `extern "C"` ABI with `#[no_mangle]`.
 
 mod backend;
-mod handle;
-mod render_targets;
-mod pipeline;
-mod passes;
-mod ibl;
+
+// Re-export shared rendering modules from openreality-render.
+// This keeps `crate::pipeline`, `crate::passes`, etc. paths valid for backend.rs and lib.rs.
+pub use openreality_render::handle;
+pub use openreality_render::render_targets;
+pub use openreality_render::pipeline;
+pub use openreality_render::passes;
+pub use openreality_render::ibl;
 
 use backend::WGPUBackendState;
 use bytemuck::Zeroable;

@@ -1,6 +1,6 @@
 //! Terrain G-Buffer rendering pass — splatmap blending.
 
-use crate::backend::{GBuffer, GPUMesh};
+use crate::types::{GBuffer, GPUMesh};
 
 /// Render terrain chunks into the G-Buffer.
 pub fn render_terrain_gbuffer(

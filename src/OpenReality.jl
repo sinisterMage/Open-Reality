@@ -282,6 +282,10 @@ include("loading/async_loader.jl")
 # Asset pipeline (texture compression, mesh optimization)
 include("export/asset_pipeline.jl")
 
+# Web export macros and Julia→Rhai transpiler
+include("export/webscript_macro.jl")
+include("export/script_transpiler.jl")
+
 # Scene export (ORSB format for WASM web deployment)
 include("export/scene_export.jl")
 
@@ -604,6 +608,10 @@ export get_async_loader, reset_async_loader!, shutdown_async_loader!
 export TextureFormat, TEX_PNG, TEX_JPEG, TEX_KTX2_BC7, TEX_KTX2_ASTC
 export AssetPipelineConfig, ProcessedAssets
 export process_texture, optimize_mesh, generate_lod_mesh, process_assets
+
+# Export web script macros and transpiler
+export @webscript, @webref, @webstate
+export transpile_to_rhai, validate_webscript
 
 # Export Scene Export (ORSB)
 export export_scene

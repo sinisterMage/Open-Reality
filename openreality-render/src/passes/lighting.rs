@@ -1,6 +1,6 @@
 //! Deferred lighting pass — fullscreen PBR lighting with Cook-Torrance BRDF.
 
-use crate::backend::{GBuffer, RenderTarget};
+use crate::types::{GBuffer, RenderTarget};
 
 /// Render the deferred lighting pass into the lighting target.
 pub fn render_lighting_pass(

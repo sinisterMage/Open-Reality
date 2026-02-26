@@ -12,6 +12,7 @@ mod animation;
 mod skinning;
 mod particles;
 mod input;
+mod scripting;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;

@@ -1,6 +1,8 @@
 use openreality_gpu_shared::scene_format::*;
 use glam::{DVec3, DQuat, Mat4};
 
+pub use openreality_gpu_shared::scene_format::{ScriptParsed, GameRefParsed};
+
 /// A loaded entity with component data.
 pub struct Entity {
     pub id: u64,
@@ -124,6 +126,8 @@ pub struct LoadedScene {
     pub dir_lights: Vec<DirLight>,
     pub cameras: Vec<Camera>,
     pub physics_config: Option<PhysicsConfigData>,
+    pub scripts: Vec<ScriptParsed>,
+    pub game_refs: Vec<GameRefParsed>,
 }
 
 impl LoadedScene {
@@ -240,11 +244,20 @@ impl LoadedScene {
             materials,
             textures,
             animations,
-            skeletons: Vec::new(), // Skeleton section not yet exported by Julia
+            skeletons: parsed.skeletons.into_iter().enumerate().map(|(i, s)| SkeletonData {
+                entity_index: i,
+                bone_entity_indices: s.bones.iter().map(|b| b.entity_index as usize).collect(),
+                inverse_bind_matrices: s.bones.iter().map(|b| {
+                    Mat4::from_cols_array_2d(&b.inverse_bind_matrix)
+                }).collect(),
+                bone_matrices: vec![Mat4::IDENTITY; s.bones.len()],
+            }).collect(),
             point_lights,
             dir_lights,
             cameras,
             physics_config: parsed.physics_config,
+            scripts: parsed.scripts,
+            game_refs: parsed.game_refs,
         })
     }
 

@@ -1,7 +1,7 @@
 //! Render target creation for the deferred pipeline.
 //! G-Buffer, lighting FBO, SSAO/SSR/TAA targets, bloom mip chain, DOF/motion blur targets.
 
-use crate::backend::{GBuffer, RenderTarget};
+use crate::types::{GBuffer, RenderTarget};
 
 /// HDR color format used throughout the pipeline.
 pub const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;

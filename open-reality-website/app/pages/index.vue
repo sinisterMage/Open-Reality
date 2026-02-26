@@ -268,6 +268,28 @@ const activeTab = ref<'unix' | 'windows'>('unix')
       </div>
     </section>
 
+    <!-- Play in Browser CTA -->
+    <section class="border-t border-or-border py-20">
+      <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+        <h2 class="text-3xl font-mono font-bold text-or-text mb-4">
+          <span class="text-or-green">&gt;</span> Play in Your Browser
+        </h2>
+        <p class="text-or-text-dim max-w-2xl mx-auto mb-8">
+          See the engine in action. The dungeon crawler demo runs entirely in your browser
+          via WebGPU — full PBR rendering, physics, particles, and scripted AI.
+        </p>
+        <NuxtLink
+          to="/demo"
+          class="inline-block px-8 py-3 border-2 border-or-green text-or-green font-mono font-bold rounded hover:bg-or-green hover:text-or-bg hover:shadow-glow-green transition-all"
+        >
+          Play Demo
+        </NuxtLink>
+        <p class="text-or-text-dim/50 text-xs font-mono mt-4">
+          Requires Chrome 113+ or Edge 113+ with WebGPU support
+        </p>
+      </div>
+    </section>
+
     <!-- Getting Started -->
     <section class="border-t border-or-border bg-or-surface py-24">
       <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">

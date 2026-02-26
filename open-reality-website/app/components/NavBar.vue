@@ -2,6 +2,7 @@
 const links = [
   { label: 'Features', href: '/#features' },
   { label: 'Examples', href: '/#examples' },
+  { label: 'Demo', href: '/demo' },
   { label: 'Docs', href: '/docs' },
 ]
 const mobileOpen = ref(false)

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "openreality-gpu-shared",
+    "openreality-render",
     "openreality-wgpu",
     "openreality-web",
     "openreality-cli",

@@ -1,6 +1,6 @@
 //! Cascaded shadow map depth pass.
 
-use crate::backend::{CascadedShadowMap, GPUMesh};
+use crate::types::{CascadedShadowMap, GPUMesh};
 
 /// Render shadow depth for one cascade.
 pub fn render_shadow_cascade(

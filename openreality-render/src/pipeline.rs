@@ -1877,3 +1877,46 @@ pub fn create_debug_lines_pipeline(
         cache: None,
     })
 }
+
+/// Create the material bind group layout (group 1).
+/// Binding 0: MaterialUBO, Bindings 1-6: texture maps, Binding 7: sampler.
+pub fn create_material_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    let mut entries = vec![
+        // binding 0: MaterialUBO
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+    ];
+    // bindings 1-6: texture maps
+    for i in 1..=6 {
+        entries.push(wgpu::BindGroupLayoutEntry {
+            binding: i,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        });
+    }
+    // binding 7: sampler
+    entries.push(wgpu::BindGroupLayoutEntry {
+        binding: 7,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        count: None,
+    });
+
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Material Bind Group Layout"),
+        entries: &entries,
+    })
+}
