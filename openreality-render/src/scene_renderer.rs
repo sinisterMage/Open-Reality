@@ -499,16 +499,10 @@ impl SceneRenderer {
         let light_data_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Light Data BG"),
             layout: &dp.light_data_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.per_frame_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.light_buffer.as_entire_binding(),
-                },
-            ],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: self.light_buffer.as_entire_binding(),
+            }],
         });
 
         passes::lighting::render_lighting_pass(
@@ -524,13 +518,12 @@ impl SceneRenderer {
             label: Some("SSAO BG"),
             layout: &dp.ssao_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&dp.gbuffer.normal_roughness_view) },
+                wgpu::BindGroupEntry { binding: 0, resource: dp.ssao_params_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&dp.gbuffer.depth_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&dp.ssao_noise_view) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&dp.depth_sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&dp.gbuffer.normal_roughness_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&dp.ssao_noise_view) },
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.default_sampler) },
-                wgpu::BindGroupEntry { binding: 5, resource: dp.ssao_params_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: self.per_frame_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&dp.depth_sampler) },
             ],
         });
         passes::ssao::render_ssao_pass(&mut encoder, &dp.ssao_targets.ao, &dp.ssao_pipeline, &ssao_bg);
@@ -540,8 +533,9 @@ impl SceneRenderer {
             label: Some("SSAO Blur BG"),
             layout: &dp.ssao_blur_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&dp.ssao_targets.ao.color_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.default_sampler) },
+                wgpu::BindGroupEntry { binding: 0, resource: dp.ssao_params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&dp.ssao_targets.ao.color_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.default_sampler) },
             ],
         });
         passes::ssao::render_ssao_blur(&mut encoder, &dp.ssao_targets.blur, &dp.ssao_blur_pipeline, &ssao_blur_bg);
@@ -551,8 +545,9 @@ impl SceneRenderer {
             label: Some("Bloom Extract BG"),
             layout: &dp.bloom_extract_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&dp.lighting_target.color_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.default_sampler) },
+                wgpu::BindGroupEntry { binding: 0, resource: dp.pp_params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&dp.lighting_target.color_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.default_sampler) },
             ],
         });
         passes::postprocess::render_bloom_extract(&mut encoder, &dp.bloom_targets.extract, &dp.bloom_extract_pipeline, &bloom_extract_bg);
@@ -561,8 +556,9 @@ impl SceneRenderer {
             label: Some("Bloom Blur H BG"),
             layout: &dp.bloom_blur_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&dp.bloom_targets.extract.color_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.default_sampler) },
+                wgpu::BindGroupEntry { binding: 0, resource: dp.pp_params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&dp.bloom_targets.extract.color_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.default_sampler) },
             ],
         });
         passes::postprocess::render_bloom_blur(&mut encoder, &dp.bloom_targets.blur_h, &dp.bloom_blur_pipeline, &bloom_blur_h_bg, "Bloom Blur H");
@@ -571,8 +567,9 @@ impl SceneRenderer {
             label: Some("Bloom Blur V BG"),
             layout: &dp.bloom_blur_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&dp.bloom_targets.blur_h.color_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.default_sampler) },
+                wgpu::BindGroupEntry { binding: 0, resource: dp.pp_params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&dp.bloom_targets.blur_h.color_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.default_sampler) },
             ],
         });
         passes::postprocess::render_bloom_blur(&mut encoder, &dp.bloom_targets.blur_v, &dp.bloom_blur_pipeline, &bloom_blur_v_bg, "Bloom Blur V");
@@ -581,9 +578,10 @@ impl SceneRenderer {
             label: Some("Bloom Composite BG"),
             layout: &dp.bloom_composite_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&dp.lighting_target.color_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&dp.bloom_targets.blur_v.color_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.default_sampler) },
+                wgpu::BindGroupEntry { binding: 0, resource: dp.pp_params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&dp.lighting_target.color_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&dp.bloom_targets.blur_v.color_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.default_sampler) },
             ],
         });
         passes::postprocess::render_bloom_composite(&mut encoder, &dp.pp_target_a, &dp.bloom_composite_pipeline, &bloom_composite_bg);
@@ -595,7 +593,6 @@ impl SceneRenderer {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&dp.pp_target_a.color_view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.default_sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: dp.pp_params_buffer.as_entire_binding() },
             ],
         });
         passes::postprocess::render_fxaa(&mut encoder, &dp.pp_target_b, &dp.fxaa_pipeline, &fxaa_bg);
@@ -605,8 +602,9 @@ impl SceneRenderer {
             label: Some("Present BG"),
             layout: &dp.present_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&dp.pp_target_b.color_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.default_sampler) },
+                wgpu::BindGroupEntry { binding: 0, resource: dp.pp_params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&dp.pp_target_b.color_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.default_sampler) },
             ],
         });
         passes::present::render_present_pass(&mut encoder, surface_view, &dp.present_pipeline, &present_bg);
