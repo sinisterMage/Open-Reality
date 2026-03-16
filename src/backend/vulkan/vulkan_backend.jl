@@ -153,6 +153,7 @@ mutable struct VulkanBackend <: AbstractBackend
     render_finished_semaphores::Vector{Semaphore}
     in_flight_fences::Vector{Fence}
     current_frame::Int
+    current_image_index::Int  # swapchain image index for the current frame (1-indexed)
 
     # Descriptors
     descriptor_pool::Union{DescriptorPool, Nothing}
@@ -221,6 +222,12 @@ mutable struct VulkanBackend <: AbstractBackend
     use_deferred::Bool
     post_process_config::Union{PostProcessConfig, Nothing}
     present_pipeline::Union{VulkanShaderProgram, Nothing}
+
+    # Render graph (opt-in)
+    render_graph::Union{RenderGraph, Nothing}
+    graph_executor::Union{AbstractGraphExecutor, Nothing}
+    graph_handles::Union{DeferredGraphHandles, Nothing}
+    use_render_graph::Bool
 end
 
 function VulkanBackend()
@@ -232,7 +239,7 @@ function VulkanBackend()
         nothing, nothing, Image[], ImageView[], FORMAT_B8G8R8A8_SRGB,
         Extent2D(1280, 720), VkFramebuffer[], nothing, nothing, nothing, nothing,
         # Commands + sync
-        nothing, CommandBuffer[], Semaphore[], Semaphore[], Fence[], 1,
+        nothing, CommandBuffer[], Semaphore[], Semaphore[], Fence[], 1, 1,
         # Descriptors
         nothing, nothing, nothing, nothing, nothing, nothing,
         # Per-frame
@@ -263,7 +270,9 @@ function VulkanBackend()
         # State
         false, true, nothing,
         # Present
-        nothing
+        nothing,
+        # Render graph
+        nothing, nothing, nothing, true
     )
 end
 
@@ -490,6 +499,28 @@ function initialize!(backend::VulkanBackend; width::Int=1280, height::Int=720, t
         backend.height = Int(h)
     end)
 
+    # Render graph (opt-in)
+    if backend.use_render_graph && backend.use_deferred
+        pp_config = backend.post_process_config !== nothing ? backend.post_process_config : PostProcessConfig()
+        (graph, handles) = build_deferred_render_graph!(pp_config;
+            ssao_enabled = backend.deferred_pipeline !== nothing && backend.deferred_pipeline.ssao_pass !== nothing,
+            ssr_enabled = backend.deferred_pipeline !== nothing && backend.deferred_pipeline.ssr_pass !== nothing,
+            taa_enabled = backend.deferred_pipeline !== nothing && backend.deferred_pipeline.taa_pass !== nothing)
+
+        if compile!(graph)
+            executor = VulkanGraphExecutor()
+            executor.handles = handles
+            allocate_resources!(executor, graph, width, height)
+
+            backend.render_graph = graph
+            backend.graph_executor = executor
+            backend.graph_handles = handles
+            @info "Vulkan render graph compiled" passes=length(graph.sorted_passes) resources=length(graph.resources)
+        else
+            @warn "Vulkan render graph compilation failed" errors=graph.errors
+        end
+    end
+
     backend.initialized = true
     @info "Vulkan backend initialized" width height
     return nothing
@@ -673,6 +704,7 @@ function render_frame!(backend::VulkanBackend, scene::Scene)
     end
     image_index_raw, _ = unwrap(result)
     image_index = Int(image_index_raw) + 1  # 0-indexed → 1-indexed
+    backend.current_image_index = image_index
 
     unwrap(reset_fences(backend.device, [backend.in_flight_fences[frame_idx]]))
 
@@ -738,6 +770,66 @@ function render_frame!(backend::VulkanBackend, scene::Scene)
 
     w = Int(backend.swapchain_extent.width)
     h = Int(backend.swapchain_extent.height)
+
+    # --- Render graph path (opt-in) ---
+    if backend.render_graph !== nothing && backend.graph_executor !== nothing
+        # Clamp render dimensions to G-buffer framebuffer size to prevent
+        # render area exceeding framebuffer bounds after window resize
+        if backend.deferred_pipeline !== nothing && backend.deferred_pipeline.gbuffer !== nothing
+            gb = backend.deferred_pipeline.gbuffer
+            w = min(w, gb.width)
+            h = min(h, gb.height)
+        end
+        pp_config = backend.post_process_config !== nothing ? backend.post_process_config : PostProcessConfig()
+        # Get prev_view_proj from TAA or motion blur pass (they track it per-frame)
+        prev_vp = if backend.deferred_pipeline !== nothing && backend.deferred_pipeline.taa_pass !== nothing
+            backend.deferred_pipeline.taa_pass.prev_view_proj
+        elseif backend.motion_blur_pass !== nothing
+            backend.motion_blur_pass.prev_view_proj
+        else
+            Mat4f(I)
+        end
+        rg_ctx = RGExecuteContext(
+            frame_data, pp_config,
+            Any[get_physical_resource(backend.graph_executor, RGResourceHandle(Int32(i), RG_RGBA8, Int32(0)))
+                for i in 1:length(backend.render_graph.resources)],
+            w, h,
+            backend.render_graph.frame_index,
+            prev_vp,
+            scene,
+            has_shadows,
+            backend.csm !== nothing ? backend.csm.cascade_matrices[1] : Mat4f(I)
+        )
+        execute_graph!(backend.graph_executor, backend.render_graph, backend, rg_ctx)
+        # Update prev_view_proj on the TAA / motion blur pass for next frame
+        current_vp = vk_proj * frame_data.view
+        if backend.deferred_pipeline !== nothing && backend.deferred_pipeline.taa_pass !== nothing
+            backend.deferred_pipeline.taa_pass.prev_view_proj = current_vp
+        end
+        if backend.motion_blur_pass !== nothing
+            backend.motion_blur_pass.prev_view_proj = current_vp
+        end
+        advance_frame!(backend.render_graph)
+
+        # End command buffer and submit
+        unwrap(end_command_buffer(cmd))
+        submit_info = SubmitInfo(
+            [backend.image_available_semaphores[frame_idx]],
+            [PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT],
+            [cmd],
+            [backend.render_finished_semaphores[image_index]]
+        )
+        unwrap(queue_submit(backend.graphics_queue, [submit_info]; fence=backend.in_flight_fences[frame_idx]))
+
+        present_info = PresentInfoKHR(
+            [backend.render_finished_semaphores[image_index]],
+            [backend.swapchain],
+            [UInt32(image_index - 1)]
+        )
+        result = queue_present_khr(backend.present_queue, present_info)
+        backend.current_frame = (frame_idx % VK_MAX_FRAMES_IN_FLIGHT) + 1
+        return
+    end
 
     # --- Shadow pass ---
     if has_shadows && backend.csm !== nothing

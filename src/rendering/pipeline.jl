@@ -8,8 +8,11 @@ Manages the rendering pipeline stages and backend lifecycle.
 mutable struct RenderPipeline
     backend::AbstractBackend
     active::Bool
+    # Optional render graph (populated by backend during initialization if use_render_graph=true)
+    render_graph::Union{RenderGraph, Nothing}
+    executor::Union{AbstractGraphExecutor, Nothing}
 
-    RenderPipeline(backend::AbstractBackend) = new(backend, false)
+    RenderPipeline(backend::AbstractBackend) = new(backend, false, nothing, nothing)
 end
 
 """

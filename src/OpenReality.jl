@@ -173,6 +173,15 @@ include("systems/terrain.jl")
 # Abstract backend interface
 include("backend/abstract.jl")
 
+# Shared rendering orchestration (no backend dependency — uses ECS + components)
+include("rendering/frame_preparation.jl")        # FrameData, EntityRenderData, prepare_frame
+include("rendering/instancing.jl")               # group_into_batches (uses EntityRenderData)
+
+# Render graph system (after frame_preparation + abstract.jl — uses FrameData, PostProcessConfig, AbstractBackend)
+include("rendering/render_graph.jl")             # Core types, compile!, validate!, dump_graphviz
+include("rendering/render_graph_executor.jl")    # AbstractGraphExecutor interface
+include("rendering/deferred_graph.jl")           # build_deferred_render_graph!, execute stubs
+
 # OpenGL backend implementation (concrete types + GL calls)
 include("backend/opengl/opengl_shader.jl")       # ShaderProgram
 include("backend/opengl/opengl_mesh.jl")          # GPUMesh, GPUResourceCache
@@ -196,9 +205,9 @@ include("backend/opengl/opengl_particles.jl")    # Particle renderer (CPU fallba
 include("backend/opengl.jl")                      # OpenGLBackend, render_frame!
 include("backend/opengl/opengl_capture.jl")       # Framebuffer capture for visual testing
 
-# Shared rendering orchestration (after backend — uses ECS + frustum culling)
-include("rendering/frame_preparation.jl")
-include("rendering/instancing.jl")    # After frame_preparation — uses EntityRenderData
+# OpenGL render graph (after opengl.jl + render graph core)
+include("backend/opengl/opengl_graph_executor.jl")  # OpenGLGraphExecutor
+include("backend/opengl/opengl_graph_passes.jl")    # execute_rg_*!(::OpenGLBackend, ...)
 
 # Metal backend implementation (macOS only, after frame_preparation — uses FrameLightData)
 if Sys.isapple()
@@ -255,6 +264,9 @@ if !Sys.isapple()
     include("backend/vulkan/vulkan_dof.jl")
     include("backend/vulkan/vulkan_motion_blur.jl")
     include("backend/vulkan/vulkan_debug_draw.jl")
+    # Vulkan render graph (after vulkan_backend.jl + render graph core)
+    include("backend/vulkan/vulkan_graph_executor.jl")
+    include("backend/vulkan/vulkan_graph_passes.jl")
 end
 
 # WebGPU backend (all platforms, requires compiled Rust FFI library)
@@ -275,6 +287,9 @@ const _WEBGPU_LIB_CANDIDATES = [
 if any(isfile, _WEBGPU_LIB_CANDIDATES)
     include("backend/webgpu/webgpu_ffi.jl")
     include("backend/webgpu/webgpu_backend.jl")
+    # WebGPU render graph (after webgpu_backend.jl + render graph core)
+    include("backend/webgpu/webgpu_graph_executor.jl")
+    include("backend/webgpu/webgpu_graph_passes.jl")
     export WebGPUBackend
 end
 
@@ -577,6 +592,23 @@ export ShaderProgram, create_shader_program, destroy_shader_program!
 export GPUMesh, GPUResourceCache, upload_mesh!, get_or_upload_mesh!, destroy_all!
 export GPUTexture, TextureCache, load_texture
 export run_render_loop!
+
+# Export Render Graph
+export RenderGraph, RGResourceHandle, RGResourceDesc, RGPass, RGExecuteContext
+export RGFormat, RG_RGBA16F, RG_RGBA8, RG_RGBA8_SRGB, RG_RG16F, RG_R16F, RG_R8, RG_DEPTH32F, RG_DEPTH24
+export RGLifetime, RG_TRANSIENT, RG_PERSISTENT, RG_MULTI_FRAME, RG_IMPORTED
+export RGSizePolicy, FULL_RES, HALF_RES, QUARTER_RES, rg_fixed_size
+export declare_resource!, import_resource!, add_pass!
+export compile!, validate!, dump_graphviz, get_active_passes, get_active_resources, advance_frame!
+export AbstractGraphExecutor, allocate_resources!, execute_graph!, resize_resources!, destroy_resources!
+export build_deferred_render_graph!, build_forward_render_graph!, DeferredGraphHandles
+# Render graph — custom pass API
+export insert_pass_after!, insert_pass_before!, remove_pass!, set_pass_enabled!, get_pass, get_resource_handle
+# Render graph — timing / profiling
+export RGPassTiming, RGFrameTiming, RGTimingState
+export rg_timing_enable!, rg_timing_enabled, rg_timing_get_latest, rg_timing_get_average
+# Render graph — async compute
+export mark_compute!, get_compute_passes
 
 # Export Windowing
 export Window, create_window!, destroy_window!, should_close, poll_events!, swap_buffers!

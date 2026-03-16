@@ -30,6 +30,12 @@ mutable struct WebGPUBackend <: AbstractBackend
     # TAA state tracking
     prev_view_proj::Mat4f
     taa_frame_index::Int
+
+    # Render graph (opt-in)
+    render_graph::Union{RenderGraph, Nothing}
+    graph_executor::Union{AbstractGraphExecutor, Nothing}
+    graph_handles::Union{DeferredGraphHandles, Nothing}
+    use_render_graph::Bool
 end
 
 function WebGPUBackend()
@@ -50,6 +56,10 @@ function WebGPUBackend()
         720,                            # height
         Mat4f(I),                       # prev_view_proj
         0,                              # taa_frame_index
+        nothing,                        # render_graph
+        nothing,                        # graph_executor
+        nothing,                        # graph_handles
+        true,                           # use_render_graph
     )
 end
 
@@ -92,6 +102,28 @@ function initialize!(backend::WebGPUBackend; width::Int=1280, height::Int=720, t
 
     # Deferred pipeline is created lazily on the first frame (window must be visible first)
     backend.deferred_initialized = false
+
+    # Render graph (opt-in) — built eagerly, but WebGPU passes check deferred_initialized
+    if backend.use_render_graph
+        pp_config = backend.post_process_config !== nothing ? backend.post_process_config : PostProcessConfig()
+        (graph, handles) = build_deferred_render_graph!(pp_config;
+            ssao_enabled = pp_config.ssao_enabled,
+            ssr_enabled = true,
+            taa_enabled = true)
+
+        if compile!(graph)
+            executor = WebGPUGraphExecutor()
+            executor.handles = handles
+            allocate_resources!(executor, graph, width, height)
+
+            backend.render_graph = graph
+            backend.graph_executor = executor
+            backend.graph_handles = handles
+            @info "WebGPU render graph compiled" passes=length(graph.sorted_passes) resources=length(graph.resources)
+        else
+            @warn "WebGPU render graph compilation failed" errors=graph.errors
+        end
+    end
 
     backend.initialized = true
     return nothing
@@ -180,6 +212,26 @@ function render_frame!(backend::WebGPUBackend, scene)
     # 1. Begin frame: upload per-frame uniforms
     per_frame_data = _pack_per_frame(view, proj, Mat4f(inv_vp), cam_pos, time_val)
     wgpu_begin_frame(backend.backend_handle, per_frame_data)
+
+    # --- Render graph path (opt-in) ---
+    if backend.render_graph !== nothing && backend.graph_executor !== nothing
+        pp_config = backend.post_process_config !== nothing ? backend.post_process_config : PostProcessConfig()
+        rg_ctx = RGExecuteContext(
+            frame_data, pp_config,
+            Any[get_physical_resource(backend.graph_executor, RGResourceHandle(Int32(i), RG_RGBA8, Int32(0)))
+                for i in 1:length(backend.render_graph.resources)],
+            backend.width, backend.height,
+            backend.render_graph.frame_index,
+            backend.prev_view_proj,
+            scene isa Scene ? scene : Scene(),
+            frame_data.primary_light_dir !== nothing,
+            Mat4f(I)
+        )
+        execute_graph!(backend.graph_executor, backend.render_graph, backend, rg_ctx)
+        backend.prev_view_proj = proj * view
+        advance_frame!(backend.render_graph)
+        return nothing
+    end
 
     # 2. Upload lights
     light_data = _pack_lights(frame_data.lights)

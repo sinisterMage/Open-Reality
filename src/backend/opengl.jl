@@ -22,13 +22,21 @@ mutable struct OpenGLBackend <: AbstractBackend
     bounds_cache::Dict{EntityID, BoundingSphere}
     post_process::Union{PostProcessPipeline, Nothing}
     prev_view_proj::Mat4f   # Previous frame's view*proj matrix for motion blur
+    # Render graph (opt-in; when present, render_frame! uses the graph instead of monolithic code)
+    render_graph::Union{RenderGraph, Nothing}
+    graph_executor::Union{AbstractGraphExecutor, Nothing}
+    graph_handles::Union{DeferredGraphHandles, Nothing}
+    use_render_graph::Bool
 
-    OpenGLBackend(; post_process_config::PostProcessConfig = PostProcessConfig(), use_deferred::Bool = true) = new(
+    OpenGLBackend(; post_process_config::PostProcessConfig = PostProcessConfig(),
+                    use_deferred::Bool = true,
+                    use_render_graph::Bool = true) = new(
         false, nothing, InputState(), nothing, nothing, use_deferred,
         GPUResourceCache(), TextureCache(),
         nothing, nothing, Dict{EntityID, BoundingSphere}(),
         PostProcessPipeline(config=post_process_config),
-        Mat4f(I)
+        Mat4f(I),
+        nothing, nothing, nothing, use_render_graph
     )
 end
 
@@ -48,6 +56,9 @@ function initialize!(backend::OpenGLBackend;
         end
         if backend.post_process !== nothing
             resize_post_process!(backend.post_process, width, height)
+        end
+        if backend.graph_executor !== nothing && backend.render_graph !== nothing
+            resize_resources!(backend.graph_executor, backend.render_graph, width, height)
         end
     end)
 
@@ -90,12 +101,42 @@ function initialize!(backend::OpenGLBackend;
         create_post_process_pipeline!(backend.post_process, width, height)
     end
 
+    # Render graph (opt-in)
+    if backend.use_render_graph && backend.use_deferred
+        pp_config = backend.post_process !== nothing ? backend.post_process.config : PostProcessConfig()
+        (graph, handles) = build_deferred_render_graph!(pp_config;
+            ssao_enabled = backend.deferred_pipeline !== nothing && backend.deferred_pipeline.ssao_pass !== nothing,
+            ssr_enabled = backend.deferred_pipeline !== nothing && backend.deferred_pipeline.ssr_pass !== nothing,
+            taa_enabled = backend.deferred_pipeline !== nothing && backend.deferred_pipeline.taa_pass !== nothing)
+
+        if compile!(graph)
+            executor = OpenGLGraphExecutor()
+            executor.handles = handles
+            allocate_resources!(executor, graph, width, height)
+
+            backend.render_graph = graph
+            backend.graph_executor = executor
+            backend.graph_handles = handles
+            @info "Render graph compiled" passes=length(graph.sorted_passes) resources=length(graph.resources) aliases=get_alias_count(graph)
+        else
+            @warn "Render graph compilation failed, falling back to monolithic path" errors=graph.errors
+        end
+    end
+
     backend.initialized = true
     @info "OpenGL backend initialized" width height
     return nothing
 end
 
 function shutdown!(backend::OpenGLBackend)
+    # Destroy render graph resources
+    if backend.graph_executor !== nothing && backend.render_graph !== nothing
+        destroy_resources!(backend.graph_executor, backend.render_graph)
+        backend.graph_executor = nothing
+        backend.render_graph = nothing
+        backend.graph_handles = nothing
+    end
+
     if backend.shader !== nothing
         destroy_shader_program!(backend.shader)
         backend.shader = nothing
@@ -1263,7 +1304,42 @@ function render_frame!(backend::OpenGLBackend, scene::Scene)
     end
 
     # ==================================================================
-    # DEFERRED RENDERING PATH
+    # RENDER GRAPH PATH (opt-in)
+    # ==================================================================
+    if backend.render_graph !== nothing && backend.graph_executor !== nothing
+        # Use prepare_frame for properly typed FrameData
+        frame_data = prepare_frame(scene, backend.bounds_cache)
+        if frame_data !== nothing
+            # Sort transparent entities back-to-front
+            sort!(frame_data.transparent_entities, by=t -> -t.dist_sq)
+
+            viewport = Int32[0, 0, 0, 0]
+            glGetIntegerv(GL_VIEWPORT, viewport)
+            rg_width, rg_height = Int(viewport[3]), Int(viewport[4])
+
+            pp_config = backend.post_process !== nothing ? backend.post_process.config : PostProcessConfig()
+
+            ctx = RGExecuteContext(
+                frame_data, pp_config,
+                Any[get_physical_resource(backend.graph_executor, RGResourceHandle(Int32(i), RG_RGBA8, Int32(0)))
+                    for i in 1:length(backend.render_graph.resources)],
+                rg_width, rg_height,
+                0,  # frame_index for double-buffering
+                backend.prev_view_proj,
+                scene,
+                has_shadows,
+                light_space
+            )
+
+            execute_graph!(backend.graph_executor, backend.render_graph, backend, ctx)
+            backend.prev_view_proj = proj * view
+            advance_frame!(backend.render_graph)
+        end
+        return nothing
+    end
+
+    # ==================================================================
+    # DEFERRED RENDERING PATH (monolithic, legacy)
     # ==================================================================
     if backend.use_deferred && backend.deferred_pipeline !== nothing
         # Note: In deferred mode, we manage our own framebuffers and only use

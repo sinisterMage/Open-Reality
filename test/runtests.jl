@@ -8330,4 +8330,464 @@ using StaticArrays
             rm(tmp, force=true)
         end
     end
+
+    # ================================================================
+    # Render Graph Tests
+    # ================================================================
+
+    @testset "Render Graph" begin
+
+        @testset "Core types and constructors" begin
+            @test FULL_RES.scale == 1.0f0
+            @test HALF_RES.scale == 0.5f0
+            @test rg_fixed_size(1024, 1024).fixed_width == 1024
+            @test OpenReality.resolve_size(FULL_RES, 1920, 1080) == (1920, 1080)
+            @test OpenReality.resolve_size(HALF_RES, 1920, 1080) == (960, 540)
+            @test OpenReality.resolve_size(rg_fixed_size(256, 256), 1920, 1080) == (256, 256)
+            @test OpenReality.is_depth_format(RG_DEPTH32F)
+            @test OpenReality.is_depth_format(RG_DEPTH24)
+            @test !OpenReality.is_depth_format(RG_RGBA16F)
+            @test !OpenReality.is_depth_format(RG_R8)
+
+            graph = RenderGraph()
+            @test !graph.compiled
+            @test isempty(graph.resources)
+            @test isempty(graph.passes)
+            @test graph.frame_index == 0
+        end
+
+        @testset "Resource declaration" begin
+            graph = RenderGraph()
+            h1 = declare_resource!(graph, :color, RG_RGBA16F)
+            h2 = declare_resource!(graph, :depth, RG_DEPTH32F; lifetime=RG_PERSISTENT)
+            h3 = import_resource!(graph, :swapchain, RG_RGBA8_SRGB)
+
+            @test length(graph.resources) == 3
+            @test h1.index == Int32(1)
+            @test h2.index == Int32(2)
+            @test h3.index == Int32(3)
+            @test h1.format == RG_RGBA16F
+            @test h2.format == RG_DEPTH32F
+            @test h3.format == RG_RGBA8_SRGB
+
+            @test graph.resources[1].lifetime == RG_TRANSIENT
+            @test graph.resources[2].lifetime == RG_PERSISTENT
+            @test graph.resources[3].lifetime == RG_IMPORTED
+        end
+
+        @testset "Pass declaration" begin
+            graph = RenderGraph()
+            color = declare_resource!(graph, :color, RG_RGBA16F)
+            output = import_resource!(graph, :output, RG_RGBA8_SRGB)
+
+            noop!(_, _) = nothing
+            pass1 = add_pass!(graph, :write_color, noop!;
+                writes=[(color, 0)])
+            pass2 = add_pass!(graph, :read_color, noop!;
+                reads=[color],
+                writes=[(output, 0)])
+
+            @test length(graph.passes) == 2
+            @test graph.passes[1].name == :write_color
+            @test graph.passes[2].name == :read_color
+            @test length(graph.passes[1].writes) == 1
+            @test length(graph.passes[2].reads) == 1
+        end
+
+        @testset "Compilation — simple linear graph" begin
+            graph = RenderGraph()
+            a = declare_resource!(graph, :a, RG_RGBA16F)
+            b = declare_resource!(graph, :b, RG_RGBA16F)
+            out = import_resource!(graph, :out, RG_RGBA8_SRGB)
+
+            noop!(_, _) = nothing
+            add_pass!(graph, :p1, noop!; writes=[(a, 0)])
+            add_pass!(graph, :p2, noop!; reads=[a], writes=[(b, 0)])
+            add_pass!(graph, :p3, noop!; reads=[b], writes=[(out, 0)])
+
+            @test compile!(graph)
+            @test graph.compiled
+            active = get_active_passes(graph)
+            @test active == [:p1, :p2, :p3]
+        end
+
+        @testset "Compilation — topological ordering with diamond" begin
+            graph = RenderGraph()
+            src = declare_resource!(graph, :src, RG_RGBA16F)
+            left = declare_resource!(graph, :left, RG_RGBA16F)
+            right = declare_resource!(graph, :right, RG_RGBA16F)
+            merged = declare_resource!(graph, :merged, RG_RGBA16F)
+            out = import_resource!(graph, :out, RG_RGBA8_SRGB)
+
+            noop!(_, _) = nothing
+            add_pass!(graph, :source, noop!; writes=[(src, 0)])
+            add_pass!(graph, :left_proc, noop!; reads=[src], writes=[(left, 0)])
+            add_pass!(graph, :right_proc, noop!; reads=[src], writes=[(right, 0)])
+            add_pass!(graph, :merge, noop!; reads=[left, right], writes=[(merged, 0)])
+            add_pass!(graph, :final, noop!; reads=[merged], writes=[(out, 0)])
+
+            @test compile!(graph)
+            active = get_active_passes(graph)
+            @test length(active) == 5
+
+            # :source must come before :left_proc and :right_proc
+            src_idx = findfirst(==(:source), active)
+            left_idx = findfirst(==(:left_proc), active)
+            right_idx = findfirst(==(:right_proc), active)
+            merge_idx = findfirst(==(:merge), active)
+            final_idx = findfirst(==(:final), active)
+
+            @test src_idx < left_idx
+            @test src_idx < right_idx
+            @test left_idx < merge_idx
+            @test right_idx < merge_idx
+            @test merge_idx < final_idx
+        end
+
+        @testset "Pass culling — disabled pass" begin
+            graph = RenderGraph()
+            a = declare_resource!(graph, :a, RG_RGBA16F)
+            unused = declare_resource!(graph, :unused, RG_R8)
+            out = import_resource!(graph, :out, RG_RGBA8_SRGB)
+
+            noop!(_, _) = nothing
+            add_pass!(graph, :producer, noop!; writes=[(a, 0)])
+            add_pass!(graph, :dead_pass, noop!; reads=[a], writes=[(unused, 0)], enabled=false)
+            add_pass!(graph, :consumer, noop!; reads=[a], writes=[(out, 0)])
+
+            @test compile!(graph)
+            active = get_active_passes(graph)
+            @test :dead_pass ∉ active
+            @test :producer ∈ active
+            @test :consumer ∈ active
+        end
+
+        @testset "Pass culling — orphaned chain" begin
+            graph = RenderGraph()
+            a = declare_resource!(graph, :a, RG_RGBA16F)
+            orphan_out = declare_resource!(graph, :orphan_out, RG_RGBA16F)
+            out = import_resource!(graph, :out, RG_RGBA8_SRGB)
+
+            noop!(_, _) = nothing
+            add_pass!(graph, :main_producer, noop!; writes=[(a, 0)])
+            # This pass writes to a transient that nothing reads
+            add_pass!(graph, :orphaned, noop!; reads=[a], writes=[(orphan_out, 0)])
+            add_pass!(graph, :to_screen, noop!; reads=[a], writes=[(out, 0)])
+
+            @test compile!(graph)
+            active = get_active_passes(graph)
+            @test :orphaned ∉ active
+            @test :main_producer ∈ active
+            @test :to_screen ∈ active
+        end
+
+        @testset "Resource lifetime analysis" begin
+            graph = RenderGraph()
+            a = declare_resource!(graph, :a, RG_RGBA16F)
+            b = declare_resource!(graph, :b, RG_RGBA16F)
+            out = import_resource!(graph, :out, RG_RGBA8_SRGB)
+
+            noop!(_, _) = nothing
+            add_pass!(graph, :p1, noop!; writes=[(a, 0)])
+            add_pass!(graph, :p2, noop!; reads=[a], writes=[(b, 0)])
+            add_pass!(graph, :p3, noop!; reads=[b], writes=[(out, 0)])
+
+            @test compile!(graph)
+
+            # Resource :a is first used by p1 (order 1) and last used by p2 (order 2)
+            first_a, last_a = graph.resource_lifetimes[a.index]
+            @test first_a == 1
+            @test last_a == 2
+
+            # Resource :b is used by p2 (order 2) and p3 (order 3)
+            first_b, last_b = graph.resource_lifetimes[b.index]
+            @test first_b == 2
+            @test last_b == 3
+        end
+
+        @testset "Resource aliasing" begin
+            graph = RenderGraph()
+            # Two transient resources with non-overlapping lifetimes and same format
+            a = declare_resource!(graph, :a, RG_RGBA16F)
+            b = declare_resource!(graph, :b, RG_RGBA16F)
+            c = declare_resource!(graph, :c, RG_RGBA16F)  # Same format, later lifetime
+            out = import_resource!(graph, :out, RG_RGBA8_SRGB)
+
+            noop!(_, _) = nothing
+            add_pass!(graph, :p1, noop!; writes=[(a, 0)])
+            add_pass!(graph, :p2, noop!; reads=[a], writes=[(b, 0)])
+            add_pass!(graph, :p3, noop!; reads=[b], writes=[(c, 0)])
+            add_pass!(graph, :p4, noop!; reads=[c], writes=[(out, 0)])
+
+            @test compile!(graph)
+            # :a's lifetime ends at p2, :c's lifetime starts at p3
+            # So :c can alias :a (same format, non-overlapping)
+            @test OpenReality.get_alias_count(graph) >= 1
+        end
+
+        @testset "Cycle detection" begin
+            graph = RenderGraph()
+            a = declare_resource!(graph, :a, RG_RGBA16F; lifetime=RG_IMPORTED)
+            b = declare_resource!(graph, :b, RG_RGBA16F; lifetime=RG_IMPORTED)
+
+            noop!(_, _) = nothing
+            # p1 reads b, writes a; p2 reads a, writes b → mutual dependency = cycle
+            add_pass!(graph, :p1, noop!; reads=[b], writes=[(a, 0)])
+            add_pass!(graph, :p2, noop!; reads=[a], writes=[(b, 0)])
+
+            @test !compile!(graph)  # Cycle detected
+            @test any(occursin("Cycle", e) for e in graph.errors)
+        end
+
+        @testset "Validation — read before write" begin
+            graph = RenderGraph()
+            phantom = declare_resource!(graph, :phantom, RG_RGBA16F)  # Never written
+            out = import_resource!(graph, :out, RG_RGBA8_SRGB)
+
+            noop!(_, _) = nothing
+            add_pass!(graph, :reader, noop!; reads=[phantom], writes=[(out, 0)])
+
+            # Should report validation error
+            @test !compile!(graph)
+            @test !isempty(graph.errors)
+            @test any(occursin("never written", e) for e in graph.errors)
+        end
+
+        @testset "Graphviz dump" begin
+            graph = RenderGraph()
+            a = declare_resource!(graph, :a, RG_RGBA16F)
+            out = import_resource!(graph, :out, RG_RGBA8_SRGB)
+
+            noop!(_, _) = nothing
+            add_pass!(graph, :producer, noop!; writes=[(a, 0)])
+            add_pass!(graph, :consumer, noop!; reads=[a], writes=[(out, 0)])
+
+            @test compile!(graph)
+            dot = dump_graphviz(graph)
+            @test occursin("digraph RenderGraph", dot)
+            @test occursin("producer", dot)
+            @test occursin("consumer", dot)
+            @test occursin("RG_RGBA16F", dot)
+        end
+
+        @testset "Custom pass insertion API" begin
+            graph = RenderGraph()
+            a = declare_resource!(graph, :a, RG_RGBA16F)
+            b = declare_resource!(graph, :b, RG_RGBA16F)
+            out = import_resource!(graph, :out, RG_RGBA8_SRGB)
+
+            noop!(_, _) = nothing
+            add_pass!(graph, :p1, noop!; writes=[(a, 0)])
+            add_pass!(graph, :p3, noop!; reads=[b], writes=[(out, 0)])
+
+            # Insert a pass between p1 and p3
+            result = insert_pass_after!(graph, :p1, :p2, noop!;
+                reads=[a], writes=[(b, 0)])
+            @test result !== nothing
+            @test result.name == :p2
+            @test !graph.compiled  # Insertion invalidates compilation
+
+            @test compile!(graph)
+            active = get_active_passes(graph)
+            @test active == [:p1, :p2, :p3]
+
+            # Remove p2
+            @test remove_pass!(graph, :p2)
+            @test !graph.compiled
+            @test !remove_pass!(graph, :nonexistent)
+        end
+
+        @testset "insert_pass_before!" begin
+            graph = RenderGraph()
+            a = declare_resource!(graph, :a, RG_RGBA16F)
+            out = import_resource!(graph, :out, RG_RGBA8_SRGB)
+
+            noop!(_, _) = nothing
+            add_pass!(graph, :final, noop!; reads=[a], writes=[(out, 0)])
+
+            result = insert_pass_before!(graph, :final, :producer, noop!;
+                writes=[(a, 0)])
+            @test result !== nothing
+            @test compile!(graph)
+            @test get_active_passes(graph) == [:producer, :final]
+        end
+
+        @testset "set_pass_enabled!" begin
+            graph = RenderGraph()
+            a = declare_resource!(graph, :a, RG_RGBA16F)
+            out = import_resource!(graph, :out, RG_RGBA8_SRGB)
+
+            noop!(_, _) = nothing
+            add_pass!(graph, :p1, noop!; writes=[(a, 0)])
+            add_pass!(graph, :p2, noop!; reads=[a], writes=[(out, 0)])
+
+            @test compile!(graph)
+            @test length(get_active_passes(graph)) == 2
+
+            # Disable p1 — p2 should fail validation (reads a, never written)
+            @test set_pass_enabled!(graph, :p1, false)
+            @test !graph.compiled
+            @test !compile!(graph)
+        end
+
+        @testset "get_pass and get_resource_handle" begin
+            graph = RenderGraph()
+            declare_resource!(graph, :color, RG_RGBA16F)
+
+            noop!(_, _) = nothing
+            add_pass!(graph, :test_pass, noop!)
+
+            @test get_pass(graph, :test_pass) !== nothing
+            @test get_pass(graph, :nonexistent) === nothing
+
+            handle = get_resource_handle(graph, :color)
+            @test handle !== nothing
+            @test handle.format == RG_RGBA16F
+            @test get_resource_handle(graph, :nonexistent) === nothing
+        end
+
+        @testset "Timing system" begin
+            rg_timing_enable!(true)
+            @test rg_timing_enabled()
+
+            OpenReality.rg_timing_begin_frame!()
+            OpenReality.rg_timing_record!(:shadow, 0.5, 0.3)
+            OpenReality.rg_timing_record!(:gbuffer, 1.2, 0.8)
+            OpenReality.rg_timing_record!(:lighting, 0.8, 0.5)
+            OpenReality.rg_timing_end_frame!()
+
+            latest = rg_timing_get_latest()
+            @test latest !== nothing
+            @test length(latest.pass_timings) == 3
+            @test latest.pass_timings[1].name == :shadow
+            @test latest.pass_timings[1].cpu_ms == 0.5
+            @test latest.total_cpu > 0.0
+
+            avg = rg_timing_get_average(1)
+            @test avg !== nothing
+            @test length(avg.pass_timings) == 3
+
+            rg_timing_enable!(false)
+            @test !rg_timing_enabled()
+        end
+
+        @testset "Async compute markers" begin
+            graph = RenderGraph()
+            a = declare_resource!(graph, :a, RG_RGBA16F)
+            out = import_resource!(graph, :out, RG_RGBA8_SRGB)
+
+            noop!(_, _) = nothing
+            add_pass!(graph, :ssao, noop!; writes=[(a, 0)], queue_type=:graphics)
+            add_pass!(graph, :final, noop!; reads=[a], writes=[(out, 0)])
+
+            @test mark_compute!(graph, :ssao)
+            @test graph.passes[1].queue_type == :compute
+            @test get_compute_passes(graph) == [:ssao]
+            @test !mark_compute!(graph, :nonexistent)
+        end
+
+        @testset "Multi-frame double-buffering" begin
+            graph = RenderGraph()
+            @test graph.frame_index == 0
+            advance_frame!(graph)
+            @test graph.frame_index == 1
+            advance_frame!(graph)
+            @test graph.frame_index == 0
+        end
+
+        @testset "Deferred graph construction" begin
+            config = PostProcessConfig(
+                bloom_enabled=true,
+                ssao_enabled=true,
+                dof_enabled=true,
+                motion_blur_enabled=true,
+                fxaa_enabled=true
+            )
+            (graph, handles) = build_deferred_render_graph!(config;
+                ssao_enabled=true, ssr_enabled=true, taa_enabled=true)
+
+            @test length(graph.resources) == 27  # 22 + 5 sequencing tokens
+            @test length(graph.passes) == 24
+
+            @test handles.gbuf_albedo_metallic.format == RG_RGBA16F
+            @test handles.gbuf_depth.format == RG_DEPTH32F
+            @test handles.swapchain.format == RG_RGBA8_SRGB
+
+            @test compile!(graph)
+            @test graph.compiled
+
+            active = get_active_passes(graph)
+            @test :shadow_csm ∈ active
+            @test :gbuffer ∈ active
+            @test :deferred_lighting ∈ active
+            @test :ssao ∈ active
+            @test :ssr ∈ active
+            @test :taa ∈ active
+            @test :bloom_extract ∈ active
+            @test :fxaa ∈ active
+            @test :present ∈ active
+        end
+
+        @testset "Deferred graph — optional passes culled when disabled" begin
+            config = PostProcessConfig(
+                bloom_enabled=false,
+                dof_enabled=false,
+                motion_blur_enabled=false,
+                fxaa_enabled=false
+            )
+            (graph, _) = build_deferred_render_graph!(config;
+                ssao_enabled=false, ssr_enabled=false, taa_enabled=false)
+
+            @test compile!(graph)
+            active = get_active_passes(graph)
+
+            @test :ssao ∉ active
+            @test :ssao_blur ∉ active
+            @test :ssr ∉ active
+            @test :taa ∉ active
+            @test :dof_coc ∉ active
+            @test :dof_blur ∉ active
+            @test :mblur_velocity ∉ active
+            @test :bloom_extract ∉ active
+            @test :bloom_blur ∉ active
+
+            # Core passes should still be active
+            @test :shadow_csm ∈ active
+            @test :gbuffer ∈ active
+            @test :deferred_lighting ∈ active
+            @test :post_composite ∈ active
+            @test :present ∈ active
+        end
+
+        @testset "Forward graph construction" begin
+            config = PostProcessConfig()
+            (graph, handles) = build_forward_render_graph!(config)
+
+            @test handles === nothing  # Forward graph doesn't return handles
+            @test length(graph.passes) == 6
+
+            @test compile!(graph)
+            active = get_active_passes(graph)
+            @test :shadow_csm ∈ active
+            @test :forward_transparent ∈ active
+            @test :present ∈ active
+        end
+
+        @testset "Active resources query" begin
+            graph = RenderGraph()
+            a = declare_resource!(graph, :a, RG_RGBA16F)
+            unused = declare_resource!(graph, :unused, RG_R8)
+            out = import_resource!(graph, :out, RG_RGBA8_SRGB)
+
+            noop!(_, _) = nothing
+            add_pass!(graph, :p1, noop!; writes=[(a, 0)])
+            add_pass!(graph, :p2, noop!; reads=[a], writes=[(out, 0)])
+
+            @test compile!(graph)
+            active_res = get_active_resources(graph)
+            @test :a ∈ active_res
+            @test :out ∈ active_res
+            @test :unused ∉ active_res
+        end
+    end
 end
