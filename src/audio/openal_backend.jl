@@ -1,6 +1,21 @@
+
+
+
 # OpenAL backend — ccall wrappers and state management
 
-using OpenAL_jll
+
+
+# ---- OpenAL ccall wrappers ----
+
+#OpenAL_jll.libopenal v1.21.1 had no Windows artifact... Fixed by loading OpenAL32.dll directly via Libdl path instead of the JLL.
+const _openal_lib = if Sys.iswindows()
+    joinpath(@__DIR__, "..", "windows_deps", "OpenAL32.dll")
+else
+    import OpenAL_jll
+    OpenAL_jll.libopenal
+end
+
+
 
 # ---- OpenAL constants ----
 const AL_NONE = Int32(0)
@@ -25,8 +40,7 @@ const AL_FORMAT_STEREO16 = Int32(0x1103)
 const AL_TRUE = Int32(1)
 const AL_FALSE = Int32(0)
 
-# ---- OpenAL ccall wrappers ----
-const _openal_lib = OpenAL_jll.libopenal
+
 
 function al_open_device(name::Ptr{Nothing} = C_NULL)
     ccall((:alcOpenDevice, _openal_lib), Ptr{Nothing}, (Ptr{Nothing},), name)
