@@ -26,91 +26,106 @@ const AL_TRUE = Int32(1)
 const AL_FALSE = Int32(0)
 
 # ---- OpenAL ccall wrappers ----
-const _openal_lib = OpenAL_jll.libopenal
+function find_openal()::String
+    
+    if OpenAL_jll.is_available()
+        return OpenAL_jll.libopenal_path
+    end
+
+    system_names = if Sys.iswindows()
+        ["OpenAL32.dll", "soft_oal.dll"]
+    elseif Sys.isapple()
+        ["libopenal.dylib", "libopenal.1.dylib"]
+    else
+        ["libopenal.so", "libopenal.so.1"]
+    end
+end
+
+const libopenal = find_openal()
 
 function al_open_device(name::Ptr{Nothing} = C_NULL)
-    ccall((:alcOpenDevice, _openal_lib), Ptr{Nothing}, (Ptr{Nothing},), name)
+    ccall((:alcOpenDevice, libopenal), Ptr{Nothing}, (Ptr{Nothing},), name)
 end
 
 function al_close_device(device::Ptr{Nothing})
-    ccall((:alcCloseDevice, _openal_lib), Int32, (Ptr{Nothing},), device)
+    ccall((:alcCloseDevice, libopenal), Int32, (Ptr{Nothing},), device)
 end
 
 function al_create_context(device::Ptr{Nothing}, attrs::Ptr{Nothing} = C_NULL)
-    ccall((:alcCreateContext, _openal_lib), Ptr{Nothing}, (Ptr{Nothing}, Ptr{Nothing}), device, attrs)
+    ccall((:alcCreateContext, libopenal), Ptr{Nothing}, (Ptr{Nothing}, Ptr{Nothing}), device, attrs)
 end
 
 function al_make_context_current(ctx::Ptr{Nothing})
-    ccall((:alcMakeContextCurrent, _openal_lib), Int32, (Ptr{Nothing},), ctx)
+    ccall((:alcMakeContextCurrent, libopenal), Int32, (Ptr{Nothing},), ctx)
 end
 
 function al_destroy_context(ctx::Ptr{Nothing})
-    ccall((:alcDestroyContext, _openal_lib), Cvoid, (Ptr{Nothing},), ctx)
+    ccall((:alcDestroyContext, libopenal), Cvoid, (Ptr{Nothing},), ctx)
 end
 
 function al_gen_buffers(n::Int)
     ids = Vector{UInt32}(undef, n)
-    ccall((:alGenBuffers, _openal_lib), Cvoid, (Int32, Ptr{UInt32}), Int32(n), ids)
+    ccall((:alGenBuffers, libopenal), Cvoid, (Int32, Ptr{UInt32}), Int32(n), ids)
     return ids
 end
 
 function al_delete_buffers(ids::Vector{UInt32})
-    ccall((:alDeleteBuffers, _openal_lib), Cvoid, (Int32, Ptr{UInt32}), Int32(length(ids)), ids)
+    ccall((:alDeleteBuffers, libopenal), Cvoid, (Int32, Ptr{UInt32}), Int32(length(ids)), ids)
 end
 
 function al_buffer_data(buffer::UInt32, format::Int32, data::Vector{UInt8}, size::Int32, freq::Int32)
-    ccall((:alBufferData, _openal_lib), Cvoid,
+    ccall((:alBufferData, libopenal), Cvoid,
           (UInt32, Int32, Ptr{UInt8}, Int32, Int32),
           buffer, format, data, size, freq)
 end
 
 function al_gen_sources(n::Int)
     ids = Vector{UInt32}(undef, n)
-    ccall((:alGenSources, _openal_lib), Cvoid, (Int32, Ptr{UInt32}), Int32(n), ids)
+    ccall((:alGenSources, libopenal), Cvoid, (Int32, Ptr{UInt32}), Int32(n), ids)
     return ids
 end
 
 function al_delete_sources(ids::Vector{UInt32})
-    ccall((:alDeleteSources, _openal_lib), Cvoid, (Int32, Ptr{UInt32}), Int32(length(ids)), ids)
+    ccall((:alDeleteSources, libopenal), Cvoid, (Int32, Ptr{UInt32}), Int32(length(ids)), ids)
 end
 
 function al_sourcei(source::UInt32, param::Int32, value::Int32)
-    ccall((:alSourcei, _openal_lib), Cvoid, (UInt32, Int32, Int32), source, param, value)
+    ccall((:alSourcei, libopenal), Cvoid, (UInt32, Int32, Int32), source, param, value)
 end
 
 function al_sourcef(source::UInt32, param::Int32, value::Float32)
-    ccall((:alSourcef, _openal_lib), Cvoid, (UInt32, Int32, Float32), source, param, value)
+    ccall((:alSourcef, libopenal), Cvoid, (UInt32, Int32, Float32), source, param, value)
 end
 
 function al_source3f(source::UInt32, param::Int32, v1::Float32, v2::Float32, v3::Float32)
-    ccall((:alSource3f, _openal_lib), Cvoid, (UInt32, Int32, Float32, Float32, Float32),
+    ccall((:alSource3f, libopenal), Cvoid, (UInt32, Int32, Float32, Float32, Float32),
           source, param, v1, v2, v3)
 end
 
 function al_source_play(source::UInt32)
-    ccall((:alSourcePlay, _openal_lib), Cvoid, (UInt32,), source)
+    ccall((:alSourcePlay, libopenal), Cvoid, (UInt32,), source)
 end
 
 function al_source_stop(source::UInt32)
-    ccall((:alSourceStop, _openal_lib), Cvoid, (UInt32,), source)
+    ccall((:alSourceStop, libopenal), Cvoid, (UInt32,), source)
 end
 
 function al_get_sourcei(source::UInt32, param::Int32)
     val = Ref{Int32}(0)
-    ccall((:alGetSourcei, _openal_lib), Cvoid, (UInt32, Int32, Ptr{Int32}), source, param, val)
+    ccall((:alGetSourcei, libopenal), Cvoid, (UInt32, Int32, Ptr{Int32}), source, param, val)
     return val[]
 end
 
 function al_listener3f(param::Int32, v1::Float32, v2::Float32, v3::Float32)
-    ccall((:alListener3f, _openal_lib), Cvoid, (Int32, Float32, Float32, Float32), param, v1, v2, v3)
+    ccall((:alListener3f, libopenal), Cvoid, (Int32, Float32, Float32, Float32), param, v1, v2, v3)
 end
 
 function al_listenerf(param::Int32, value::Float32)
-    ccall((:alListenerf, _openal_lib), Cvoid, (Int32, Float32), param, value)
+    ccall((:alListenerf, libopenal), Cvoid, (Int32, Float32), param, value)
 end
 
 function al_listenerfv(param::Int32, values::Vector{Float32})
-    ccall((:alListenerfv, _openal_lib), Cvoid, (Int32, Ptr{Float32}), param, values)
+    ccall((:alListenerfv, libopenal), Cvoid, (Int32, Ptr{Float32}), param, values)
 end
 
 # ---- OpenAL state ----

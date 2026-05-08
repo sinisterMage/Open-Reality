@@ -8661,7 +8661,7 @@ using StaticArrays
             @test length(latest.pass_timings) == 3
             @test latest.pass_timings[1].name == :shadow
             @test latest.pass_timings[1].cpu_ms == 0.5
-            @test latest.total_cpu > 0.0
+            @test latest.total_cpu_ms > 0.0
 
             avg = rg_timing_get_average(1)
             @test avg !== nothing

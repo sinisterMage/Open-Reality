@@ -89,6 +89,11 @@ irm https://open-reality.com/install.ps1 | iex
 
 Prerequisites: **Julia 1.9+** ([julialang.org](https://julialang.org/downloads/)), **GLFW** (`sudo apt install libglfw3 libglfw3-dev` on Ubuntu / `brew install glfw` on macOS), optionally **Vulkan SDK** ([lunarg.com](https://vulkan.lunarg.com/sdk/home)).
 
+
+
+## Prerequisites
+- [OpenAL Soft](https://openal-soft.org/#download) (Windows users must install manually)
+
 ```bash
 git clone https://github.com/sinisterMage/Open-Reality.git
 cd OpenReality
