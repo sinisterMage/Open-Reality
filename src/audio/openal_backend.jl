@@ -29,7 +29,8 @@ const AL_FALSE = Int32(0)
 function find_openal()::String
     
     if OpenAL_jll.is_available()
-        return OpenAL_jll.libopenal_path
+        paths = OpenAL_jll.libopenal_path
+        return paths isa Vector ? first(paths) : paths
     end
 
     system_names = if Sys.iswindows()
@@ -39,6 +40,11 @@ function find_openal()::String
     else
         ["libopenal.so", "libopenal.so.1"]
     end
+    for name in system_names
+        found = Sys.which(name)
+        found !== nothing && return found
+    end
+    error("OpenAl not found. Install OpenAl or OpenAL Soft")
 end
 
 const libopenal = find_openal()
