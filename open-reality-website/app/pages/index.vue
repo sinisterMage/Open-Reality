@@ -16,7 +16,7 @@ const features = [
   {
     tag: 'GPU',
     title: '4 Rendering Backends',
-    description: 'OpenGL 3.3, Metal, Vulkan, and WebGPU. Choose the right backend for your platform.',
+    description: 'Vulkan and Metal as platform defaults, OpenGL 3.3 as the legacy fallback, plus experimental WebGPU. Switch with a single keyword.',
   },
   {
     tag: 'PHY',
@@ -72,8 +72,8 @@ entity([
 ])`
 
 const postprocessCode = `# Full post-processing pipeline
+# (defaults to VulkanBackend on Linux/Windows, MetalBackend on macOS)
 render(s,
-    backend=OpenGLBackend(),
     post_process=PostProcessConfig(
         bloom_enabled=true,
         bloom_threshold=1.0f0,
@@ -169,9 +169,9 @@ const activeTab = ref<'unix' | 'windows'>('unix')
             <pre class="font-mono text-sm leading-relaxed">
 <span class="text-or-green">Scene DSL</span>        <span class="text-or-text-dim">──▶</span>  <span class="text-or-cyan">ECS Store</span>       <span class="text-or-text-dim">──▶</span>  <span class="text-or-amber">Systems</span>          <span class="text-or-text-dim">──▶</span>  <span class="text-or-green">Backend</span>
 
-<span class="text-or-text-dim">scene([</span>              EntityID +         Physics             OpenGL 3.3
-<span class="text-or-text-dim">  entity([...])</span>       Components         Animation            Metal
-<span class="text-or-text-dim">  entity([...])</span>       ComponentStore     Skinning             Vulkan
+<span class="text-or-text-dim">scene([</span>              EntityID +         Physics             Vulkan (default)
+<span class="text-or-text-dim">  entity([...])</span>       Components         Animation            Metal (default)
+<span class="text-or-text-dim">  entity([...])</span>       ComponentStore     Skinning             OpenGL (legacy)
 <span class="text-or-text-dim">])</span>                                        Audio               WebGPU
                                         Particles
                                         <span class="text-or-text-dim">───────────</span>

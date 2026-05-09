@@ -53,6 +53,11 @@ end
 
 # Persistent reference to prevent GC of the debug callback
 const _VK_DEBUG_CALLBACK_REF = Ref{Any}(nothing)
+# Holds the live VkDebugUtilsMessengerEXT handle so we can destroy it during
+# shutdown!. Without this we leaked a child object of VkInstance and
+# vkDestroyInstance would (correctly) report a validation error at exit.
+const _VK_DEBUG_MESSENGER_HANDLE = Ref{UInt64}(UInt64(0))
+const _VK_DEBUG_MESSENGER_INSTANCE = Ref{Ptr{Nothing}}(C_NULL)
 
 function _vk_debug_messenger_callback(severity, type, callback_data_ptr, user_data)
     callback_data = unsafe_load(callback_data_ptr)
@@ -103,6 +108,8 @@ function _vk_setup_debug_messenger(instance::Instance)
                  Ptr{Cvoid}, Ptr{Vulkan.VkCore.VkDebugUtilsMessengerEXT}),
                 instance.vks, create_info_ref, C_NULL, messenger_ref)
             if result == 0
+                _VK_DEBUG_MESSENGER_HANDLE[] = UInt64(messenger_ref[])
+                _VK_DEBUG_MESSENGER_INSTANCE[] = instance.vks
                 @info "Vulkan validation messenger installed"
             else
                 @warn "Failed to create debug messenger: $result"
@@ -111,6 +118,29 @@ function _vk_setup_debug_messenger(instance::Instance)
     else
         @warn "vkCreateDebugUtilsMessengerEXT not available"
     end
+end
+
+"""
+    vk_destroy_debug_messenger!(instance)
+
+Destroy the validation debug messenger created by `_install_debug_messenger!`.
+Called from `shutdown!` BEFORE the instance is finalized so we don't leak it.
+Safe to call when no messenger was installed.
+"""
+function vk_destroy_debug_messenger!(instance::Instance)
+    handle = _VK_DEBUG_MESSENGER_HANDLE[]
+    handle == 0 && return
+    func_ptr = ccall((:vkGetInstanceProcAddr, Vulkan.VkCore.libvulkan),
+        Ptr{Cvoid}, (Ptr{Nothing}, Cstring),
+        instance.vks, "vkDestroyDebugUtilsMessengerEXT")
+    if func_ptr != C_NULL
+        ccall(func_ptr, Cvoid,
+            (Ptr{Nothing}, UInt64, Ptr{Cvoid}),
+            instance.vks, handle, C_NULL)
+    end
+    _VK_DEBUG_MESSENGER_HANDLE[] = UInt64(0)
+    _VK_DEBUG_MESSENGER_INSTANCE[] = C_NULL
+    return nothing
 end
 
 """

@@ -194,6 +194,18 @@ function transition_image_layout!(cmd::CommandBuffer, image::Image,
         dst_access = ACCESS_SHADER_READ_BIT
         src_stage = PIPELINE_STAGE_TOP_OF_PIPE_BIT
         dst_stage = PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+    elseif old_layout == IMAGE_LAYOUT_PRESENT_SRC_KHR && new_layout == IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+        # Capture path: read just-presented swapchain image into a staging buffer.
+        src_access = AccessFlag(0)
+        dst_access = ACCESS_TRANSFER_READ_BIT
+        src_stage = PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT
+        dst_stage = PIPELINE_STAGE_TRANSFER_BIT
+    elseif old_layout == IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL && new_layout == IMAGE_LAYOUT_PRESENT_SRC_KHR
+        # Capture path: hand the swapchain image back to the presentation engine.
+        src_access = ACCESS_TRANSFER_READ_BIT
+        dst_access = AccessFlag(0)
+        src_stage = PIPELINE_STAGE_TRANSFER_BIT
+        dst_stage = PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT
     else
         @warn "Unhandled image layout transition" old_layout new_layout
     end

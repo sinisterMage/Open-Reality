@@ -89,6 +89,39 @@ function _execute_scene_switch!(backend::AbstractBackend, new_defs::Vector, on_s
     return scene(new_defs)
 end
 
+# =============================================================================
+# Backend capability predicates
+# =============================================================================
+# Some backends (currently only OpenGL) keep their UI / particle / terrain GPU
+# state in module-level globals that the run-loop must explicitly initialize and
+# tear down. Newer backends (Vulkan, Metal, WebGPU) own that state inside the
+# backend struct and manage it inside `initialize!` / `shutdown!`. These
+# predicates encode that distinction so the loop stays backend-agnostic.
+
+"""
+    _uses_global_particle_renderer(backend) -> Bool
+
+True for backends whose particle renderer lives in module-level globals and
+must be initialized via `init_particle_renderer!()` before first use.
+"""
+_uses_global_particle_renderer(backend::AbstractBackend) = backend isa OpenGLBackend
+
+"""
+    _uses_global_ui_renderer(backend) -> Bool
+
+True for backends whose UI renderer (and font atlas) lives in module-level
+globals and must be initialized via `init_ui_renderer!()` before first use.
+"""
+_uses_global_ui_renderer(backend::AbstractBackend) = backend isa OpenGLBackend
+
+"""
+    _uses_global_terrain_caches(backend) -> Bool
+
+True for backends whose terrain GPU caches live in module-level globals and
+must be reset via `reset_terrain_gpu_caches!()` on shutdown / scene switch.
+"""
+_uses_global_terrain_caches(backend::AbstractBackend) = backend isa OpenGLBackend
+
 function _init_player_controller(scene::Scene, backend::AbstractBackend)
     result = find_player_and_camera(scene)
     if result !== nothing
@@ -104,10 +137,13 @@ function _init_player_controller(scene::Scene, backend::AbstractBackend)
 end
 
 """
-    run_render_loop!(scene::Scene; backend=OpenGLBackend(), width=1280, height=720, title="OpenReality", ui=nothing, on_update=nothing, on_scene_switch=nothing)
+    run_render_loop!(scene::Scene; backend=default_backend(), width=1280, height=720, title="OpenReality", ui=nothing, on_update=nothing, on_scene_switch=nothing)
 
 Main render loop. Creates a window, initializes the backend, and renders the scene
 until the window is closed.
+
+The default backend is platform-aware: `VulkanBackend()` on Linux/Windows and
+`MetalBackend()` on macOS. Pass `backend=OpenGLBackend()` for the legacy OpenGL path.
 
 If a PlayerComponent exists in the scene, FPS controls are automatically enabled:
 WASD movement, mouse look, Space/Ctrl for up/down, Shift to sprint, Escape to
@@ -123,7 +159,7 @@ Pass `on_scene_switch` as a callback `(old_scene, new_defs::Vector{EntityDef}) -
 to customise scene-switch cleanup (default: `reset_engine_state!()` + `clear_audio_sources!()`).
 """
 function run_render_loop!(initial_scene::Scene;
-                          backend::AbstractBackend = OpenGLBackend(),
+                          backend::AbstractBackend = default_backend(),
                           width::Int = 1280,
                           height::Int = 720,
                           title::String = "OpenReality",
@@ -138,14 +174,15 @@ function run_render_loop!(initial_scene::Scene;
     # Initialize audio system
     init_audio!()
 
-    # Initialize particle renderer (OpenGL only — other backends handle particles in render_frame!)
-    if backend isa OpenGLBackend
+    # Initialize global particle renderer for backends that need it (OpenGL).
+    # Backends that own their particle renderer internally (Vulkan/Metal/WebGPU) skip this.
+    if _uses_global_particle_renderer(backend)
         init_particle_renderer!()
     end
 
     # Initialize UI renderer if callback provided
     if ui !== nothing
-        if backend isa OpenGLBackend
+        if _uses_global_ui_renderer(backend)
             init_ui_renderer!()
         end
         _UI_CONTEXT[] = UIContext()
@@ -215,8 +252,10 @@ function run_render_loop!(initial_scene::Scene;
                     ui_ctx.height = backend.window.height
                 end
 
-                # Initialize font atlas on first frame (needs OpenGL context)
-                if backend isa OpenGLBackend && isempty(ui_ctx.font_atlas.glyphs) && isempty(ui_ctx.font_path)
+                # Initialize the global font atlas on first frame for backends that
+                # rely on it (OpenGL needs a live GL context). Vulkan/Metal/WebGPU
+                # build per-backend atlases lazily on demand.
+                if _uses_global_ui_renderer(backend) && isempty(ui_ctx.font_atlas.glyphs) && isempty(ui_ctx.font_path)
                     ui_ctx.font_atlas = get_or_create_font_atlas!("", 32)
                 end
 
@@ -331,14 +370,16 @@ function run_render_loop!(initial_scene::Scene;
         end
     finally
         if _UI_CONTEXT[] !== nothing
-            if backend isa OpenGLBackend
+            if _uses_global_ui_renderer(backend)
                 shutdown_ui_renderer!()
             end
             _UI_CONTEXT[] = nothing
             _UI_CALLBACK[] = nothing
         end
-        if backend isa OpenGLBackend
+        if _uses_global_particle_renderer(backend)
             shutdown_particle_renderer!()
+        end
+        if _uses_global_terrain_caches(backend)
             reset_terrain_gpu_caches!()
         end
         reset_particle_pools!()
@@ -353,14 +394,16 @@ function run_render_loop!(initial_scene::Scene;
 end
 
 """
-    run_render_loop!(fsm::GameStateMachine; backend=OpenGLBackend(), width=1280, height=720, title="OpenReality", post_process=nothing, ui=nothing, on_scene_switch=nothing)
+    run_render_loop!(fsm::GameStateMachine; backend=default_backend(), width=1280, height=720, title="OpenReality", post_process=nothing, ui=nothing, on_scene_switch=nothing)
 
 FSM-driven render loop. Uses a `GameStateMachine` to manage game states and transitions
 instead of a single `on_update` callback. Each state receives `on_enter!`, `on_update!`,
 and `on_exit!` lifecycle hooks. Return a `StateTransition` from `on_update!` to switch states.
+
+The default backend is platform-aware (see [`default_backend`](@ref)).
 """
 function run_render_loop!(fsm::GameStateMachine;
-                          backend::AbstractBackend = OpenGLBackend(),
+                          backend::AbstractBackend = default_backend(),
                           width::Int = 1280,
                           height::Int = 720,
                           title::String = "OpenReality",
@@ -374,13 +417,14 @@ function run_render_loop!(fsm::GameStateMachine;
     # Initialize audio system
     init_audio!()
 
-    # Initialize particle renderer (OpenGL only — other backends handle particles in render_frame!)
-    if backend isa OpenGLBackend
+    # Initialize global particle renderer for backends that need it (OpenGL).
+    # Backends that own their particle renderer internally (Vulkan/Metal/WebGPU) skip this.
+    if _uses_global_particle_renderer(backend)
         init_particle_renderer!()
     end
 
-    # Initialize UI renderer
-    if backend isa OpenGLBackend
+    # Initialize global UI renderer for backends that need it (OpenGL).
+    if _uses_global_ui_renderer(backend)
         init_ui_renderer!()
     end
     _UI_CONTEXT[] = UIContext()
@@ -460,8 +504,10 @@ function run_render_loop!(fsm::GameStateMachine;
                     ui_ctx.height = backend.window.height
                 end
 
-                # Initialize font atlas on first frame (needs OpenGL context)
-                if backend isa OpenGLBackend && isempty(ui_ctx.font_atlas.glyphs) && isempty(ui_ctx.font_path)
+                # Initialize the global font atlas on first frame for backends that
+                # rely on it (OpenGL needs a live GL context). Vulkan/Metal/WebGPU
+                # build per-backend atlases lazily on demand.
+                if _uses_global_ui_renderer(backend) && isempty(ui_ctx.font_atlas.glyphs) && isempty(ui_ctx.font_path)
                     ui_ctx.font_atlas = get_or_create_font_atlas!("", 32)
                 end
 
@@ -615,14 +661,16 @@ function run_render_loop!(fsm::GameStateMachine;
         end
     finally
         if _UI_CONTEXT[] !== nothing
-            if backend isa OpenGLBackend
+            if _uses_global_ui_renderer(backend)
                 shutdown_ui_renderer!()
             end
             _UI_CONTEXT[] = nothing
             _UI_CALLBACK[] = nothing
         end
-        if backend isa OpenGLBackend
+        if _uses_global_particle_renderer(backend)
             shutdown_particle_renderer!()
+        end
+        if _uses_global_terrain_caches(backend)
             reset_terrain_gpu_caches!()
         end
         reset_particle_pools!()

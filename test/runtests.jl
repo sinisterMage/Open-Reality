@@ -2,6 +2,7 @@ using OpenReality
 using Test
 using LinearAlgebra
 using StaticArrays
+using ColorTypes: RGBA, red, green, blue, alpha
 
 @testset "OpenReality.jl" begin
     @testset "Module loads" begin
@@ -1572,12 +1573,77 @@ using StaticArrays
 
                 if init_ok
                     @test backend.initialized
+                    # Forward transparent pass + present pipeline must be wired up.
+                    @test backend.present_pipeline !== nothing
+                    @test backend.forward_pipeline !== nothing
+                    @test backend.transparent_render_pass !== nothing
+                    @test !isempty(backend.transparent_framebuffers)
+                    # SSR pass must be created by the deferred pipeline.
+                    @test backend.deferred_pipeline !== nothing
+                    @test backend.deferred_pipeline.ssr_pass !== nothing
                     shutdown!(backend)
                     @test !backend.initialized
                 else
-                    @test_broken backend.initialized
+                    @test_skip backend.initialized
                 end
             end
+
+            @testset "Vulkan capture_framebuffer" begin
+                # Headless capture round-trip — initializes Vulkan, renders a
+                # single trivial frame, captures the swapchain image, and asserts
+                # the result has the expected shape and contains non-NaN data.
+                # Skipped silently if the platform lacks Vulkan drivers.
+                backend = VulkanBackend()
+                init_ok = try
+                    initialize!(backend; width=64, height=64,
+                        title="OpenReality test")
+                    true
+                catch e
+                    @warn "Vulkan init failed; skipping capture test" exception=e
+                    false
+                end
+
+                if init_ok
+                    try
+                        reset_entity_counter!()
+                        reset_component_stores!()
+                        s = scene([
+                            entity([
+                                CameraComponent(fov=60.0f0),
+                                transform(position=Vec3d(0, 0, 5))
+                            ]),
+                            entity([
+                                DirectionalLightComponent(
+                                    direction=Vec3f(0, -1, 0), intensity=1.0f0
+                                )
+                            ]),
+                        ])
+                        render_frame!(backend, s)
+                        img = capture_framebuffer(backend, 64, 64)
+                        @test size(img) == (64, 64)
+                        @test eltype(img) == RGBA{Float32}
+                        # At least one pixel must be non-NaN and finite.
+                        @test all(p -> isfinite(red(p)) && isfinite(green(p)) &&
+                                       isfinite(blue(p)) && isfinite(alpha(p)),
+                                  img)
+                    finally
+                        shutdown!(backend)
+                    end
+                end
+            end
+        end
+    end
+
+    @testset "default_backend()" begin
+        b = default_backend()
+        @test b isa AbstractBackend
+        if Sys.isapple()
+            # Either Metal (when available) or OpenGL fallback.
+            @test (b isa OpenGLBackend) || (@isdefined(MetalBackend) && b isa MetalBackend)
+        else
+            # Vulkan if the symbol exists (default Linux/Windows build),
+            # else OpenGL fallback.
+            @test (b isa OpenGLBackend) || (@isdefined(VulkanBackend) && b isa VulkanBackend)
         end
     end
 

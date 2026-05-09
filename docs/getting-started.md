@@ -20,9 +20,18 @@ OpenReality requires **Julia 1.9** or later. Download it from [julialang.org](ht
 | macOS | `brew install glfw` |
 | Windows | Download from [glfw.org](https://www.glfw.org/download.html) |
 
-**Vulkan SDK** (optional, only needed for the Vulkan backend):
+**Vulkan SDK** (recommended on Linux/Windows — Vulkan is the default backend there):
 
-Download from [lunarg.com](https://vulkan.lunarg.com/sdk/home). On Linux you can also install via your package manager (e.g. `sudo apt install vulkan-tools libvulkan-dev`).
+| OS | Command |
+|----|---------|
+| Ubuntu / Debian | `sudo apt install vulkan-tools libvulkan-dev` |
+| Arch Linux | `sudo pacman -S vulkan-icd-loader vulkan-tools` |
+| Fedora | `sudo dnf install vulkan-tools vulkan-loader-devel` |
+| macOS | `brew install molten-vk` (only if you want Vulkan; Metal is the macOS default) |
+| Windows | Download from [lunarg.com](https://vulkan.lunarg.com/sdk/home) |
+
+If you can't install Vulkan, pass `backend=OpenGLBackend()` to `render(...)` to
+use the legacy OpenGL path instead.
 
 ## Installation
 
@@ -322,20 +331,30 @@ render(s, post_process=PostProcessConfig(
 
 ## Tutorial 5: Switching Backends
 
-OpenReality supports three rendering backends. Pass the backend you want to `render()`:
+`render(scene)` automatically picks a backend via `default_backend()`:
+
+| Platform | Default | Override |
+|----------|---------|----------|
+| Linux / Windows | `VulkanBackend()` | `backend=OpenGLBackend()` for legacy OpenGL |
+| macOS | `MetalBackend()` | `backend=OpenGLBackend()` if Metal isn't available |
+
+You can always pass an explicit `backend=` to opt into a specific renderer:
 
 ```julia
-# OpenGL (default, works everywhere)
-render(s, backend=OpenGLBackend())
-
-# Vulkan (Linux / Windows)
+# Vulkan (Linux / Windows default)
 render(s, backend=VulkanBackend())
 
-# Metal (macOS)
+# Metal (macOS default)
 render(s, backend=MetalBackend())
+
+# OpenGL — legacy / fallback when Vulkan or Metal isn't usable
+render(s, backend=OpenGLBackend())
+
+# WebGPU (experimental, Rust FFI required)
+render(s, backend=WebGPUBackend())
 ```
 
-All backends support the same features: deferred rendering, PBR, cascaded shadow maps, IBL, SSR, SSAO, TAA, and post-processing.
+All backends support the same features: deferred rendering, PBR, cascaded shadow maps, IBL, SSR, SSAO, TAA, forward transparent pass, and post-processing.
 
 ---
 

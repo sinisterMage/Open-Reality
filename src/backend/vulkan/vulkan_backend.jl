@@ -178,6 +178,13 @@ mutable struct VulkanBackend <: AbstractBackend
     # Pipelines + caches
     deferred_pipeline::Union{VulkanDeferredPipeline, Nothing}
     forward_pipeline::Union{VulkanShaderProgram, Nothing}
+
+    # Forward transparent pass (built after deferred pipeline so it can share gb.depth)
+    transparent_render_pass::Union{RenderPass, Nothing}
+    transparent_framebuffers::Vector{VkFramebuffer}
+    transparent_framebuffer_width::Int
+    transparent_framebuffer_height::Int
+
     gpu_cache::VulkanGPUResourceCache
     texture_cache::VulkanTextureCache
     bounds_cache::Dict{EntityID, BoundingSphere}
@@ -186,6 +193,7 @@ mutable struct VulkanBackend <: AbstractBackend
     default_texture::Union{VulkanGPUTexture, Nothing}
     black_texture::Union{VulkanGPUTexture, Nothing}
     default_cubemap::Union{VulkanGPUTexture, Nothing}
+    default_depth_texture::Union{VulkanGPUTexture, Nothing}  # 1x1 D32F placeholder for sampler2DShadow bindings
     shadow_sampler::Union{Sampler, Nothing}
 
     # Per-frame transient descriptor pools (reset each frame for per-material allocations)
@@ -247,8 +255,11 @@ function VulkanBackend()
         # Lighting
         DescriptorSet[], Buffer[], DeviceMemory[], Buffer[], DeviceMemory[],
         # Pipelines
-        nothing, nothing, VulkanGPUResourceCache(), VulkanTextureCache(),
-        Dict{EntityID, BoundingSphere}(), nothing, nothing, nothing, nothing, nothing, nothing,
+        nothing, nothing,
+        # Forward transparent pass
+        nothing, VkFramebuffer[], 0, 0,
+        VulkanGPUResourceCache(), VulkanTextureCache(),
+        Dict{EntityID, BoundingSphere}(), nothing, nothing, nothing, nothing, nothing, nothing, nothing,
         # Transient pools
         DescriptorPool[],
         # Temp buffers per frame
@@ -283,6 +294,11 @@ end
 function initialize!(backend::VulkanBackend; width::Int=1280, height::Int=720, title::String="OpenReality")
     backend.width = width
     backend.height = height
+
+    # The OpenGL GPU compute particle path uses glGetIntegerv to detect support;
+    # without an active GL context that crashes. Vulkan has no compute particle
+    # path yet (TODO: vulkan_gpu_particles.jl), so force the CPU fallback.
+    _COMPUTE_SUPPORTED[] = false
 
     # Initialize GLFW with NO_API (no OpenGL context)
     ensure_glfw_init!()
@@ -406,11 +422,29 @@ function initialize!(backend::VulkanBackend; width::Int=1280, height::Int=720, t
     backend.default_cubemap = _vk_create_default_cubemap(
         backend.device, backend.physical_device, backend.command_pool, backend.graphics_queue)
 
-    # Fill lighting descriptor set unused bindings with default textures
+    # Create shadow sampler (compare-enabled, used for sampler2DShadow bindings)
+    backend.shadow_sampler = vk_create_shadow_sampler(backend.device)
+
+    # Create 1x1 D32F depth placeholder for sampler2DShadow bindings (CSM cascades).
+    # Without this, the bindings would point at the RGBA8 default_texture and
+    # validation would (correctly) flag VK_FORMAT_FEATURE_SAMPLED_IMAGE_DEPTH_COMPARISON_BIT
+    # as missing on every draw before CSM is created.
+    backend.default_depth_texture = vk_create_render_target_texture(
+        backend.device, backend.physical_device, 1, 1, FORMAT_D32_SFLOAT;
+        aspect=IMAGE_ASPECT_DEPTH_BIT)
+    let cmd = vk_begin_single_time_commands(backend.device, backend.command_pool)
+        transition_image_layout!(cmd, backend.default_depth_texture.image,
+            IMAGE_LAYOUT_UNDEFINED, IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            aspect_mask=IMAGE_ASPECT_DEPTH_BIT)
+        vk_end_single_time_commands(backend.device, backend.command_pool,
+            backend.graphics_queue, cmd)
+    end
+
+    # Fill lighting descriptor set unused bindings with sensible-format defaults.
     for i in 1:VK_MAX_FRAMES_IN_FLIGHT
-        for binding in 2:5  # CSM cascades (2D textures)
-            vk_update_texture_descriptor!(backend.device, backend.lighting_ds[i],
-                binding, backend.default_texture)
+        for binding in 2:5  # CSM cascades (sampler2DShadow — needs depth-format + shadow sampler)
+            vk_update_image_sampler_descriptor!(backend.device, backend.lighting_ds[i],
+                binding, backend.default_depth_texture.view, backend.shadow_sampler)
         end
         # IBL cubemaps (bindings 6-7 require samplerCube)
         vk_update_texture_descriptor!(backend.device, backend.lighting_ds[i],
@@ -421,9 +455,6 @@ function initialize!(backend::VulkanBackend; width::Int=1280, height::Int=720, t
         vk_update_texture_descriptor!(backend.device, backend.lighting_ds[i],
             8, backend.default_texture)
     end
-
-    # Create shadow sampler
-    backend.shadow_sampler = vk_create_shadow_sampler(backend.device)
 
     # Initialize shader cache (before any shader compilation)
     init_shader_cache!(_find_project_root())
@@ -441,6 +472,23 @@ function initialize!(backend::VulkanBackend; width::Int=1280, height::Int=720, t
     backend.post_process = vk_create_post_process(
         backend.device, backend.physical_device, width, height,
         backend.post_process_config, backend.fullscreen_layout, backend.descriptor_pool)
+
+    # Create transparent forward pass (shares G-Buffer depth with deferred pipeline,
+    # so it must be built after the deferred pipeline). Sized to the G-Buffer extent.
+    if backend.deferred_pipeline !== nothing && backend.deferred_pipeline.gbuffer !== nothing
+        gb = backend.deferred_pipeline.gbuffer
+        backend.transparent_render_pass = vk_create_transparent_render_pass(
+            backend.device, backend.swapchain_format)
+        backend.transparent_framebuffers = vk_create_transparent_framebuffers(
+            backend.device, backend.transparent_render_pass,
+            backend.swapchain_views, gb.depth.view, gb.width, gb.height)
+        backend.transparent_framebuffer_width = gb.width
+        backend.transparent_framebuffer_height = gb.height
+        backend.forward_pipeline = vk_create_forward_pipeline(
+            backend.device, backend.transparent_render_pass,
+            [backend.per_frame_layout, backend.per_material_layout, backend.lighting_layout],
+            backend.push_constant_range, gb.width, gb.height)
+    end
 
     # Create present pipeline (tone maps and blits deferred result to swapchain)
     backend.present_pipeline = vk_compile_and_create_pipeline(
@@ -554,11 +602,8 @@ function shutdown!(backend::VulkanBackend)
         vk_destroy_csm!(backend.device, backend.csm)
     end
 
-    # Destroy forward pipeline
-    if backend.forward_pipeline !== nothing
-        finalize(backend.forward_pipeline.pipeline)
-        finalize(backend.forward_pipeline.pipeline_layout)
-    end
+    # Destroy transparent forward pass (forward pipeline + render pass + framebuffers)
+    vk_destroy_transparent_pass!(backend.device, backend)
 
     # Destroy default textures + shadow sampler
     if backend.default_texture !== nothing
@@ -566,6 +611,9 @@ function shutdown!(backend::VulkanBackend)
     end
     if backend.black_texture !== nothing
         vk_destroy_texture!(backend.device, backend.black_texture)
+    end
+    if backend.default_depth_texture !== nothing
+        vk_destroy_texture!(backend.device, backend.default_depth_texture)
     end
     if backend.shadow_sampler !== nothing
         finalize(backend.shadow_sampler)
@@ -661,6 +709,11 @@ function shutdown!(backend::VulkanBackend)
 
     # Destroy surface, device, instance
     backend.surface !== nothing && finalize(backend.surface)
+    # Destroy the debug messenger before the instance is finalized so we don't
+    # leak a child of VkInstance (validation would flag this otherwise).
+    if backend.instance !== nothing
+        vk_destroy_debug_messenger!(backend.instance)
+    end
     # Device and instance are finalized by Vulkan.jl GC
 
     # Destroy window
@@ -850,9 +903,23 @@ function render_frame!(backend::VulkanBackend, scene::Scene)
         ssao_view = _render_ssao_pass!(cmd, backend, vk_proj, frame_idx, w, h)
     end
 
-    # --- Deferred lighting pass (uses SSAO result if available) ---
+    # --- SSR pass (samples G-Buffer + previous frame's lighting result) ---
+    # Runs BEFORE the lighting pass so the lighting shader can composite the
+    # SSR contribution at binding 7. The one-frame lag in the sampled lighting
+    # result mirrors how TAA uses its history target — invisible at typical
+    # framerates and avoids running the lighting pass twice per frame.
+    # Matches OpenGL: SSR is gated purely on ssr_pass existence (always created
+    # by the deferred pipeline today; future PostProcessConfig.ssr_enabled flag
+    # would gate at deferred-pipeline construction time).
+    ssr_view = nothing
+    if backend.deferred_pipeline !== nothing && backend.deferred_pipeline.ssr_pass !== nothing
+        ssr_view = _render_ssr_pass!(cmd, backend, frame_data.view, vk_proj, frame_idx, w, h)
+    end
+
+    # --- Deferred lighting pass (uses SSAO + SSR results if available) ---
     if backend.deferred_pipeline !== nothing && backend.deferred_pipeline.lighting_target !== nothing
-        _render_lighting_pass!(cmd, backend, frame_data, frame_idx, w, h; ssao_view=ssao_view)
+        _render_lighting_pass!(cmd, backend, frame_data, frame_idx, w, h;
+            ssao_view=ssao_view, ssr_view=ssr_view)
     end
 
     # Determine source view for downstream passes
@@ -890,6 +957,11 @@ function render_frame!(backend::VulkanBackend, scene::Scene)
         source_view=source_view,
         use_passthrough=has_post_process,
         apply_fxaa=has_post_process && pp_config !== nothing && pp_config.fxaa_enabled)
+
+    # --- Forward transparent pass (after present blit, before overlays) ---
+    # Mirrors the OpenGL backend: transparents read the deferred G-Buffer depth
+    # and blend on top of the composited scene before particles/UI overlays.
+    vk_render_transparent_entities!(cmd, backend, frame_data, frame_idx, image_index, w, h)
 
     # --- Particle overlay pass (after present, before UI) ---
     if !isempty(PARTICLE_POOLS) && backend.particle_renderer.initialized
@@ -1053,6 +1125,155 @@ function _vk_transition_all_render_targets!(backend::VulkanBackend)
     end
 
     vk_end_single_time_commands(dev, cp, q, cmd)
+    return nothing
+end
+
+# ==================================================================
+# Resizable render targets
+# ==================================================================
+
+"""
+    _vk_resize_render_targets!(backend, width, height)
+
+Tear down all render targets and pipelines whose size depends on the swapchain
+extent, then recreate them at the new size. Called from `vk_recreate_swapchain!`.
+
+Preserved across the rebuild (because they're either independent of swapchain
+size or expensive to recreate):
+- IBL environment (saved off `deferred_pipeline.ibl_env` then re-attached).
+- Cascaded shadow maps (`backend.csm`).
+- UI / particle / debug-draw renderers (use dynamic viewport against the
+  swapchain framebuffers, which the swapchain recreate already rebuilds; the
+  UI orthographic projection is refreshed in place).
+- Present pipeline (uses the swapchain's `present_render_pass`, which is
+  rebuilt by `vk_create_swapchain!` to match the new format/extent — so the
+  present pipeline is rebuilt here too since it referenced the old render pass).
+- Per-frame UBOs / lighting UBOs / descriptor sets (size-independent).
+"""
+function _vk_resize_render_targets!(backend::VulkanBackend, width::Int, height::Int)
+    unwrap(device_wait_idle(backend.device))
+
+    # ---- Save IBL across rebuild (avoid re-baking irradiance/prefilter maps) ----
+    saved_ibl = nothing
+    if backend.deferred_pipeline !== nothing
+        saved_ibl = backend.deferred_pipeline.ibl_env
+        backend.deferred_pipeline.ibl_env = nothing  # prevent vk_destroy_deferred_pipeline! from freeing it
+    end
+
+    # ---- Tear down render-graph executor (resources are owned by deferred pipeline) ----
+    if backend.render_graph !== nothing && backend.graph_executor !== nothing
+        destroy_resources!(backend.graph_executor, backend.render_graph)
+    end
+
+    # ---- Tear down resizable resources ----
+    if backend.motion_blur_pass !== nothing
+        vk_destroy_motion_blur_pass!(backend.device, backend.motion_blur_pass)
+        backend.motion_blur_pass = nothing
+    end
+    if backend.dof_pass !== nothing
+        vk_destroy_dof_pass!(backend.device, backend.dof_pass)
+        backend.dof_pass = nothing
+    end
+    vk_destroy_terrain!(backend.device, backend.terrain_renderer)
+    backend.terrain_renderer = VulkanTerrainRenderer()  # reset to fresh state
+    vk_destroy_transparent_pass!(backend.device, backend)
+    if backend.present_pipeline !== nothing
+        finalize(backend.present_pipeline.pipeline)
+        finalize(backend.present_pipeline.pipeline_layout)
+        backend.present_pipeline.vert_module !== nothing && finalize(backend.present_pipeline.vert_module)
+        backend.present_pipeline.frag_module !== nothing && finalize(backend.present_pipeline.frag_module)
+        backend.present_pipeline = nothing
+    end
+    if backend.post_process !== nothing
+        vk_destroy_post_process!(backend.device, backend.post_process)
+        backend.post_process = nothing
+    end
+    if backend.deferred_pipeline !== nothing
+        vk_destroy_deferred_pipeline!(backend.device, backend.deferred_pipeline)
+        backend.deferred_pipeline = nothing
+    end
+
+    # ---- Recreate at new size, mirroring initialize! ----
+    pp_config = backend.post_process_config !== nothing ?
+        backend.post_process_config : PostProcessConfig()
+
+    backend.deferred_pipeline = vk_create_deferred_pipeline(
+        backend.device, backend.physical_device, backend.command_pool, backend.graphics_queue,
+        width, height,
+        backend.per_frame_layout, backend.per_material_layout, backend.lighting_layout,
+        backend.fullscreen_layout, backend.descriptor_pool, backend.push_constant_range,
+        pp_config)
+
+    backend.post_process = vk_create_post_process(
+        backend.device, backend.physical_device, width, height,
+        pp_config, backend.fullscreen_layout, backend.descriptor_pool)
+
+    if backend.deferred_pipeline.gbuffer !== nothing
+        gb = backend.deferred_pipeline.gbuffer
+        backend.transparent_render_pass = vk_create_transparent_render_pass(
+            backend.device, backend.swapchain_format)
+        backend.transparent_framebuffers = vk_create_transparent_framebuffers(
+            backend.device, backend.transparent_render_pass,
+            backend.swapchain_views, gb.depth.view, gb.width, gb.height)
+        backend.transparent_framebuffer_width = gb.width
+        backend.transparent_framebuffer_height = gb.height
+        backend.forward_pipeline = vk_create_forward_pipeline(
+            backend.device, backend.transparent_render_pass,
+            [backend.per_frame_layout, backend.per_material_layout, backend.lighting_layout],
+            backend.push_constant_range, gb.width, gb.height)
+    end
+
+    backend.present_pipeline = vk_compile_and_create_pipeline(
+        backend.device, VK_FULLSCREEN_QUAD_VERT, VK_PRESENT_FRAG,
+        VulkanPipelineConfig(
+            backend.present_render_pass, UInt32(0),
+            vk_fullscreen_vertex_bindings(), vk_fullscreen_vertex_attributes(),
+            [backend.fullscreen_layout], PushConstantRange[],
+            false, false, false,
+            CULL_MODE_NONE, FRONT_FACE_COUNTER_CLOCKWISE,
+            1, width, height
+        ))
+
+    if backend.deferred_pipeline.gbuffer !== nothing
+        vk_init_terrain!(backend.terrain_renderer, backend.device, backend.physical_device,
+            backend.deferred_pipeline.gbuffer.render_pass,
+            backend.per_frame_layout, backend.per_material_layout,
+            backend.push_constant_range, width, height)
+    end
+
+    backend.dof_pass = vk_create_dof_pass(backend.device, backend.physical_device,
+        width, height, backend.fullscreen_layout, backend.descriptor_pool)
+    backend.motion_blur_pass = vk_create_motion_blur_pass(backend.device, backend.physical_device,
+        width, height, backend.fullscreen_layout, backend.descriptor_pool)
+
+    # Re-establish initial render-target layouts so first sample after resize is valid.
+    _vk_transition_all_render_targets!(backend)
+
+    # ---- Restore IBL into the new deferred pipeline ----
+    if saved_ibl !== nothing
+        backend.deferred_pipeline.ibl_env = saved_ibl
+        # Lighting descriptor set bindings 6-8 still point at the saved IBL views,
+        # so no descriptor rewrite is needed — the views' identities are stable.
+    end
+
+    # CSM descriptor set bindings (lighting_ds[i] bindings 2-5) reference the
+    # cascade depth views owned by `backend.csm`, which is preserved across
+    # resize — so those bindings remain valid without rewriting.
+
+    # ---- Re-allocate render-graph resources at the new size ----
+    if backend.render_graph !== nothing && backend.graph_executor !== nothing
+        allocate_resources!(backend.graph_executor, backend.render_graph, width, height)
+    end
+
+    # ---- Refresh UI orthographic projection (renderer itself is preserved) ----
+    # Vulkan UI uses (0, W, 0, H) because NDC is already Y-down — the OpenGL
+    # form (0, W, H, 0) would render text upside-down. See vk_render_ui!.
+    if backend.ui_renderer.initialized && backend.ui_renderer.projection_ubo_memory !== nothing
+        proj = orthographic_matrix(0.0f0, Float32(width), 0.0f0, Float32(height), -1.0f0, 1.0f0)
+        vk_upload_struct_data!(backend.device, backend.ui_renderer.projection_ubo_memory, proj)
+    end
+
+    @info "Vulkan render targets resized" width height
     return nothing
 end
 
@@ -1259,7 +1480,8 @@ end
 function _render_lighting_pass!(cmd::CommandBuffer, backend::VulkanBackend,
                                  frame_data::FrameData, frame_idx::Int,
                                  width::Int, height::Int;
-                                 ssao_view::Union{ImageView, Nothing}=nothing)
+                                 ssao_view::Union{ImageView, Nothing}=nothing,
+                                 ssr_view::Union{ImageView, Nothing}=nothing)
     dp = backend.deferred_pipeline
     lt = dp.lighting_target
 
@@ -1303,8 +1525,13 @@ function _render_lighting_pass!(cmd::CommandBuffer, backend::VulkanBackend,
         else
             vk_update_texture_descriptor!(backend.device, lighting_ds, 6, backend.default_texture)
         end
-        # Binding 7: SSR (black/alpha=0 = no reflections)
-        vk_update_texture_descriptor!(backend.device, lighting_ds, 7, backend.black_texture)
+        # Binding 7: SSR (real result if SSR is enabled, otherwise black with alpha=0)
+        if ssr_view !== nothing
+            vk_update_image_sampler_descriptor!(backend.device, lighting_ds, 7,
+                ssr_view, backend.default_texture.sampler)
+        else
+            vk_update_texture_descriptor!(backend.device, lighting_ds, 7, backend.black_texture)
+        end
         # Binding 8: unused
         vk_update_texture_descriptor!(backend.device, lighting_ds, 8, backend.default_texture)
 
@@ -1476,6 +1703,68 @@ function _render_ssao_pass!(cmd::CommandBuffer, backend::VulkanBackend,
         backend.quad_buffer, width, height)
 
     return ssao.blur_target.color_view
+end
+
+# ==================================================================
+# SSR Pass Execution
+# ==================================================================
+
+"""
+    _render_ssr_pass!(cmd, backend, view, vk_proj, frame_idx, width, height) -> Union{ImageView, Nothing}
+
+Execute the SSR ray-march pass. Samples the G-Buffer (depth + normal/roughness)
+plus the previous frame's lighting result, and writes (hitColor, confidence) to
+the SSR target. Returns the SSR target view, or `nothing` if SSR is not available.
+
+Important: SSR samples the *previous* frame's lighting result because the current
+frame's lighting pass hasn't run yet. This introduces a one-frame lag for
+reflected dynamic lighting, which mirrors how TAA handles its history target
+and matches what the OpenGL backend does in its `composite_ssr!` flow.
+"""
+function _render_ssr_pass!(cmd::CommandBuffer, backend::VulkanBackend,
+                            view::Mat4f, vk_proj::Mat4f, frame_idx::Int,
+                            width::Int, height::Int)
+    dp = backend.deferred_pipeline
+    ssr = dp.ssr_pass
+    ssr === nothing && return nothing
+    gb = dp.gbuffer
+    gb === nothing && return nothing
+    dp.lighting_target === nothing && return nothing
+
+    sampler = backend.default_texture.sampler
+
+    inv_proj = Mat4f(inv(vk_proj))
+    ssr_uniforms = VulkanSSRUniforms(
+        ntuple(i -> vk_proj[i], 16),
+        ntuple(i -> view[i], 16),
+        ntuple(i -> inv_proj[i], 16),
+        (0.0f0, 0.0f0, 0.0f0, 1.0f0),
+        (Float32(width), Float32(height)),
+        Int32(ssr.max_steps),
+        ssr.max_distance,
+        ssr.thickness,
+        0.0f0, 0.0f0, 0.0f0
+    )
+    ssr_ubo, ssr_mem = vk_create_uniform_buffer(backend.device, backend.physical_device, ssr_uniforms)
+    push!(backend.frame_temp_buffers[frame_idx], (ssr_ubo, ssr_mem))
+
+    ssr_ds = vk_allocate_descriptor_set(backend.device,
+        backend.transient_pools[frame_idx], backend.fullscreen_layout)
+    vk_update_ubo_descriptor!(backend.device, ssr_ds, 0, ssr_ubo, sizeof(VulkanSSRUniforms))
+    # Bindings 1, 2: depth + normal/roughness (matches the SSR shader's named samplers).
+    vk_update_texture_descriptor!(backend.device, ssr_ds, 1, gb.depth)
+    vk_update_texture_descriptor!(backend.device, ssr_ds, 2, gb.normal_roughness)
+    # Binding 3: previous frame's lighting result (sampled to colour the reflection).
+    vk_update_image_sampler_descriptor!(backend.device, ssr_ds, 3,
+        dp.lighting_target.color_view, sampler)
+    for b in 4:8
+        vk_update_texture_descriptor!(backend.device, ssr_ds, b, backend.default_texture)
+    end
+
+    _render_fullscreen_pass!(cmd, ssr.ssr_target, ssr.ssr_pipeline, ssr_ds,
+        backend.quad_buffer, width, height)
+
+    return ssr.ssr_target.color_view
 end
 
 # ==================================================================
@@ -1854,6 +2143,18 @@ function backend_create_post_process!(backend::VulkanBackend, width::Int, height
     pp_config = config isa PostProcessConfig ? config : PostProcessConfig()
     return vk_create_post_process(backend.device, backend.physical_device, width, height,
                                    pp_config, backend.fullscreen_layout, backend.descriptor_pool)
+end
+
+# ---- DOF / Motion Blur ----
+
+function backend_create_dof_pass!(backend::VulkanBackend, width::Int, height::Int)
+    return vk_create_dof_pass(backend.device, backend.physical_device, width, height,
+                               backend.fullscreen_layout, backend.descriptor_pool)
+end
+
+function backend_create_motion_blur_pass!(backend::VulkanBackend, width::Int, height::Int)
+    return vk_create_motion_blur_pass(backend.device, backend.physical_device, width, height,
+                                       backend.fullscreen_layout, backend.descriptor_pool)
 end
 
 # ---- Render state operations ----

@@ -17,7 +17,7 @@ export default defineNuxtConfig({
         { name: 'theme-color', content: '#0a0e14' },
         { name: 'robots', content: 'index, follow' },
         { name: 'author', content: 'OpenReality Contributors' },
-        { name: 'keywords', content: 'Julia, game engine, ECS, PBR, OpenGL, Vulkan, Metal, WebGPU, physics, rendering, open source' },
+        { name: 'keywords', content: 'Julia, game engine, ECS, PBR, Vulkan, Metal, OpenGL, WebGPU, physics, rendering, open source' },
         // Open Graph
         { property: 'og:type', content: 'website' },
         { property: 'og:site_name', content: 'OpenReality' },

@@ -15,6 +15,20 @@ The returned matrix uses `RGBA{Float32}` from ColorTypes, with values in [0, 1],
 which is directly compatible with `FileIO.save()` for PNG output.
 """
 function capture_framebuffer(width::Int, height::Int)
+    return _capture_default_framebuffer(width, height)
+end
+
+"""
+    capture_framebuffer(backend::OpenGLBackend, width, height) -> Matrix{RGBA{Float32}}
+
+Backend-dispatched form of [`capture_framebuffer`](@ref). Reads the current
+default framebuffer; the OpenGL context held by `backend` must be current.
+"""
+function capture_framebuffer(backend::OpenGLBackend, width::Int, height::Int)
+    return _capture_default_framebuffer(width, height)
+end
+
+function _capture_default_framebuffer(width::Int, height::Int)
     glBindFramebuffer(GL_READ_FRAMEBUFFER, GLuint(0))
 
     pixels = Vector{UInt8}(undef, width * height * 4)

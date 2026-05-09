@@ -103,7 +103,10 @@ function vk_create_swapchain!(backend)
         surface_format.color_space,
         extent,
         UInt32(1),  # array layers
-        IMAGE_USAGE_COLOR_ATTACHMENT_BIT | IMAGE_USAGE_TRANSFER_DST_BIT,
+        # TRANSFER_SRC enables vk_capture_framebuffer to read back the swapchain
+        # image for visual regression testing.
+        IMAGE_USAGE_COLOR_ATTACHMENT_BIT | IMAGE_USAGE_TRANSFER_DST_BIT |
+            IMAGE_USAGE_TRANSFER_SRC_BIT,
         sharing_mode,
         queue_indices,
         support.capabilities.current_transform,
@@ -253,6 +256,16 @@ Does NOT destroy the swapchain itself.
 function vk_destroy_swapchain_resources!(backend)
     unwrap(device_wait_idle(backend.device))
 
+    # Destroy transparent-pass framebuffers (they reference the swapchain views).
+    # The transparent render pass + forward pipeline are kept across recreations
+    # since they're sized to the G-Buffer, not the swapchain.
+    if hasproperty(backend, :transparent_framebuffers)
+        for fb in backend.transparent_framebuffers
+            finalize(fb)
+        end
+        empty!(backend.transparent_framebuffers)
+    end
+
     for fb in backend.swapchain_framebuffers
         finalize(fb)
     end
@@ -328,6 +341,13 @@ function vk_recreate_swapchain!(backend)
     if old_swapchain !== nothing
         finalize(old_swapchain)
     end
+
+    # Rebuild every render target / pipeline that depends on the swapchain
+    # extent so the G-Buffer / lighting target / SSAO / SSR / TAA / DOF /
+    # motion blur / post-process / transparent framebuffers / present pipeline
+    # / terrain renderer all match the new size. UI / particle / debug-draw
+    # renderers are preserved; the UI projection is refreshed in place.
+    _vk_resize_render_targets!(backend, w, h)
 
     backend.framebuffer_resized = false
     @info "Vulkan swapchain recreated" width=w height=h

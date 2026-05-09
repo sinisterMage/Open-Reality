@@ -41,7 +41,7 @@ julia --version
 | Dependency | Required | Installation |
 |-----------|----------|-------------|
 | **GLFW** | Yes | Ubuntu/Debian: `sudo apt install libglfw3 libglfw3-dev`<br>Arch: `sudo pacman -S glfw-x11` (or `glfw-wayland`)<br>Fedora: `sudo dnf install glfw glfw-devel`<br>macOS: `brew install glfw`<br>Windows: download from [glfw.org](https://www.glfw.org/download.html) |
-| **Vulkan SDK** | No (Vulkan backend only) | [lunarg.com](https://vulkan.lunarg.com/sdk/home) or `sudo apt install vulkan-tools libvulkan-dev` |
+| **Vulkan SDK** | Recommended on Linux/Windows (Vulkan is the default backend) | [lunarg.com](https://vulkan.lunarg.com/sdk/home) or `sudo apt install vulkan-tools libvulkan-dev` |
 | **OpenAL** | No (audio only) | Ubuntu: `sudo apt install libopenal-dev`<br>macOS: included with system<br>Windows: bundled via jll |
 
 ### Clone and Install
@@ -96,9 +96,9 @@ OpenReality/
 │   ├── rendering/              # Rendering pipeline (shaders, PBR, post-processing, shadows)
 │   ├── backend/                # Rendering backends
 │   │   ├── abstract.jl         # Backend interface (all backends implement this)
-│   │   ├── opengl/             # OpenGL 3.3+ (default)
-│   │   ├── vulkan/             # Vulkan (Linux/Windows)
-│   │   ├── metal/              # Metal (macOS, via Swift bridge)
+│   │   ├── vulkan/             # Vulkan (default on Linux/Windows)
+│   │   ├── metal/              # Metal (default on macOS, via Swift bridge)
+│   │   ├── opengl/             # OpenGL 3.3+ (legacy / fallback)
 │   │   └── webgpu/             # WebGPU (via Rust FFI)
 │   ├── physics/                # Physics engine (GJK+EPA, PGS solver, joints, CCD)
 │   ├── audio/                  # OpenAL 3D audio backend

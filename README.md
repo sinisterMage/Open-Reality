@@ -3,7 +3,7 @@
 
 A declarative, code-first game engine written in Julia.
 
-OpenReality provides AAA-quality rendering with a clean functional API. Define scenes as composable entity trees, attach PBR materials and physics, and render with a single function call — on OpenGL, Vulkan, WebGPU or Metal.
+OpenReality provides AAA-quality rendering with a clean functional API. Define scenes as composable entity trees, attach PBR materials and physics, and render with a single function call — on Vulkan (default on Linux/Windows), Metal (default on macOS), OpenGL (legacy/fallback), or WebGPU.
 
 ## Features
 
@@ -25,7 +25,7 @@ OpenReality provides AAA-quality rendering with a clean functional API. Define s
 **Engine**
 - Entity Component System with O(1) component operations
 - Immutable, functional scene graph
-- Four rendering backends: OpenGL, Metal (macOS), Vulkan (Linux/Windows), WebGPU (experimental)
+- Four rendering backends: Vulkan (Linux/Windows, default), Metal (macOS, default), OpenGL (legacy/fallback), WebGPU (experimental)
 - Full-featured impulse-based physics engine (PGS solver with warm-starting)
 - 6 collider shapes: AABB, Sphere, Capsule, OBB, ConvexHull, Compound
 - Joint constraints: ball-socket, distance, hinge, fixed, slider
@@ -87,7 +87,7 @@ irm https://open-reality.com/install.ps1 | iex
 
 **Or build from source:**
 
-Prerequisites: **Julia 1.9+** ([julialang.org](https://julialang.org/downloads/)), **GLFW** (`sudo apt install libglfw3 libglfw3-dev` on Ubuntu / `brew install glfw` on macOS), optionally **Vulkan SDK** ([lunarg.com](https://vulkan.lunarg.com/sdk/home)).
+Prerequisites: **Julia 1.9+** ([julialang.org](https://julialang.org/downloads/)), **GLFW** (`sudo apt install libglfw3 libglfw3-dev` on Ubuntu / `brew install glfw` on macOS). On Linux/Windows the default backend is Vulkan, which needs the **Vulkan SDK** (`sudo apt install vulkan-tools libvulkan-dev` on Ubuntu, `brew install molten-vk` on macOS for MoltenVK, or [lunarg.com](https://vulkan.lunarg.com/sdk/home) elsewhere); pass `backend=OpenGLBackend()` to `render(...)` to skip it.
 
 
 

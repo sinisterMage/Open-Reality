@@ -74,7 +74,7 @@ const activeTab = ref<'unix' | 'windows'>('unix')
         </li>
         <li class="flex items-start gap-2">
           <span class="text-or-green mt-0.5">&#8226;</span>
-          <span><strong class="text-or-text">OpenGL 3.3+</strong> &mdash; Available on most modern GPUs. Metal and Vulkan backends available for macOS and Linux/Windows respectively.</span>
+          <span><strong class="text-or-text">Vulkan SDK</strong> on Linux/Windows (default backend) &mdash; or pass <code class="text-or-text-code bg-or-panel px-1.5 py-0.5 rounded text-sm">backend=OpenGLBackend()</code> to fall back to the OpenGL 3.3 path. macOS uses the Metal backend automatically.</span>
         </li>
         <li class="flex items-start gap-2">
           <span class="text-or-green mt-0.5">&#8226;</span>
@@ -143,7 +143,7 @@ const activeTab = ref<'unix' | 'windows'>('unix')
       </p>
       <CodeBlock :code="helloCode" lang="julia" filename="hello.jl" />
       <p class="text-or-text-dim mt-4 leading-relaxed">
-        This creates a scene with a camera, a directional light, and a green cube. The <code class="text-or-text-code bg-or-panel px-1.5 py-0.5 rounded text-sm">render(s)</code> call opens a window and starts the render loop using the default OpenGL backend.
+        This creates a scene with a camera, a directional light, and a green cube. The <code class="text-or-text-code bg-or-panel px-1.5 py-0.5 rounded text-sm">render(s)</code> call opens a window and starts the render loop using the platform's default backend &mdash; Vulkan on Linux/Windows, Metal on macOS &mdash; via <code class="text-or-text-code bg-or-panel px-1.5 py-0.5 rounded text-sm">default_backend()</code>.
       </p>
     </section>
 

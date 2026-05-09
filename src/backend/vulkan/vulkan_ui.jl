@@ -169,8 +169,10 @@ function vk_init_ui!(renderer::VulkanUIRenderer, device::Device,
 
     renderer.pipeline = vk_compile_and_create_pipeline(device, VK_UI_VERT, VK_UI_FRAG, config)
 
-    # Create projection UBO (mat4 = 64 bytes)
-    proj = orthographic_matrix(0.0f0, Float32(width), Float32(height), 0.0f0, -1.0f0, 1.0f0)
+    # Create projection UBO (mat4 = 64 bytes).
+    # See vk_render_ui! for why this uses (0, W, 0, H) instead of OpenGL's
+    # (0, W, H, 0) — Vulkan's NDC is already Y-down.
+    proj = orthographic_matrix(0.0f0, Float32(width), 0.0f0, Float32(height), -1.0f0, 1.0f0)
     renderer.projection_ubo, renderer.projection_ubo_memory = vk_create_buffer(
         device, physical_device, 64,
         BUFFER_USAGE_UNIFORM_BUFFER_BIT,
@@ -337,8 +339,11 @@ function vk_render_ui!(cmd::CommandBuffer, renderer::VulkanUIRenderer,
     w = Int(backend.swapchain_extent.width)
     h = Int(backend.swapchain_extent.height)
 
-    # Update projection UBO
-    proj = orthographic_matrix(0.0f0, Float32(w), Float32(h), 0.0f0, -1.0f0, 1.0f0)
+    # Update projection UBO.
+    # Note the (0, W, 0, H) order — the OpenGL UI uses (0, W, H, 0) to flip Y
+    # so screen-y=0 maps to the top, but Vulkan's NDC is already Y-down so
+    # the OpenGL flip would render UI upside down. Keep top=H here.
+    proj = orthographic_matrix(0.0f0, Float32(w), 0.0f0, Float32(h), -1.0f0, 1.0f0)
     vk_upload_struct_data!(device, renderer.projection_ubo_memory, proj)
 
     # Upload vertex data

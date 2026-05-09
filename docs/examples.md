@@ -386,22 +386,28 @@ s = scene([
 
 ## Using Different Backends
 
-```julia
-# OpenGL (default)
-render(s)
-render(s, backend=OpenGLBackend())
+`render(s)` picks the platform default — `VulkanBackend()` on Linux/Windows,
+`MetalBackend()` on macOS — via [`default_backend()`](../src/OpenReality.jl).
+Pass `backend=...` to override.
 
-# Vulkan (Linux/Windows)
+```julia
+# Platform default (Vulkan on Linux/Windows, Metal on macOS)
+render(s)
+
+# Vulkan (Linux/Windows default)
 render(s, backend=VulkanBackend(), title="OpenReality — Vulkan")
 
-# Metal (macOS)
+# Metal (macOS default)
 render(s, backend=MetalBackend())
+
+# OpenGL — legacy / fallback (use when Vulkan/Metal aren't available)
+render(s, backend=OpenGLBackend())
 
 # Custom window size
 render(s, width=1920, height=1080, title="Full HD Scene")
 ```
 
-All three backends support the full feature set: deferred rendering, PBR, CSM, IBL, SSR, SSAO, TAA, and post-processing.
+All four backends support the full feature set: deferred rendering, PBR, CSM, IBL, SSR, SSAO, TAA, forward transparent pass, and post-processing.
 
 ---
 

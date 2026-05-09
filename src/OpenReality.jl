@@ -292,6 +292,8 @@ if !Sys.isapple()
     # Vulkan render graph (after vulkan_backend.jl + render graph core)
     include("backend/vulkan/vulkan_graph_executor.jl")
     include("backend/vulkan/vulkan_graph_passes.jl")
+    # Framebuffer capture for visual regression tests
+    include("backend/vulkan/vulkan_capture.jl")
 end
 
 # WebGPU backend (all platforms, requires compiled Rust FFI library)
@@ -640,6 +642,31 @@ if !Sys.isapple()
     export VulkanBackend
 end
 
+"""
+    default_backend() -> AbstractBackend
+
+Return the recommended rendering backend for the current platform.
+
+- **Linux / Windows**: `VulkanBackend()` (preferred). Falls back to `OpenGLBackend()`
+  if the Vulkan backend is not available.
+- **macOS**: `MetalBackend()`. Falls back to `OpenGLBackend()` if Metal is not available.
+
+Used as the default for `render(scene)` and `run_render_loop!(...)` when no
+explicit `backend=` is passed. Override by passing `backend=OpenGLBackend()` to
+opt back into the legacy OpenGL path.
+"""
+function default_backend()
+    if Sys.isapple()
+        return @isdefined(MetalBackend) ? MetalBackend() : OpenGLBackend()
+    elseif @isdefined(VulkanBackend)
+        return VulkanBackend()
+    else
+        return OpenGLBackend()
+    end
+end
+
+export default_backend
+
 # Export Abstract Backend Methods
 export backend_create_shader, backend_destroy_shader!, backend_use_shader!, backend_set_uniform!
 export backend_upload_mesh!, backend_draw_mesh!, backend_destroy_mesh!
@@ -744,13 +771,14 @@ export export_scene
 export save_game, load_game, register_non_serializable!
 
 """
-    render(scene::Scene; backend=OpenGLBackend(), width=1280, height=720, title="OpenReality", post_process=nothing, ui=nothing, on_update=nothing, on_scene_switch=nothing)
+    render(scene::Scene; backend=default_backend(), width=1280, height=720, title="OpenReality", post_process=nothing, ui=nothing, on_update=nothing, on_scene_switch=nothing)
 
 Start the PBR render loop for the given scene.
 Opens a window and renders until closed.
 
-Pass `backend=MetalBackend()` on macOS to use the Metal renderer.
-Pass `backend=VulkanBackend()` on Linux/Windows to use the Vulkan renderer.
+The default backend is platform-aware: `VulkanBackend()` on Linux/Windows and
+`MetalBackend()` on macOS (see [`default_backend`](@ref)).
+Pass `backend=OpenGLBackend()` to opt into the legacy OpenGL renderer.
 
 Pass a `ui` callback to render immediate-mode UI each frame:
 ```julia
@@ -776,7 +804,7 @@ to customise cleanup during a scene switch (default calls
 `reset_engine_state!()` and `clear_audio_sources!()`).
 """
 function render(scene::Scene;
-                backend::AbstractBackend = OpenGLBackend(),
+                backend::AbstractBackend = default_backend(),
                 width::Int = 1280, height::Int = 720,
                 title::String = "OpenReality",
                 post_process::Union{PostProcessConfig, Nothing} = nothing,

@@ -56,15 +56,24 @@ function execute_rg_deferred_lighting!(backend::VulkanBackend, ctx::RGExecuteCon
     frame_idx = backend.current_frame
     w, h = ctx.width, ctx.height
 
+    vk_proj = _vk_proj_from_frame(ctx.frame_data)
+
     # Run SSAO first if enabled (result is passed to lighting)
     ssao_view = nothing
     pp_config = ctx.post_config
     if dp.ssao_pass !== nothing && pp_config.ssao_enabled
-        vk_proj = _vk_proj_from_frame(ctx.frame_data)
         ssao_view = _render_ssao_pass!(cmd, backend, vk_proj, frame_idx, w, h)
     end
 
-    _render_lighting_pass!(cmd, backend, ctx.frame_data, frame_idx, w, h; ssao_view=ssao_view)
+    # Run SSR (samples previous frame's lighting result; always on when ssr_pass
+    # exists, matching OpenGL).
+    ssr_view = nothing
+    if dp.ssr_pass !== nothing
+        ssr_view = _render_ssr_pass!(cmd, backend, ctx.frame_data.view, vk_proj, frame_idx, w, h)
+    end
+
+    _render_lighting_pass!(cmd, backend, ctx.frame_data, frame_idx, w, h;
+        ssao_view=ssao_view, ssr_view=ssr_view)
 end
 
 function execute_rg_ssao!(backend::VulkanBackend, ctx::RGExecuteContext)
@@ -77,8 +86,8 @@ function execute_rg_ssao_blur!(backend::VulkanBackend, ctx::RGExecuteContext)
 end
 
 function execute_rg_ssr!(backend::VulkanBackend, ctx::RGExecuteContext)
-    # SSR is handled internally by the Vulkan deferred lighting/composite pipeline.
-    # The SSR pass target is bound as a descriptor in the lighting pass.
+    # SSR is handled inside execute_rg_deferred_lighting! since the Vulkan
+    # lighting pass consumes the SSR result directly via the ssr_view binding.
 end
 
 function execute_rg_composite_lighting!(backend::VulkanBackend, ctx::RGExecuteContext)
@@ -161,9 +170,10 @@ end
 
 function execute_rg_forward_transparent!(backend::VulkanBackend, ctx::RGExecuteContext)
     isempty(ctx.frame_data.transparent_entities) && return
-    # Forward transparent rendering is handled via the present render pass
-    # on Vulkan — transparent entities are drawn after the present pass begins.
-    # This is a no-op because Vulkan's present render pass is still active.
+    cmd = backend.command_buffers[backend.current_frame]
+    image_index = _vk_current_image_index(backend)
+    vk_render_transparent_entities!(cmd, backend, ctx.frame_data,
+        backend.current_frame, image_index, ctx.width, ctx.height)
 end
 
 function execute_rg_particles!(backend::VulkanBackend, ctx::RGExecuteContext)

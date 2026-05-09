@@ -43,8 +43,9 @@ This document describes how OpenReality is structured internally. It is intended
 │                   Backend Abstraction                        │
 │                     abstract.jl                              │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌───────────┐  │
-│  │  OpenGL  │  │  Metal   │  │  Vulkan  │  │  WebGPU   │  │
-│  │ 31 files │  │ 18 files │  │ 17 files │  │(experiment)│  │
+│  │  Vulkan  │  │  Metal   │  │  OpenGL  │  │  WebGPU   │  │
+│  │ default  │  │ default  │  │ legacy/  │  │experiment │  │
+│  │ Linux/Win│  │  macOS   │  │ fallback │  │           │  │
 │  └──────────┘  └──────────┘  └──────────┘  └───────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -215,28 +216,55 @@ All backends implement the `AbstractBackend` interface. Key methods:
 - `AbstractSSRPass`, `AbstractSSAOPass`, `AbstractTAAPass`
 - `AbstractPostProcessPipeline`, `AbstractDeferredPipeline`
 
-### OpenGL Backend
+### Default backend selection
+
+`render(scene)` (and `run_render_loop!`) call [`default_backend()`](../src/OpenReality.jl) when no
+`backend=` keyword is passed:
+
+| Platform | Default | Fallback |
+|----------|---------|----------|
+| Linux / Windows | `VulkanBackend()` | `OpenGLBackend()` if Vulkan symbol is missing |
+| macOS | `MetalBackend()` | `OpenGLBackend()` if Metal symbol is missing |
+
+To opt back into the legacy OpenGL path, pass `backend=OpenGLBackend()` explicitly.
+
+### Vulkan Backend (Linux / Windows default)
+
+**Directory:** `src/backend/vulkan/` (~28 files)
+
+Uses Vulkan.jl bindings. Includes device selection, memory management,
+descriptor sets, swapchain management, and a render-graph executor. Pipeline:
+
+- Deferred rendering with 4-target G-Buffer (RGBA16F)
+- Cascaded shadow maps (4 cascades)
+- Image-based lighting (procedural sky / HDR environments)
+- Screen-space ambient occlusion + screen-space reflections (SSR samples the
+  previous frame's lighting result, similar to TAA's history target)
+- Forward transparent pass on top of the deferred composite, with depth-test
+  against the G-Buffer depth and `SRC_ALPHA / ONE_MINUS_SRC_ALPHA` blending
+- TAA + DOF + motion blur + bloom + tone mapping + FXAA
+- Particle / UI / debug-draw overlays composited over the swapchain
+- Framebuffer capture (`capture_framebuffer(::VulkanBackend, w, h)`) for
+  visual regression testing
+
+### Metal Backend (macOS default)
+
+**Directory:** `src/backend/metal/` (18 files)
+
+macOS-only, uses native Metal API via FFI (`metal_ffi.jl`). Shader files live in `src/backend/metal/shaders/` as `.metal` files. Same feature set as the Vulkan backend.
+
+### OpenGL Backend (legacy / fallback)
 
 **Directory:** `src/backend/opengl/` (31 files)
 
-Uses OpenGL 3.3 core profile via ModernGL.jl. Key features:
+Uses OpenGL 3.3 core profile via ModernGL.jl. Kept for compatibility with older
+GPUs and as the macOS fallback when Metal isn't available. Key features:
+
 - Deferred rendering with 4-target G-Buffer (RGBA16F)
 - 4-cascade shadow maps at 2048x2048 resolution
 - Inline GLSL shaders in Julia source files
 - VAO/VBO mesh management with GPU resource caching
-- Lazy texture loading with mipmaps
-
-### Metal Backend
-
-**Directory:** `src/backend/metal/` (18 files)
-
-macOS-only, uses native Metal API via FFI (`metal_ffi.jl`). Shader files live in `src/backend/metal/shaders/` as `.metal` files. Same feature set as OpenGL.
-
-### Vulkan Backend
-
-**Directory:** `src/backend/vulkan/` (17 files)
-
-Linux/Windows, uses Vulkan.jl bindings. Includes device selection, memory management, descriptor sets, and swapchain management.
+- GPU compute particles on OpenGL 4.3+ (CPU fallback otherwise)
 
 ---
 

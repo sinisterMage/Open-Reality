@@ -57,10 +57,11 @@ children = get_children(s, parent_id)
 parent = get_parent(s, child_id)
 ancestors = get_ancestors(s, entity_id)`
 
-const renderCode = `# Render with default OpenGL backend
+const renderCode = `# Render with the platform default
+# (VulkanBackend on Linux/Windows, MetalBackend on macOS)
 render(s)
 
-# Render with specific backend and options
+# Pick a specific backend and pass options
 render(s,
     backend=VulkanBackend(),
     width=1920,
@@ -166,22 +167,29 @@ const systemsCode = `# The render loop runs these systems automatically:
       </p>
       <CodeBlock :code="renderCode" lang="julia" filename="render.jl" />
 
+      <p class="text-or-text-dim mb-4 leading-relaxed">
+        <code class="text-or-text-code bg-or-panel px-1.5 py-0.5 rounded text-sm">render(scene)</code>
+        without an explicit <code class="text-or-text-code bg-or-panel px-1.5 py-0.5 rounded text-sm">backend=</code>
+        keyword falls through to <code class="text-or-text-code bg-or-panel px-1.5 py-0.5 rounded text-sm">default_backend()</code>:
+        Vulkan on Linux/Windows, Metal on macOS, OpenGL as the universal fallback.
+      </p>
+
       <div class="mt-4 grid sm:grid-cols-2 gap-4">
         <div class="p-4 rounded-lg border border-or-border bg-or-surface">
-          <h4 class="font-mono text-sm font-bold text-or-text">OpenGLBackend</h4>
-          <p class="text-or-text-dim text-sm mt-1">OpenGL 3.3 core profile. Works on all platforms. Default backend.</p>
-        </div>
-        <div class="p-4 rounded-lg border border-or-border bg-or-surface">
           <h4 class="font-mono text-sm font-bold text-or-text">VulkanBackend</h4>
-          <p class="text-or-text-dim text-sm mt-1">Full deferred PBR, CSM, IBL, SSAO, SSR, TAA. Linux and Windows.</p>
+          <p class="text-or-text-dim text-sm mt-1">Default on Linux and Windows. Full deferred PBR, forward transparent pass, CSM, IBL, SSAO, SSR, TAA, DOF, motion blur, bloom.</p>
         </div>
         <div class="p-4 rounded-lg border border-or-border bg-or-surface">
           <h4 class="font-mono text-sm font-bold text-or-text">MetalBackend</h4>
-          <p class="text-or-text-dim text-sm mt-1">Native macOS Metal API via FFI bridge.</p>
+          <p class="text-or-text-dim text-sm mt-1">Default on macOS. Native Metal API via FFI bridge with the same feature set.</p>
+        </div>
+        <div class="p-4 rounded-lg border border-or-border bg-or-surface">
+          <h4 class="font-mono text-sm font-bold text-or-text">OpenGLBackend</h4>
+          <p class="text-or-text-dim text-sm mt-1">Legacy / fallback. OpenGL 3.3 core profile via ModernGL. Use when Vulkan or Metal isn't available.</p>
         </div>
         <div class="p-4 rounded-lg border border-or-border bg-or-surface">
           <h4 class="font-mono text-sm font-bold text-or-text">WebGPUBackend</h4>
-          <p class="text-or-text-dim text-sm mt-1">Browser-ready via Rust FFI and WASM export.</p>
+          <p class="text-or-text-dim text-sm mt-1">Experimental. Browser-ready via Rust FFI and WASM export.</p>
         </div>
       </div>
     </section>

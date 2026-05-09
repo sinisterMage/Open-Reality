@@ -7,14 +7,14 @@ useSeoMeta({
   ogDescription: 'OpenReality rendering: 4 GPU backends, deferred PBR pipeline, cascaded shadow maps, IBL, post-processing, transparency, and shader variants.',
 })
 
-const backendsCode = `# OpenGL 3.3 (default, all platforms)
-render(s, backend=OpenGLBackend())
-
-# Vulkan (Linux/Windows, full deferred pipeline)
+const backendsCode = `# Vulkan (default on Linux/Windows, full deferred pipeline)
 render(s, backend=VulkanBackend())
 
-# Metal (macOS)
+# Metal (default on macOS, full deferred pipeline)
 render(s, backend=MetalBackend())
+
+# OpenGL 3.3 (legacy / fallback when Vulkan or Metal isn't available)
+render(s, backend=OpenGLBackend())
 
 # WebGPU (via Rust FFI, WASM-exportable)
 render(s, backend=WebGPUBackend())`

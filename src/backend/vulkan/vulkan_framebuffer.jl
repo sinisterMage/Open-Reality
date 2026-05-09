@@ -54,12 +54,18 @@ function vk_create_render_target(device::Device, physical_device::PhysicalDevice
         SubpassDescription(PIPELINE_BIND_POINT_GRAPHICS, [], [color_ref], [])
     end
 
-    # EXTERNAL → subpass 0: wait for prior color/depth output before we begin writing
+    # EXTERNAL → subpass 0: wait for prior color/depth output AND for any prior
+    # fragment-shader reads (write-after-read hazard) before we begin writing.
+    # Without FRAGMENT_SHADER + SHADER_READ in src, a pass like SSR that samples
+    # this target earlier in the same command buffer can race with the next
+    # write to it (e.g. SSR samples lighting_target, then lighting writes it
+    # again next frame inside the same submission).
     dep_in = SubpassDependency(
         VK_SUBPASS_EXTERNAL, UInt32(0),
+        PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+            PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-        PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-        AccessFlag(0),
+        ACCESS_SHADER_READ_BIT,
         ACCESS_COLOR_ATTACHMENT_WRITE_BIT | (has_depth ? ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : AccessFlag(0)),
         DependencyFlag(0)
     )
