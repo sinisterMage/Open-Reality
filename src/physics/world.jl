@@ -51,23 +51,27 @@ function reset_physics_world!()
 end
 
 """
-    _narrowphase_parallel(candidate_pairs, transform_snap, collider_snap) -> Vector{ContactManifold}
+    _narrowphase!(candidate_pairs, transform_snap, collider_snap) -> Vector{ContactManifold}
 
 Parallel narrowphase: each collision pair is tested independently using
-snapshot data. Results are written to per-index slots (no contention).
+snapshot data. Results are written to per-index slots (no contention) on
+the engine-wide [`EEVDFScheduler`](@ref) via [`parallel_for`](@ref) with
+weight `W_PHYSICS`. With `Threads.nthreads() == 1` the scheduler short-
+circuits to a serial loop, preserving identical results.
 """
-function _narrowphase_parallel(candidate_pairs::Vector{CollisionPair},
-                                transform_snap::Dict{EntityID, TransformSnapshot},
-                                collider_snap::Dict{EntityID, ColliderComponent})
+function _narrowphase!(candidate_pairs::Vector{CollisionPair},
+                       transform_snap::Dict{EntityID, TransformSnapshot},
+                       collider_snap::Dict{EntityID, ColliderComponent})
     n = length(candidate_pairs)
+    n == 0 && return ContactManifold[]
     results = Vector{Union{ContactManifold, Nothing}}(nothing, n)
-    Threads.@threads for i in 1:n
+    parallel_for(get_scheduler(), 1:n; weight=W_PHYSICS) do i
         pair = candidate_pairs[i]
         ta = get(transform_snap, pair.entity_a, nothing)
         tb = get(transform_snap, pair.entity_b, nothing)
         ca = get(collider_snap, pair.entity_a, nothing)
         cb = get(collider_snap, pair.entity_b, nothing)
-        (ta === nothing || tb === nothing || ca === nothing || cb === nothing) && continue
+        (ta === nothing || tb === nothing || ca === nothing || cb === nothing) && return
         results[i] = _collide_shapes(
             ca.shape, ta.position, ta.rotation, ta.scale, ca.offset,
             cb.shape, tb.position, tb.rotation, tb.scale, cb.offset,
@@ -247,23 +251,10 @@ function fixed_step!(world::PhysicsWorld, dt::Float64)
     end
     candidate_pairs = query_pairs(world.broadphase)
 
-    # --- Phase 4: Narrowphase ---
-    manifolds = if threading_enabled()
-        # Parallel path: snapshot component data then test pairs on worker threads
-        transform_snap = snapshot_transforms()
-        collider_snap = snapshot_components(ColliderComponent)
-        _narrowphase_parallel(candidate_pairs, transform_snap, collider_snap)
-    else
-        # Serial path (original)
-        _manifolds = ContactManifold[]
-        for pair in candidate_pairs
-            manifold = collide(pair.entity_a, pair.entity_b)
-            if manifold !== nothing
-                push!(_manifolds, manifold)
-            end
-        end
-        _manifolds
-    end
+    # --- Phase 4: Narrowphase (parallel-first via EEVDFScheduler) ---
+    transform_snap = snapshot_transforms()
+    collider_snap = snapshot_components(ColliderComponent)
+    manifolds = _narrowphase!(candidate_pairs, transform_snap, collider_snap)
 
     # Update contact cache (warm-starting)
     update_cache!(world.contact_cache, manifolds)

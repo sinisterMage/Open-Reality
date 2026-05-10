@@ -49,8 +49,12 @@ include("components/primitives.jl")
 include("components/lod.jl")
 include("components/collider.jl")
 
-# Threading infrastructure (after ECS + transform/collider components — snapshot functions need them)
-include("threading.jl")
+# EEVDF task scheduler (after ECS + transform/collider components — snapshot helpers need them).
+# Order: types → scheduler → global singleton + weights → snapshot helpers (which reference World()).
+include("scheduler/eevdf_task.jl")
+include("scheduler/eevdf_scheduler.jl")
+include("scheduler/global.jl")
+include("scheduler/snapshots.jl")
 
 # Physics types + shapes (before rigidbody — rigidbody uses CCDMode; shapes extends ColliderShape)
 include("physics/types.jl")
@@ -413,8 +417,11 @@ const COMPONENT_TYPES = DataType[
 # Initialize the global Ark world with all components
 const _WORLD = initialize_world()
 
-# Export Threading
-export use_threading, threading_enabled
+# Export Task Scheduler (EEVDF, parallel-first)
+export EEVDFScheduler, get_scheduler, init_scheduler!, shutdown_scheduler!
+export submit_task!, parallel_for, parallel_for_chunks, wait!, TaskHandle, TaskGroup
+export W_PHYSICS, W_ANIMATION, W_DEFAULT, W_PARTICLES, W_CULLING, W_ASYNC_IO, W_CHUNK_GEN
+export TransformSnapshot, snapshot_transforms, snapshot_components
 
 # Export ECS
 export EntityID, World, create_entity!, create_entity_id
@@ -689,7 +696,7 @@ export get_instance_buffer!, reset_instance_buffer!
 
 # Export Frame Preparation
 export FrameLightData, EntityRenderData, TransparentEntityData, FrameData
-export collect_lights, prepare_frame, prepare_frame_parallel
+export collect_lights, prepare_frame
 
 # Export Rendering
 export RenderPipeline, execute!

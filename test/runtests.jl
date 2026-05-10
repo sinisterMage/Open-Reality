@@ -7317,13 +7317,9 @@ using ColorTypes: RGBA, red, green, blue, alpha
         end
     end
 
-    # ---- Async Loader ----
+    # ---- Async Loader (parallel-first via EEVDFScheduler) ----
     @testset "Async Loader" begin
-        @testset "AsyncLoadRequest and AsyncLoadResult structs" begin
-            req = OpenReality.AsyncLoadRequest("model.glb", Dict{Symbol, Any}())
-            @test req.path == "model.glb"
-            @test isempty(req.kwargs)
-
+        @testset "AsyncLoadResult struct" begin
             res_ok = AsyncLoadResult("model.glb", OpenReality.EntityDef[], nothing)
             @test res_ok.path == "model.glb"
             @test res_ok.error === nothing
@@ -7334,13 +7330,15 @@ using ColorTypes: RGBA, red, green, blue, alpha
         end
 
         @testset "AsyncAssetLoader creation and shutdown" begin
+            init_scheduler!()
             loader = AsyncAssetLoader(buffer_size=4)
-            @test loader.worker_task !== nothing
-            @test isopen(loader.request_channel)
+            # Loader no longer owns a dedicated worker — it dispatches to the
+            # engine-wide EEVDFScheduler. Verify the public surface instead.
             @test isopen(loader.result_channel)
+            @test isempty(loader.inflight)
 
             shutdown_async_loader!(loader)
-            @test !isopen(loader.request_channel)
+            @test !isopen(loader.result_channel)
         end
 
         @testset "poll_async_loads! returns empty when no results" begin

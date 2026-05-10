@@ -71,7 +71,44 @@ Components are removed using **swap-and-pop**: the target element is swapped wit
 
 ### Thread Safety
 
-The current ECS is single-threaded. All mutations happen in the main thread during system updates.
+ECS *mutation* is single-threaded — `add_component!`, `remove_component!`, and `iterate_components` always run on the main thread. Parallel system code reads through `snapshot_transforms()` / `snapshot_components(T)` (see `src/scheduler/snapshots.jl`), which copy the relevant column data into immutable Dicts on the main thread before workers fan out. This is how the parallel-first physics narrowphase and frame-prep paths share the global `World()` safely with the EEVDF task scheduler's worker pool.
+
+---
+
+## Task Scheduler (EEVDF)
+
+**Files:** `src/scheduler/eevdf_task.jl`, `src/scheduler/eevdf_scheduler.jl`, `src/scheduler/global.jl`, `src/scheduler/snapshots.jl`
+
+OpenReality is **parallel-first**: every multithreaded job in the engine is submitted to a single engine-wide `EEVDFScheduler` with a persistent worker-thread pool of size `Threads.nthreads()`. There is no opt-in toggle — the scheduler boots with `run_render_loop!` and tears down in its `finally` block; outside the render loop it initializes lazily on first `get_scheduler()` call.
+
+EEVDF (Earliest Eligible Virtual Deadline First) is the fair-share scheduling discipline used by recent Linux kernels. Each task has weight `w` and slice `r`; its virtual deadline is `vd = vruntime + r/w`. Among eligible tasks (those whose accumulated `vruntime` is at or below the global virtual time `V`), the one with the smallest `vd` runs next. Higher-weight tasks therefore get shorter normalized deadlines and run sooner, which is exactly what we want for tight per-frame work like physics narrowphase versus background work like terrain chunk streaming.
+
+Implementation details:
+
+- The run-queue is a hand-rolled binary min-heap of `ScheduledTask` records ordered by `(deadline, enqueue_time)`.
+- Workers wait on a `Threads.Condition` and pop the head of the heap when woken.
+- Each task records its actual runtime and updates `vruntime += Δt / weight`. The scheduler advances `V := max(V, task.vruntime)` on every completion.
+- Newly enqueued tasks have their `vruntime` clamped up to `V` so a long-idle requester cannot burst-claim CPU at the expense of currently-running work.
+- Worker bodies wrap user functions in `Base.invokelatest(...)` so closures defined in newer world ages can still be dispatched on long-lived workers spawned at module-load time.
+
+Default per-system weights (highest priority first):
+
+| Weight | Used by |
+|--------|---------|
+| `W_PHYSICS = 8.0` | narrowphase contact tests (`src/physics/world.jl::_narrowphase!`) |
+| `W_ANIMATION = 4.0` | reserved for animation / blend trees / IK / skinning |
+| `W_DEFAULT = 4.0` | ad-hoc `submit_task!` / `parallel_for` calls |
+| `W_PARTICLES = 2.0` | reserved for particle simulation |
+| `W_CULLING = 2.0` | frustum cull + LOD + classify (`src/rendering/frame_preparation.jl::prepare_frame`) |
+| `W_ASYNC_IO = 1.0` | async asset I/O (`src/loading/async_loader.jl::load_model_async`) |
+| `W_CHUNK_GEN = 1.0` | procedural terrain chunk generation (`src/procgen/chunk_streaming.jl`) |
+
+The two data-parallel primitives are:
+
+- `parallel_for(sched, range; weight, slice, chunks) do i ... end` — fan-out / join over a range. Used by `_narrowphase!` for per-pair collision tests.
+- `parallel_for_chunks(sched, range; weight, slice, chunks) do chunk_id, idx_view ... end` — chunked variant exposing a stable `chunk_id` per chunk for indexing into preallocated per-chunk accumulators that are merged on the calling thread. Used by `prepare_frame` for the frustum-cull / LOD / classify pass.
+
+Both primitives short-circuit to a direct serial loop when `Threads.nthreads() == 1`, the scheduler is not running, or the input is too small to benefit from fan-out, so single-threaded Julia (`-t 1`) produces identical results without paying task-spawn overhead.
 
 ---
 
@@ -489,7 +526,12 @@ src/
 ├── ecs.jl                      # Entity Component System
 ├── scene.jl                    # Immutable scene graph
 ├── state.jl                    # Reactive state (Observable alias)
-├── threading.jl                # Opt-in multithreading (TransformSnapshot)
+│
+├── scheduler/
+│   ├── eevdf_task.jl           # ScheduledTask, TaskHandle, TaskGroup
+│   ├── eevdf_scheduler.jl      # EEVDFScheduler, worker pool, parallel_for
+│   ├── global.jl               # Singleton, init_scheduler!, weight constants
+│   └── snapshots.jl            # TransformSnapshot, snapshot_components
 │
 ├── components/
 │   ├── transform.jl            # TransformComponent (Observable-based)

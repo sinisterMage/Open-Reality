@@ -1,14 +1,18 @@
 # Multithreading Demo
-# Showcases the engine's opt-in parallelism features:
-#   - Parallel physics narrowphase (collision detection across worker threads)
-#   - Parallel frame preparation (frustum culling + LOD + entity classification)
-#   - Async background asset loading (non-blocking model loads)
-#   - NaN guards that prevent physics simulation explosions
+# Showcases the engine's parallel-first execution model. Every multithreaded
+# job in OpenReality is submitted to a single engine-wide EEVDF
+# (Earliest Eligible Virtual Deadline First) task scheduler with a
+# persistent worker-thread pool:
+#   - Parallel physics narrowphase  (weight = W_PHYSICS, foreground)
+#   - Parallel frame preparation   (weight = W_CULLING, foreground)
+#   - Async asset loading          (weight = W_ASYNC_IO, background)
+#   - Procedural chunk streaming   (weight = W_CHUNK_GEN, background)
 #
 # Run with multiple threads for actual parallelism:
 #   julia -t auto --project=. examples/threading_demo.jl
 #
-# Without -t, the engine gracefully falls back to serial execution.
+# With `julia -t 1` the scheduler still works (single worker) and every
+# code path produces identical results, just sequentially.
 
 using OpenReality
 
@@ -17,10 +21,10 @@ reset_component_stores!()
 reset_physics_world!()
 
 # =============================================================================
-# Enable multithreading
+# Engine is parallel-first — no toggle, the scheduler boots with the render
+# loop. We log the worker count for visibility.
 # =============================================================================
 @info "Julia threads available" nthreads=Threads.nthreads()
-use_threading(true)
 
 # =============================================================================
 # Helpers: mass-spawn entities to stress-test parallel paths
@@ -141,10 +145,11 @@ s = scene(entities)
 # =============================================================================
 # Summary
 # =============================================================================
-@info "Threading Demo Scene" entities=entity_count(s) threading=threading_enabled() features=[
-    "Parallel narrowphase ($(Threads.nthreads()) threads)",
-    "Parallel frame preparation (frustum cull + LOD + classify)",
-    "Async asset loading (Channel-based background worker)",
+@info "Threading Demo Scene" entities=entity_count(s) workers=Threads.nthreads() features=[
+    "EEVDF task scheduler ($(Threads.nthreads()) workers, parallel-first)",
+    "Parallel narrowphase via parallel_for(W_PHYSICS)",
+    "Parallel frame prep via parallel_for_chunks(W_CULLING)",
+    "Async asset loading via submit_task!(W_ASYNC_IO)",
     "NaN guards (velocity clamping + impulse validation)",
     "200 dynamic physics objects stress-testing collision pairs",
     "50 scattered objects stress-testing frustum culling",

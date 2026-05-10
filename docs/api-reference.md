@@ -1547,16 +1547,44 @@ PostProcessConfig(;
 
 ---
 
-## Threading
+## Task Scheduler (EEVDF)
+
+OpenReality is parallel-first. Every multithreaded job in the engine — physics narrowphase, frame preparation, async asset loads, terrain chunk streaming — is submitted to a single engine-wide EEVDF (Earliest Eligible Virtual Deadline First) task scheduler with a persistent worker-thread pool. The render loop boots and tears the scheduler down automatically; outside the render loop the global scheduler initializes lazily on first use.
 
 ```julia
-use_threading(val::Bool=true)     # Enable/disable multithreading
-threading_enabled() -> Bool        # Check if threading is on
-snapshot_transforms() -> Dict{EntityID, TransformSnapshot}  # Thread-safe read
+get_scheduler() -> EEVDFScheduler                          # Lazy global access
+init_scheduler!(; nworkers=Threads.nthreads())              # Eager warm-up
+shutdown_scheduler!()                                        # Tear down workers
+
+submit_task!(sched, fn; weight, slice=1e-3) -> TaskHandle    # Enqueue one task
+wait!(handle::TaskHandle)                                    # Block & rethrow
+
+parallel_for(sched, range; weight, slice=1e-3, chunks=nothing) do i ... end
+parallel_for_chunks(sched, range; weight, slice=1e-3, chunks=nothing) do cid, idx_view ... end
+```
+
+EEVDF orders tasks by virtual deadline `vd = vruntime + slice/weight`. Higher weights yield earlier deadlines, so foreground work runs ahead of background work under contention. Built-in weight constants (tuned for a typical mixed frame, highest first):
+
+```julia
+W_PHYSICS    = 8.0   # narrowphase contact tests
+W_ANIMATION  = 4.0   # animation, blend trees, IK, skinning
+W_DEFAULT    = 4.0   # ad-hoc submit_task! / parallel_for calls
+W_PARTICLES  = 2.0   # particle simulation
+W_CULLING    = 2.0   # frustum culling, LOD, entity classification
+W_ASYNC_IO   = 1.0   # async asset I/O
+W_CHUNK_GEN  = 1.0   # procedural terrain chunk generation
+```
+
+`parallel_for` and `parallel_for_chunks` short-circuit to a direct serial loop when `Threads.nthreads() == 1`, when the scheduler is not running, or when the input is too small to benefit from fan-out — results are identical regardless.
+
+### Snapshot helpers (safe parallel ECS reads)
+
+```julia
+snapshot_transforms() -> Dict{EntityID, TransformSnapshot}   # Read-only copy
 snapshot_components(::Type{T}) -> Dict{EntityID, T}
 ```
 
-Opt-in multithreading with snapshot-based reads for safe parallel access.
+Worker tasks must not touch the global `World()` directly (Ark.jl is single-writer). The snapshot helpers copy the relevant column data on the main thread before fanning out so workers can read freely.
 
 ---
 

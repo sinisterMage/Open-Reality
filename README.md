@@ -57,7 +57,7 @@ OpenReality provides AAA-quality rendering with a clean functional API. Define s
 - Input mapping with gamepad support
 - Animation blend trees (1D and 2D blending)
 - Depth of field, motion blur, vignette, color grading
-- Opt-in multithreading with snapshot-based parallelism
+- Parallel-first execution with an engine-wide EEVDF task scheduler and snapshot-based ECS reads
 - Instanced rendering for batched draw calls
 - AssetManager with async loading
 - Save/load game serialization

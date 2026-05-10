@@ -1,22 +1,20 @@
-# Async asset loading via Channel-based worker thread
+# Async asset loading via the engine-wide EEVDFScheduler.
 #
-# Allows models to be loaded on a background thread without blocking the
-# render loop. Results are polled once per frame on the main thread.
-
-"""
-    AsyncLoadRequest
-
-A request to load a model asynchronously.
-"""
-struct AsyncLoadRequest
-    path::String
-    kwargs::Dict{Symbol, Any}
-end
+# Every `load_model_async` call submits one low-weight task (W_ASYNC_IO) to
+# the global EEVDFScheduler. The task runs `load_model` on a worker thread
+# and pushes its result onto a results channel that the main thread drains
+# once per frame via `poll_async_loads!`.
+#
+# This replaces the previous "single dedicated background worker thread"
+# design so that asset loading shares the same pool — and the same
+# fair-share policy — as physics narrowphase, frame prep, and chunk
+# streaming.
 
 """
     AsyncLoadResult
 
-The result of an async model load — either the loaded entities or an error string.
+The result of an async model load — either the loaded entities or an
+error string.
 """
 struct AsyncLoadResult
     path::String
@@ -27,46 +25,43 @@ end
 """
     AsyncAssetLoader
 
-Channel-based async loader. Send requests via `load_model_async`,
-poll completed results via `poll_async_loads!`.
+Channel-collected async loader. Submit a request via
+[`load_model_async`](@ref); the load runs on the engine's task scheduler.
+Drain completed results via [`poll_async_loads!`](@ref) once per frame on
+the main thread.
 """
 mutable struct AsyncAssetLoader
-    request_channel::Channel{AsyncLoadRequest}
     result_channel::Channel{AsyncLoadResult}
-    worker_task::Union{Task, Nothing}
+    inflight::Vector{TaskHandle}
 end
 
 """
     AsyncAssetLoader(; buffer_size=64) -> AsyncAssetLoader
 
-Create and start an async asset loader with a background worker thread.
+Create an async asset loader. No background thread is spawned eagerly —
+work is dispatched per request to the [`EEVDFScheduler`](@ref).
 """
 function AsyncAssetLoader(; buffer_size::Int=64)
-    req_ch = Channel{AsyncLoadRequest}(buffer_size)
-    res_ch = Channel{AsyncLoadResult}(buffer_size)
-    loader = AsyncAssetLoader(req_ch, res_ch, nothing)
-    loader.worker_task = Threads.@spawn _async_load_worker(req_ch, res_ch)
-    return loader
-end
-
-function _async_load_worker(req_ch::Channel{AsyncLoadRequest}, res_ch::Channel{AsyncLoadResult})
-    for req in req_ch
-        try
-            entities = load_model(req.path; req.kwargs...)
-            put!(res_ch, AsyncLoadResult(req.path, entities, nothing))
-        catch e
-            put!(res_ch, AsyncLoadResult(req.path, nothing, sprint(showerror, e)))
-        end
-    end
+    return AsyncAssetLoader(Channel{AsyncLoadResult}(buffer_size), TaskHandle[])
 end
 
 """
     load_model_async(loader::AsyncAssetLoader, path::String; kwargs...)
 
-Queue a model for background loading. Non-blocking — returns immediately.
+Queue a model for background loading on the engine task scheduler.
+Non-blocking — returns immediately.
 """
 function load_model_async(loader::AsyncAssetLoader, path::String; kwargs...)
-    put!(loader.request_channel, AsyncLoadRequest(path, Dict{Symbol, Any}(kwargs)))
+    res_ch = loader.result_channel
+    handle = submit_task!(get_scheduler(), () -> begin
+        try
+            entities = load_model(path; kwargs...)
+            put!(res_ch, AsyncLoadResult(path, entities, nothing))
+        catch e
+            put!(res_ch, AsyncLoadResult(path, nothing, sprint(showerror, e)))
+        end
+    end; weight=W_ASYNC_IO, slice=0.05)
+    push!(loader.inflight, handle)
     return nothing
 end
 
@@ -87,13 +82,19 @@ end
 """
     shutdown_async_loader!(loader::AsyncAssetLoader)
 
-Close channels and wait for the worker to finish.
+Wait for any outstanding submissions to complete and close the result
+channel. Outstanding results that complete during shutdown are still
+deliverable via the channel until it is closed.
 """
 function shutdown_async_loader!(loader::AsyncAssetLoader)
-    close(loader.request_channel)
-    if loader.worker_task !== nothing
-        wait(loader.worker_task)
+    for handle in loader.inflight
+        try
+            wait(handle.task.done)
+        catch e
+            @warn "Async loader task error during shutdown" exception=e
+        end
     end
+    empty!(loader.inflight)
     close(loader.result_channel)
     return nothing
 end

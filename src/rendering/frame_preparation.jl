@@ -142,107 +142,18 @@ end
 """
     prepare_frame(scene::Scene, bounds_cache::Dict{EntityID, BoundingSphere}) -> Union{FrameData, Nothing}
 
-Perform backend-agnostic frame setup: find camera, extract frustum, classify entities
-(opaque vs transparent), collect lights. Returns `nothing` if no camera is found.
+Perform backend-agnostic frame setup: find camera, extract frustum, classify
+entities (opaque vs transparent), collect lights. Returns `nothing` if no
+camera is found.
+
+Parallel-first: pre-computes world transforms on the main thread (the only
+phase that touches Observable values in the ECS), then fans out frustum
+culling, LOD selection, normal-matrix construction, and opaque/transparent
+classification across the engine-wide [`EEVDFScheduler`](@ref) via
+[`parallel_for_chunks`](@ref). Results from each chunk are merged on the
+calling thread before returning.
 """
 function prepare_frame(scene::Scene, bounds_cache::Dict{EntityID, BoundingSphere})
-    # Find active camera
-    camera_id = find_active_camera()
-    if camera_id === nothing
-        return nothing
-    end
-
-    view = get_view_matrix(camera_id)
-    proj = get_projection_matrix(camera_id)
-    cam_world = get_world_transform(camera_id)
-    cam_pos = Vec3f(Float32(cam_world[1, 4]), Float32(cam_world[2, 4]), Float32(cam_world[3, 4]))
-
-    # Frustum culling setup
-    vp = proj * view
-    frustum = extract_frustum(vp)
-
-    # Collect and classify entities
-    opaque_entities = EntityRenderData[]
-    transparent_entities = TransparentEntityData[]
-
-    iterate_components(MeshComponent) do entity_id, mesh
-        isempty(mesh.indices) && return
-
-        # Model matrix
-        world_transform = get_world_transform(entity_id)
-        model = Mat4f(world_transform)
-
-        # Frustum culling
-        bs = get!(bounds_cache, entity_id) do
-            bounding_sphere_from_mesh(mesh)
-        end
-        world_center, world_radius = transform_bounding_sphere(bs, model)
-        if !is_sphere_in_frustum(frustum, world_center, world_radius)
-            return  # culled
-        end
-
-        # LOD selection: swap mesh if entity has LODComponent
-        render_mesh = mesh
-        lod_crossfade = 1.0f0
-        lod_next_mesh = nothing
-        lod = get_component(entity_id, LODComponent)
-        if lod !== nothing && !isempty(lod.levels)
-            dx = world_center[1] - cam_pos[1]
-            dy = world_center[2] - cam_pos[2]
-            dz = world_center[3] - cam_pos[3]
-            cam_distance = sqrt(dx*dx + dy*dy + dz*dz)
-            selection = select_lod_level(lod, cam_distance, entity_id)
-            render_mesh = selection.mesh
-            lod_crossfade = selection.crossfade_alpha
-            lod_next_mesh = selection.next_mesh
-        end
-
-        # Normal matrix
-        model3 = SMatrix{3, 3, Float32, 9}(
-            model[1,1], model[2,1], model[3,1],
-            model[1,2], model[2,2], model[3,2],
-            model[1,3], model[2,3], model[3,3]
-        )
-        normal_matrix = SMatrix{3, 3, Float32, 9}(transpose(inv(model3)))
-
-        # Classify opaque vs transparent
-        material = get_component(entity_id, MaterialComponent)
-        is_transparent = material !== nothing && (material.opacity < 1.0f0 || material.alpha_cutoff > 0.0f0)
-
-        if is_transparent
-            dx = world_center[1] - cam_pos[1]
-            dy = world_center[2] - cam_pos[2]
-            dz = world_center[3] - cam_pos[3]
-            dist_sq = dx*dx + dy*dy + dz*dz
-            push!(transparent_entities, TransparentEntityData(entity_id, render_mesh, model, normal_matrix, dist_sq))
-        else
-            push!(opaque_entities, EntityRenderData(entity_id, render_mesh, model, normal_matrix, lod_crossfade, lod_next_mesh))
-        end
-    end
-
-    # Collect lights
-    lights = collect_lights()
-
-    # Primary directional light direction
-    primary_light_dir = isempty(lights.dir_directions) ? nothing : lights.dir_directions[1]
-
-    return FrameData(
-        camera_id, view, proj, cam_pos,
-        frustum,
-        opaque_entities, transparent_entities,
-        lights,
-        primary_light_dir
-    )
-end
-
-"""
-    prepare_frame_parallel(scene::Scene, bounds_cache::Dict{EntityID, BoundingSphere}) -> Union{FrameData, Nothing}
-
-Threaded variant of `prepare_frame`. Pre-computes world transforms on the main
-thread, then parallelises frustum culling, LOD selection, and entity classification
-across worker threads using per-thread local arrays.
-"""
-function prepare_frame_parallel(scene::Scene, bounds_cache::Dict{EntityID, BoundingSphere})
     # Find active camera (main thread)
     camera_id = find_active_camera()
     camera_id === nothing && return nothing
@@ -255,8 +166,10 @@ function prepare_frame_parallel(scene::Scene, bounds_cache::Dict{EntityID, Bound
     vp = proj * view
     frustum = extract_frustum(vp)
 
-    # Step 1: Collect mesh entities and pre-compute world transforms (main thread)
-    # This writes _WORLD_TRANSFORM_CACHE safely since still single-threaded.
+    # Step 1: Collect mesh entities and pre-compute world transforms on the
+    # main thread. This writes _WORLD_TRANSFORM_CACHE safely while still
+    # single-threaded; worker tasks below only read from the precomputed
+    # arrays plus fetch read-only components.
     mesh_entities = entities_with_component(MeshComponent)
     n = length(mesh_entities)
 
@@ -285,67 +198,69 @@ function prepare_frame_parallel(scene::Scene, bounds_cache::Dict{EntityID, Bound
         valid[i] = true
     end
 
-    # Step 2: Parallel — frustum cull + LOD + classify
-    nt = Threads.nthreads()
-    local_opaque = [EntityRenderData[] for _ in 1:nt]
-    local_transparent = [TransparentEntityData[] for _ in 1:nt]
+    # Step 2: Parallel — frustum cull + LOD + classify. Each chunk owns a
+    # private accumulator pair so workers never contend on shared lists.
+    sched = get_scheduler()
+    nchunks_hint = sched.num_workers
+    nchunks_max = max(1, min(nchunks_hint, n == 0 ? 1 : n))
+    local_opaque = [EntityRenderData[] for _ in 1:nchunks_max]
+    local_transparent = [TransparentEntityData[] for _ in 1:nchunks_max]
 
-    Threads.@threads for i in 1:n
-        valid[i] || continue
-        tid = Threads.threadid()
-        eid = mesh_entities[i]
-        model = world_transforms[i]
-        world_center, world_radius = bspheres[i]
+    parallel_for_chunks(sched, 1:n; weight=W_CULLING, chunks=nchunks_max) do chunk_id, idx_view
+        opq = local_opaque[chunk_id]
+        trn = local_transparent[chunk_id]
+        for i in idx_view
+            valid[i] || continue
+            eid = mesh_entities[i]
+            model = world_transforms[i]
+            world_center, world_radius = bspheres[i]
 
-        # Frustum culling (pure function)
-        if !is_sphere_in_frustum(frustum, world_center, world_radius)
-            continue  # culled
-        end
+            # Frustum culling
+            if !is_sphere_in_frustum(frustum, world_center, world_radius)
+                continue
+            end
 
-        # LOD selection
-        render_mesh = meshes[i]
-        lod_crossfade = 1.0f0
-        lod_next_mesh = nothing
-        lod = get_component(eid, LODComponent)
-        if lod !== nothing && !isempty(lod.levels)
-            dx = world_center[1] - cam_pos[1]
-            dy = world_center[2] - cam_pos[2]
-            dz = world_center[3] - cam_pos[3]
-            cam_distance = sqrt(dx*dx + dy*dy + dz*dz)
-            selection = select_lod_level(lod, cam_distance, eid)
-            render_mesh = selection.mesh
-            lod_crossfade = selection.crossfade_alpha
-            lod_next_mesh = selection.next_mesh
-        end
+            # LOD selection
+            render_mesh = meshes[i]
+            lod_crossfade = 1.0f0
+            lod_next_mesh = nothing
+            lod = get_component(eid, LODComponent)
+            if lod !== nothing && !isempty(lod.levels)
+                dx = world_center[1] - cam_pos[1]
+                dy = world_center[2] - cam_pos[2]
+                dz = world_center[3] - cam_pos[3]
+                cam_distance = sqrt(dx*dx + dy*dy + dz*dz)
+                selection = select_lod_level(lod, cam_distance, eid)
+                render_mesh = selection.mesh
+                lod_crossfade = selection.crossfade_alpha
+                lod_next_mesh = selection.next_mesh
+            end
 
-        # Normal matrix
-        model3 = SMatrix{3, 3, Float32, 9}(
-            model[1,1], model[2,1], model[3,1],
-            model[1,2], model[2,2], model[3,2],
-            model[1,3], model[2,3], model[3,3]
-        )
-        normal_matrix = SMatrix{3, 3, Float32, 9}(transpose(inv(model3)))
+            model3 = SMatrix{3, 3, Float32, 9}(
+                model[1,1], model[2,1], model[3,1],
+                model[1,2], model[2,2], model[3,2],
+                model[1,3], model[2,3], model[3,3]
+            )
+            normal_matrix = SMatrix{3, 3, Float32, 9}(transpose(inv(model3)))
 
-        # Classify opaque vs transparent
-        material = get_component(eid, MaterialComponent)
-        is_transparent = material !== nothing && (material.opacity < 1.0f0 || material.alpha_cutoff > 0.0f0)
+            material = get_component(eid, MaterialComponent)
+            is_transparent = material !== nothing && (material.opacity < 1.0f0 || material.alpha_cutoff > 0.0f0)
 
-        if is_transparent
-            dx = world_center[1] - cam_pos[1]
-            dy = world_center[2] - cam_pos[2]
-            dz = world_center[3] - cam_pos[3]
-            dist_sq = dx*dx + dy*dy + dz*dz
-            push!(local_transparent[tid], TransparentEntityData(eid, render_mesh, model, normal_matrix, dist_sq))
-        else
-            push!(local_opaque[tid], EntityRenderData(eid, render_mesh, model, normal_matrix, lod_crossfade, lod_next_mesh))
+            if is_transparent
+                dx = world_center[1] - cam_pos[1]
+                dy = world_center[2] - cam_pos[2]
+                dz = world_center[3] - cam_pos[3]
+                dist_sq = dx*dx + dy*dy + dz*dz
+                push!(trn, TransparentEntityData(eid, render_mesh, model, normal_matrix, dist_sq))
+            else
+                push!(opq, EntityRenderData(eid, render_mesh, model, normal_matrix, lod_crossfade, lod_next_mesh))
+            end
         end
     end
 
-    # Step 3: Merge per-thread results
     opaque_entities = reduce(vcat, local_opaque; init=EntityRenderData[])
     transparent_entities = reduce(vcat, local_transparent; init=TransparentEntityData[])
 
-    # Collect lights (main thread)
     lights = collect_lights()
     primary_light_dir = isempty(lights.dir_directions) ? nothing : lights.dir_directions[1]
 
@@ -357,3 +272,4 @@ function prepare_frame_parallel(scene::Scene, bounds_cache::Dict{EntityID, Bound
         primary_light_dir
     )
 end
+

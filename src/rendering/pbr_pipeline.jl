@@ -169,6 +169,10 @@ function run_render_loop!(initial_scene::Scene;
                           on_scene_switch::Union{Function, Nothing} = nothing)
     initialize!(backend, width=width, height=height, title=title)
 
+    # Spin up the engine-wide EEVDF task scheduler so the first frame
+    # doesn't pay worker spawn cost. Torn down in the finally block.
+    init_scheduler!()
+
     current_scene = initial_scene
 
     # Initialize audio system
@@ -387,6 +391,9 @@ function run_render_loop!(initial_scene::Scene;
         reset_async_loader!()
         shutdown_audio!()
         cleanup_all_gpu_resources!(backend)
+        # Tear down the engine-wide EEVDF scheduler last so any cleanup
+        # paths above are still able to submit/await scheduler tasks.
+        shutdown_scheduler!()
         shutdown!(backend)
     end
 
@@ -411,6 +418,9 @@ function run_render_loop!(fsm::GameStateMachine;
                           ui::Union{Function, Nothing} = nothing,
                           on_scene_switch::Union{Function, Nothing} = nothing)
     initialize!(backend, width=width, height=height, title=title)
+
+    # Spin up the engine-wide EEVDF task scheduler. Torn down in finally.
+    init_scheduler!()
 
     current_scene = scene(fsm.initial_scene_defs)
 
@@ -678,6 +688,8 @@ function run_render_loop!(fsm::GameStateMachine;
         reset_async_loader!()
         shutdown_audio!()
         cleanup_all_gpu_resources!(backend)
+        # Tear down the engine-wide EEVDF scheduler last.
+        shutdown_scheduler!()
         shutdown!(backend)
     end
 

@@ -194,10 +194,8 @@ function render_frame!(backend::WebGPUBackend, scene)
         return nothing
     end
 
-    # Use frame_preparation to get backend-agnostic frame data (parallel when threading enabled)
-    frame_data = threading_enabled() ?
-        prepare_frame_parallel(scene, backend.bounds_cache) :
-        prepare_frame(scene, backend.bounds_cache)
+    # Use frame_preparation to get backend-agnostic frame data (parallel-first via EEVDFScheduler)
+    frame_data = prepare_frame(scene, backend.bounds_cache)
     frame_data === nothing && return
 
     view = frame_data.view
