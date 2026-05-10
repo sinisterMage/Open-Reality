@@ -1,0 +1,118 @@
+# OpenReality build orchestration via neomake.
+#
+# This file replaces the previous Bazel build system. Tasks invoke the
+# host-installed toolchains: cargo, julia, bun, swift, wasm-pack.
+#
+# neomake is a separate project — install it once and put it on PATH:
+#     cargo install --git https://github.com/sinisterMage/neomake neomake
+# See https://github.com/sinisterMage/neomake for sources and docs.
+#
+# Then run any task from the repo root:
+#     neomake list
+#     neomake run julia-test
+#     neomake run cli
+#
+# On Apple silicon / Intel macOS, set OR_HOST_OS=macos to enable the
+# Metal-bridge tasks. On any other host they evaluate to a no-op.
+
+$os         = env("OR_HOST_OS", "linux")
+$julia_srcs = glob("src/**/*.jl")
+$shaders    = glob("openreality-gpu-shared/shaders/*.wgsl")
+
+# ============================================================
+# Julia engine
+# ============================================================
+
+[tasks.precompile]
+command = "julia --project=. -e 'using Pkg; Pkg.instantiate(); try; Pkg.precompile(); catch e; @warn(\"some packages failed to precompile (non-fatal)\", exception=e); end'"
+inputs  = ["Project.toml", "Manifest.toml"] + ${julia_srcs}
+
+[tasks.julia-test]
+command = "julia --project=. test/runtests.jl"
+deps    = ["precompile", "wgpu-build"]
+inputs  = ${julia_srcs} + glob("test/**/*.jl")
+
+[tasks.visual-test]
+command = "julia --project=. test/visual/visual_tests.jl"
+deps    = ["precompile", "wgpu-build"]
+inputs  = ${julia_srcs} + glob("test/visual/**/*.jl") + glob("test/visual/references/*.png")
+
+# ============================================================
+# Rust crates
+# ============================================================
+
+[tasks.gpu-shared-test]
+command = "cargo test -p openreality-gpu-shared"
+inputs  = glob("openreality-gpu-shared/**/*.rs") + ${shaders}
+
+[tasks.wgpu-build]
+command = "cargo build -p openreality-wgpu --release"
+deps    = ["gpu-shared-test"]
+inputs  = glob("openreality-wgpu/**/*.rs") + glob("openreality-gpu-shared/**/*.rs") + ${shaders}
+outputs = ["target/release/libopenreality_wgpu.*"]
+
+[tasks.wgpu-test]
+command = "cargo test -p openreality-wgpu"
+deps    = ["gpu-shared-test"]
+inputs  = glob("openreality-wgpu/**/*.rs") + glob("openreality-gpu-shared/**/*.rs") + ${shaders}
+
+[tasks.cli]
+command = "cargo build -p openreality-cli --release"
+inputs  = glob("openreality-cli/**/*.rs") + ["openreality-cli/Cargo.toml", "Cargo.toml", "Cargo.lock"]
+outputs = ["target/release/orcli*"]
+
+[tasks.cli-test]
+command = "cargo test -p openreality-cli"
+inputs  = glob("openreality-cli/**/*.rs") + ["openreality-cli/Cargo.toml"]
+
+[tasks.web-test]
+command = "cargo test -p openreality-web"
+inputs  = glob("openreality-web/**/*.rs") + glob("openreality-gpu-shared/**/*.rs") + ${shaders}
+
+[tasks.web-wasm]
+command = "cd openreality-web && wasm-pack build --target web --release"
+inputs  = glob("openreality-web/**/*.rs") + ${shaders} + ["openreality-web/Cargo.toml", "Cargo.toml", "Cargo.lock"]
+outputs = ["openreality-web/pkg/openreality_web.js", "openreality-web/pkg/openreality_web_bg.wasm"]
+
+# ============================================================
+# Swift / Metal bridge (macOS only)
+# ============================================================
+
+[tasks.metal-build]
+command = if ${os} == "macos" { "cd metal_bridge && swift build -c release" } else { "echo '[neomake] metal-build: skipped (OR_HOST_OS != macos)'" }
+inputs  = glob("metal_bridge/Sources/**/*.swift") + glob("metal_bridge/Package.swift")
+
+[tasks.metal-test]
+command = if ${os} == "macos" { "cd metal_bridge && swift test" } else { "echo '[neomake] metal-test: skipped (OR_HOST_OS != macos)'" }
+deps    = ["metal-build"]
+inputs  = glob("metal_bridge/Sources/**/*.swift") + glob("metal_bridge/Tests/**/*.swift")
+
+# ============================================================
+# Bun website
+# ============================================================
+
+[tasks.web-install]
+command = "cd open-reality-website && bun install --frozen-lockfile"
+inputs  = ["open-reality-website/package.json", "open-reality-website/bun.lock"]
+
+[tasks.website-test]
+command = "cd open-reality-website && bun test"
+deps    = ["web-install"]
+inputs  = glob("open-reality-website/app/**/*") + glob("open-reality-website/__tests__/**/*") + glob("open-reality-website/stories/**/*") + ["open-reality-website/bunfig.toml", "open-reality-website/tsconfig.json"]
+
+[tasks.storybook-build]
+command = "cd open-reality-website && bun run build-storybook"
+deps    = ["web-install"]
+inputs  = glob("open-reality-website/app/**/*") + glob("open-reality-website/stories/**/*") + glob("open-reality-website/.storybook/**/*") + ["open-reality-website/tsconfig.json"]
+
+# ============================================================
+# Aggregate convenience targets
+# ============================================================
+
+[tasks.test-all]
+command = "echo '[neomake] test-all: complete'"
+deps    = ["julia-test", "wgpu-test", "cli-test", "gpu-shared-test", "web-test", "metal-test", "website-test"]
+
+[tasks.build-all]
+command = "echo '[neomake] build-all: complete'"
+deps    = ["cli", "wgpu-build", "metal-build", "precompile"]

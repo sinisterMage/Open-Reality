@@ -12,10 +12,12 @@ cargo build --release -p openreality-cli
 # Binary at target/release/orcli
 ```
 
-### Build from source (Bazel)
+### Build from source ([neomake](https://github.com/sinisterMage/neomake))
 
 ```bash
-bazel build //openreality-cli:orcli
+# Install neomake once: cargo install --git https://github.com/sinisterMage/neomake neomake
+neomake run cli
+# Binary at target/release/orcli
 ```
 
 ## Quick Start

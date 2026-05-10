@@ -1,9 +1,0 @@
-# Julia engine source files.
-# Julia uses its own JIT compiler -- these are declared as filegroups
-# so other Bazel targets can depend on them as data/runfiles.
-
-filegroup(
-    name = "julia_sources",
-    srcs = glob(["**/*.jl"]),
-    visibility = ["//visibility:public"],
-)

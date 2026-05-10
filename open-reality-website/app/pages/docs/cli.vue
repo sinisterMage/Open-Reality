@@ -11,8 +11,9 @@ const installCode = `# Build from source (Cargo)
 cargo build --release -p openreality-cli
 # Binary at target/release/orcli
 
-# Build from source (Bazel)
-bazel build //openreality-cli:orcli`
+# Build from source (neomake — github.com/sinisterMage/neomake)
+# Install once: cargo install --git https://github.com/sinisterMage/neomake neomake
+neomake run cli`
 
 const quickStartCode = `# Create a new project
 orcli init myproject

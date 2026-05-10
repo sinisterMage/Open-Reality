@@ -54,16 +54,29 @@ julia --project=. -e 'using Pkg; Pkg.instantiate()'
 
 The first load will precompile all dependencies — this may take a minute.
 
-### Bazel (Optional)
+### neomake (Optional)
 
-The project uses [Bazel 6](https://bazel.build/) for cross-language builds (Julia + Rust + Swift). Most Julia contributors won't need Bazel, but it's useful for full-project builds and CI.
+The project uses [neomake](https://github.com/sinisterMage/neomake) — a small TOMLX-driven build orchestrator — to run cross-language builds and tests (Julia + Rust + Swift + Bun) with parallelism and a content-addressable cache. neomake is its own project, not vendored here; install it once (requires Rust 1.75+):
 
-1. Install via [bazelisk](https://github.com/bazelbuild/bazelisk) (recommended — it manages Bazel versions automatically)
-2. Run tests: `bazel test //:julia_tests`
-3. Build CLI: `bazel build //:cli`
-4. Precompile: `bazel build //:precompile`
+```bash
+cargo install --git https://github.com/sinisterMage/neomake neomake
+```
 
-> **Note:** Bazel tests require a display server (X11/Wayland) for GLFW. The `.bazelrc` forwards the `DISPLAY` environment variable automatically.
+This puts the `neomake` binary on your `PATH`. Most Julia contributors don't need neomake, but it's useful for full-project builds.
+
+Then, from the repository root:
+
+```bash
+neomake list                  # show the task DAG
+neomake run julia-test        # Julia tests (precompiles + builds wgpu first)
+neomake run cli               # build orcli
+neomake run wgpu-build        # build the WebGPU shared library
+neomake run test-all          # everything that can be tested on this host
+```
+
+Tasks invoke the host-installed toolchains (`julia`, `cargo`, `bun`, `swift`, `wasm-pack`) — make sure they are on `PATH`. On macOS, set `OR_HOST_OS=macos` before running so the `metal-build` / `metal-test` tasks execute (they no-op on other hosts).
+
+> **Note:** Tasks that exercise the renderer require a display server (X11/Wayland) for GLFW. neomake does not sandbox commands, so they inherit your environment, including `$DISPLAY`.
 
 ### Rust / Cargo (WebGPU and CLI Only)
 
@@ -118,12 +131,10 @@ OpenReality/
 ├── openreality-gpu-shared/     # Shared GPU code (WGSL shaders)
 ├── openreality-web/            # Web export tooling
 ├── metal_bridge/               # Swift — Metal backend bridge (macOS)
-├── bazel/                      # Bazel build rules (julia.bzl, bun.bzl, platforms.bzl)
 ├── open-reality-website/       # Project website (Nuxt)
 ├── Project.toml                # Julia project dependencies
 ├── Cargo.toml                  # Rust workspace manifest
-├── BUILD.bazel                 # Root Bazel build file
-└── MODULE.bazel                # Bazel module definition
+└── neomake.tomlx               # Build task definitions (consumed by github.com/sinisterMage/neomake)
 ```
 
 **Key architectural rule:** All Julia `using`/`import` statements and `export` declarations are centralized in `src/OpenReality.jl`. Individual source files under `src/` should not contain their own `using` statements for external packages.
@@ -150,10 +161,10 @@ See the full list in the `examples/` directory.
 julia --project=. -e 'using Pkg; Pkg.test()'
 ```
 
-**Bazel (full build system):**
+**neomake (full build system):**
 
 ```bash
-bazel test //:julia_tests
+neomake run julia-test
 ```
 
 ### Building the WebGPU Backend

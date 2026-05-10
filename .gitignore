@@ -1,6 +1,6 @@
 .build
 target
-bazel-*
+.neomake/
 .swiftpm
 .openreality/shader_cache/
 test/visual/diffs/

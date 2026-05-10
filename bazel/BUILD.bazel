@@ -1,1 +1,0 @@
-# This BUILD file makes bazel/ a valid package so .bzl files can be loaded.

@@ -51,7 +51,7 @@ const features = [
   {
     tag: 'CLI',
     title: 'Developer Tooling',
-    description: 'Rust TUI dashboard, Bazel monorepo management, 938 tests. Built for real development.',
+    description: 'Rust TUI dashboard, neomake-driven cross-language builds, 938 tests. Built for real development.',
   },
 ]
 

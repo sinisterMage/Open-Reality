@@ -4,7 +4,7 @@
 const _WEBGPU_LIB_REF = Ref{String}("")
 
 function _find_webgpu_lib()
-    # Check environment variable first (set by Bazel julia_run rules)
+    # Check environment variable first (set by neomake tasks or any caller)
     env_path = get(ENV, "OPENREALITY_WGPU_LIB", "")
     if !isempty(env_path) && isfile(env_path)
         return env_path

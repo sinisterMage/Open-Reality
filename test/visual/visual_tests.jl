@@ -4,9 +4,9 @@
 #   julia test/visual/visual_tests.jl                                 # Run tests
 #   OPENREALITY_UPDATE_REFERENCES=true julia test/visual/visual_tests.jl  # Update references
 #
-# Via Bazel:
-#   bazel test //test/visual:visual_regression_tests
-#   OPENREALITY_UPDATE_REFERENCES=true bazel run //test/visual:visual_regression_tests
+# Via neomake (https://github.com/sinisterMage/neomake):
+#   neomake run visual-test
+#   OPENREALITY_UPDATE_REFERENCES=true neomake --no-cache run visual-test
 
 using OpenReality
 using Test
