@@ -4,7 +4,7 @@
 # in deferred_graph.jl via multiple dispatch on VulkanBackend.
 
 # Helper: get the current swapchain image index from the backend
-_vk_current_image_index(backend::VulkanBackend) = backend.current_image_index
+_vk_current_image_index(backend::VulkanBackendImpl) = backend.current_image_index
 
 # Helper: convert OpenGL projection to Vulkan conventions (Y-flip + depth remap)
 function _vk_proj_from_frame(frame_data::FrameData)
@@ -17,7 +17,7 @@ function _vk_proj_from_frame(frame_data::FrameData)
     )
 end
 
-function execute_rg_shadow_csm!(backend::VulkanBackend, ctx::RGExecuteContext)
+function execute_rg_shadow_csm!(backend::VulkanBackendImpl, ctx::RGExecuteContext)
     backend.csm === nothing && return
     fd = ctx.frame_data
     fd.primary_light_dir === nothing && return
@@ -27,7 +27,7 @@ function execute_rg_shadow_csm!(backend::VulkanBackend, ctx::RGExecuteContext)
     vk_render_csm_passes!(cmd, backend, backend.csm, fd.view, vk_proj, fd.primary_light_dir)
 end
 
-function execute_rg_gbuffer!(backend::VulkanBackend, ctx::RGExecuteContext)
+function execute_rg_gbuffer!(backend::VulkanBackendImpl, ctx::RGExecuteContext)
     backend.deferred_pipeline === nothing && return
     cmd = backend.command_buffers[backend.current_frame]
     frame_idx = backend.current_frame
@@ -36,7 +36,7 @@ function execute_rg_gbuffer!(backend::VulkanBackend, ctx::RGExecuteContext)
     _render_gbuffer_pass!(cmd, backend, ctx.frame_data, frame_idx, w, h)
 end
 
-function execute_rg_terrain_gbuffer!(backend::VulkanBackend, ctx::RGExecuteContext)
+function execute_rg_terrain_gbuffer!(backend::VulkanBackendImpl, ctx::RGExecuteContext)
     backend.deferred_pipeline === nothing && return
     backend.terrain_renderer === nothing && return
     cmd = backend.command_buffers[backend.current_frame]
@@ -48,7 +48,7 @@ function execute_rg_terrain_gbuffer!(backend::VulkanBackend, ctx::RGExecuteConte
     vk_render_terrain_gbuffer!(cmd, backend, frame_idx, vk_proj, fd.view, fd.cam_pos, w, h)
 end
 
-function execute_rg_deferred_lighting!(backend::VulkanBackend, ctx::RGExecuteContext)
+function execute_rg_deferred_lighting!(backend::VulkanBackendImpl, ctx::RGExecuteContext)
     backend.deferred_pipeline === nothing && return
     dp = backend.deferred_pipeline
     dp.lighting_target === nothing && return
@@ -76,26 +76,26 @@ function execute_rg_deferred_lighting!(backend::VulkanBackend, ctx::RGExecuteCon
         ssao_view=ssao_view, ssr_view=ssr_view)
 end
 
-function execute_rg_ssao!(backend::VulkanBackend, ctx::RGExecuteContext)
+function execute_rg_ssao!(backend::VulkanBackendImpl, ctx::RGExecuteContext)
     # SSAO is handled inside execute_rg_deferred_lighting! since the Vulkan
     # lighting pass consumes the SSAO result directly via ssao_view binding.
 end
 
-function execute_rg_ssao_blur!(backend::VulkanBackend, ctx::RGExecuteContext)
+function execute_rg_ssao_blur!(backend::VulkanBackendImpl, ctx::RGExecuteContext)
     # SSAO blur is handled internally by _render_ssao_pass!
 end
 
-function execute_rg_ssr!(backend::VulkanBackend, ctx::RGExecuteContext)
+function execute_rg_ssr!(backend::VulkanBackendImpl, ctx::RGExecuteContext)
     # SSR is handled inside execute_rg_deferred_lighting! since the Vulkan
     # lighting pass consumes the SSR result directly via the ssr_view binding.
 end
 
-function execute_rg_composite_lighting!(backend::VulkanBackend, ctx::RGExecuteContext)
+function execute_rg_composite_lighting!(backend::VulkanBackendImpl, ctx::RGExecuteContext)
     # The Vulkan backend composes SSR + SSAO during the lighting pass itself,
     # so this is a no-op. The result is in deferred_pipeline.lighting_target.
 end
 
-function execute_rg_taa!(backend::VulkanBackend, ctx::RGExecuteContext)
+function execute_rg_taa!(backend::VulkanBackendImpl, ctx::RGExecuteContext)
     backend.deferred_pipeline === nothing && return
     dp = backend.deferred_pipeline
     dp.taa_pass === nothing && return
@@ -111,15 +111,15 @@ function execute_rg_taa!(backend::VulkanBackend, ctx::RGExecuteContext)
 end
 
 # DoF, motion blur, bloom are handled in the post-process mega-pass on Vulkan
-function execute_rg_dof_coc!(backend::VulkanBackend, ctx::RGExecuteContext) end
-function execute_rg_dof_blur!(backend::VulkanBackend, ctx::RGExecuteContext) end
-function execute_rg_dof_composite!(backend::VulkanBackend, ctx::RGExecuteContext) end
-function execute_rg_mblur_velocity!(backend::VulkanBackend, ctx::RGExecuteContext) end
-function execute_rg_mblur_blur!(backend::VulkanBackend, ctx::RGExecuteContext) end
-function execute_rg_bloom_extract!(backend::VulkanBackend, ctx::RGExecuteContext) end
-function execute_rg_bloom_blur!(backend::VulkanBackend, ctx::RGExecuteContext) end
+function execute_rg_dof_coc!(backend::VulkanBackendImpl, ctx::RGExecuteContext) end
+function execute_rg_dof_blur!(backend::VulkanBackendImpl, ctx::RGExecuteContext) end
+function execute_rg_dof_composite!(backend::VulkanBackendImpl, ctx::RGExecuteContext) end
+function execute_rg_mblur_velocity!(backend::VulkanBackendImpl, ctx::RGExecuteContext) end
+function execute_rg_mblur_blur!(backend::VulkanBackendImpl, ctx::RGExecuteContext) end
+function execute_rg_bloom_extract!(backend::VulkanBackendImpl, ctx::RGExecuteContext) end
+function execute_rg_bloom_blur!(backend::VulkanBackendImpl, ctx::RGExecuteContext) end
 
-function execute_rg_post_composite!(backend::VulkanBackend, ctx::RGExecuteContext)
+function execute_rg_post_composite!(backend::VulkanBackendImpl, ctx::RGExecuteContext)
     backend.deferred_pipeline === nothing && return
     dp = backend.deferred_pipeline
     cmd = backend.command_buffers[backend.current_frame]
@@ -160,15 +160,15 @@ function execute_rg_post_composite!(backend::VulkanBackend, ctx::RGExecuteContex
         apply_fxaa=pp_config.fxaa_enabled)
 end
 
-function execute_rg_fxaa!(backend::VulkanBackend, ctx::RGExecuteContext)
+function execute_rg_fxaa!(backend::VulkanBackendImpl, ctx::RGExecuteContext)
     # FXAA is handled inside _render_present_pass! called from execute_rg_post_composite!
 end
 
-function execute_rg_depth_copy!(backend::VulkanBackend, ctx::RGExecuteContext)
+function execute_rg_depth_copy!(backend::VulkanBackendImpl, ctx::RGExecuteContext)
     # Vulkan doesn't need explicit depth copy — render pass dependencies handle this
 end
 
-function execute_rg_forward_transparent!(backend::VulkanBackend, ctx::RGExecuteContext)
+function execute_rg_forward_transparent!(backend::VulkanBackendImpl, ctx::RGExecuteContext)
     isempty(ctx.frame_data.transparent_entities) && return
     cmd = backend.command_buffers[backend.current_frame]
     image_index = _vk_current_image_index(backend)
@@ -176,7 +176,7 @@ function execute_rg_forward_transparent!(backend::VulkanBackend, ctx::RGExecuteC
         backend.current_frame, image_index, ctx.width, ctx.height)
 end
 
-function execute_rg_particles!(backend::VulkanBackend, ctx::RGExecuteContext)
+function execute_rg_particles!(backend::VulkanBackendImpl, ctx::RGExecuteContext)
     backend.particle_renderer === nothing && return
     !backend.particle_renderer.initialized && return
     isempty(PARTICLE_POOLS) && return
@@ -188,7 +188,7 @@ function execute_rg_particles!(backend::VulkanBackend, ctx::RGExecuteContext)
     vk_render_particles!(cmd, backend.particle_renderer, backend, fd.view, vk_proj, image_index)
 end
 
-function execute_rg_ui!(backend::VulkanBackend, ctx::RGExecuteContext)
+function execute_rg_ui!(backend::VulkanBackendImpl, ctx::RGExecuteContext)
     backend.ui_renderer === nothing && return
     _UI_CALLBACK[] === nothing && return
     _UI_CONTEXT[] === nothing && return
@@ -208,7 +208,7 @@ function execute_rg_ui!(backend::VulkanBackend, ctx::RGExecuteContext)
     vk_render_ui!(cmd, backend.ui_renderer, backend, ui_ctx, image_index, frame_idx)
 end
 
-function execute_rg_debug_draw!(backend::VulkanBackend, ctx::RGExecuteContext)
+function execute_rg_debug_draw!(backend::VulkanBackendImpl, ctx::RGExecuteContext)
     backend.debug_draw_renderer === nothing && return
     !backend.debug_draw_renderer.initialized && return
     !OPENREALITY_DEBUG && return
@@ -222,7 +222,7 @@ function execute_rg_debug_draw!(backend::VulkanBackend, ctx::RGExecuteContext)
     vk_render_debug_draw!(cmd, backend.debug_draw_renderer, backend, fd.view, vk_proj, image_index)
 end
 
-function execute_rg_present!(backend::VulkanBackend, ctx::RGExecuteContext)
+function execute_rg_present!(backend::VulkanBackendImpl, ctx::RGExecuteContext)
     # The actual present render pass (blit to swapchain) runs inside
     # execute_rg_post_composite! so that overlay passes can layer on top.
     # The vkQueuePresent call happens in render_frame! after execute_graph! returns.

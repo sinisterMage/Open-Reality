@@ -177,7 +177,7 @@ Render all particle emitters as an overlay on the swapchain image.
 Uses the UI overlay render pass (shared).
 """
 function vk_render_particles!(cmd::CommandBuffer, renderer::VulkanParticleRenderer,
-                               backend::VulkanBackend, view::Mat4f, proj::Mat4f,
+                               backend::VulkanBackendImpl, view::Mat4f, proj::Mat4f,
                                image_index::Int)
     !renderer.initialized && return
     isempty(PARTICLE_POOLS) && return

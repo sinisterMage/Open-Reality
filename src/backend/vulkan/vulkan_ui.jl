@@ -330,7 +330,7 @@ end
 Render all UI draw commands as an overlay on the swapchain image.
 """
 function vk_render_ui!(cmd::CommandBuffer, renderer::VulkanUIRenderer,
-                        backend::VulkanBackend, ctx::UIContext,
+                        backend::VulkanBackendImpl, ctx::UIContext,
                         image_index::Int, frame_idx::Int)
     !renderer.initialized && return
     isempty(ctx.draw_commands) && isempty(ctx.overlay_draw_commands) && return
@@ -405,7 +405,7 @@ function _vk_ui_upload_vertices!(renderer::VulkanUIRenderer, device::Device,
 end
 
 function _vk_ui_draw_commands!(cmd::CommandBuffer, renderer::VulkanUIRenderer,
-                                 backend::VulkanBackend, commands::Vector{UIDrawCommand},
+                                 backend::VulkanBackendImpl, commands::Vector{UIDrawCommand},
                                  width::Int, height::Int, frame_idx::Int)
     renderer.vertex_buffer === nothing && return
 

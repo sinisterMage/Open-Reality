@@ -79,7 +79,7 @@ end
 Render all accumulated debug lines for this frame. Reads from `_DEBUG_LINES`.
 """
 function vk_render_debug_draw!(cmd::CommandBuffer, renderer::VulkanDebugDrawRenderer,
-                                backend::VulkanBackend, view::Mat4f, proj::Mat4f,
+                                backend::VulkanBackendImpl, view::Mat4f, proj::Mat4f,
                                 image_index::Int)
     !renderer.initialized && return
     !OPENREALITY_DEBUG && return

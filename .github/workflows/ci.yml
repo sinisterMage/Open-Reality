@@ -43,6 +43,12 @@ jobs:
             julia --project=. -e '
               using Pkg
               Pkg.instantiate()
+              # Vulkan.jl is a weak dependency (see Project.toml [weakdeps]).
+              # macOS skips it entirely (broken precompile, Metal is the backend),
+              # but the Linux CI runner still exercises the Vulkan code path, so
+              # explicitly install it here. The `Vulkan` entry in [extras] keeps
+              # it available to the test target.
+              Pkg.add("Vulkan")
               Pkg.test(coverage=true)
             '
         env:

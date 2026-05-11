@@ -210,7 +210,7 @@ end
 Execute DOF pipeline: CoC → H blur → V blur → composite.
 Returns the composited DOF result view, or source_view if DOF is disabled.
 """
-function _render_dof_pass!(cmd::CommandBuffer, backend::VulkanBackend,
+function _render_dof_pass!(cmd::CommandBuffer, backend::VulkanBackendImpl,
                             frame_idx::Int, source_view::ImageView,
                             width::Int, height::Int)
     dof = backend.dof_pass

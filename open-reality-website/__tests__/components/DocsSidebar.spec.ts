@@ -8,10 +8,10 @@ describe('DocsSidebar', () => {
     ;(globalThis as any).useRoute = () => ({ path: '/docs' })
   })
 
-  it('renders all 10 documentation sections', () => {
+  it('renders all 11 documentation sections', () => {
     const wrapper = mount(DocsSidebar, defaultMountOptions)
     const links = wrapper.findAll('a')
-    expect(links).toHaveLength(10)
+    expect(links).toHaveLength(11)
   })
 
   it('renders section labels', () => {

@@ -112,12 +112,17 @@ void main() {
 """
 
 """
-    VulkanBackend <: AbstractBackend
+    VulkanBackendImpl <: VulkanBackend <: AbstractBackend
 
-Vulkan rendering backend for Linux/Windows.
+Concrete Vulkan rendering backend for Linux/Windows.
+
+User code constructs it via [`VulkanBackend`](@ref OpenReality.VulkanBackend); the
+abstract `VulkanBackend` stub lives in `OpenReality` and is only specialised here
+(in the `OpenRealityVulkanExt` package extension) when `Vulkan.jl` is loaded.
+
 Uses deferred rendering with PBR, CSM shadows, IBL, SSAO, SSR, TAA, and post-processing.
 """
-mutable struct VulkanBackend <: AbstractBackend
+mutable struct VulkanBackendImpl <: VulkanBackend
     initialized::Bool
     window::Union{Window, Nothing}
     input::InputState
@@ -238,8 +243,8 @@ mutable struct VulkanBackend <: AbstractBackend
     use_render_graph::Bool
 end
 
-function VulkanBackend()
-    VulkanBackend(
+function VulkanBackendImpl()
+    VulkanBackendImpl(
         false, nothing, InputState(), 1280, 720,
         # Vulkan core
         nothing, nothing, nothing, nothing, nothing, UInt32(0), UInt32(0),
@@ -291,7 +296,7 @@ end
 # Core Lifecycle
 # ==================================================================
 
-function initialize!(backend::VulkanBackend; width::Int=1280, height::Int=720, title::String="OpenReality")
+function initialize!(backend::VulkanBackendImpl; width::Int=1280, height::Int=720, title::String="OpenReality")
     backend.width = width
     backend.height = height
 
@@ -574,7 +579,7 @@ function initialize!(backend::VulkanBackend; width::Int=1280, height::Int=720, t
     return nothing
 end
 
-function shutdown!(backend::VulkanBackend)
+function shutdown!(backend::VulkanBackendImpl)
     !backend.initialized && return
 
     unwrap(device_wait_idle(backend.device))
@@ -730,7 +735,7 @@ end
 # Render Frame
 # ==================================================================
 
-function render_frame!(backend::VulkanBackend, scene::Scene)
+function render_frame!(backend::VulkanBackendImpl, scene::Scene)
     !backend.initialized && return
 
     # Wait for the current frame's fence
@@ -1032,7 +1037,7 @@ Batch-transition all render target images from UNDEFINED to SHADER_READ_ONLY_OPT
 Called once during initialization to prevent validation errors when textures are sampled
 before any render pass writes to them.
 """
-function _vk_transition_all_render_targets!(backend::VulkanBackend)
+function _vk_transition_all_render_targets!(backend::VulkanBackendImpl)
     dev = backend.device
     cp = backend.command_pool
     q = backend.graphics_queue
@@ -1148,7 +1153,7 @@ size or expensive to recreate):
   present pipeline is rebuilt here too since it referenced the old render pass).
 - Per-frame UBOs / lighting UBOs / descriptor sets (size-independent).
 """
-function _vk_resize_render_targets!(backend::VulkanBackend, width::Int, height::Int)
+function _vk_resize_render_targets!(backend::VulkanBackendImpl, width::Int, height::Int)
     unwrap(device_wait_idle(backend.device))
 
     # ---- Save IBL across rebuild (avoid re-baking irradiance/prefilter maps) ----
@@ -1279,7 +1284,7 @@ end
 # Internal render helpers
 # ==================================================================
 
-function _submit_empty_frame!(backend::VulkanBackend, frame_idx::Int, image_index::Int)
+function _submit_empty_frame!(backend::VulkanBackendImpl, frame_idx::Int, image_index::Int)
     cmd = backend.command_buffers[frame_idx]
     unwrap(reset_command_buffer(cmd))
     unwrap(begin_command_buffer(cmd, CommandBufferBeginInfo()))
@@ -1320,7 +1325,7 @@ function _submit_empty_frame!(backend::VulkanBackend, frame_idx::Int, image_inde
     backend.current_frame = (frame_idx % VK_MAX_FRAMES_IN_FLIGHT) + 1
 end
 
-function _render_gbuffer_pass!(cmd::CommandBuffer, backend::VulkanBackend,
+function _render_gbuffer_pass!(cmd::CommandBuffer, backend::VulkanBackendImpl,
                                 frame_data::FrameData, frame_idx::Int,
                                 width::Int, height::Int)
     dp = backend.deferred_pipeline
@@ -1475,7 +1480,7 @@ function _render_gbuffer_pass!(cmd::CommandBuffer, backend::VulkanBackend,
     cmd_end_render_pass(cmd)
 end
 
-function _render_lighting_pass!(cmd::CommandBuffer, backend::VulkanBackend,
+function _render_lighting_pass!(cmd::CommandBuffer, backend::VulkanBackendImpl,
                                  frame_data::FrameData, frame_idx::Int,
                                  width::Int, height::Int;
                                  ssao_view::Union{ImageView, Nothing}=nothing,
@@ -1542,7 +1547,7 @@ function _render_lighting_pass!(cmd::CommandBuffer, backend::VulkanBackend,
     cmd_end_render_pass(cmd)
 end
 
-function _render_present_pass!(cmd::CommandBuffer, backend::VulkanBackend,
+function _render_present_pass!(cmd::CommandBuffer, backend::VulkanBackendImpl,
                                 image_index::Int, frame_idx::Int,
                                 width::Int, height::Int;
                                 source_view::Union{ImageView, Nothing}=nothing,
@@ -1657,7 +1662,7 @@ end
 Execute SSAO pass (raw occlusion + blur). Returns the blurred SSAO result view,
 or nothing if SSAO is not available.
 """
-function _render_ssao_pass!(cmd::CommandBuffer, backend::VulkanBackend,
+function _render_ssao_pass!(cmd::CommandBuffer, backend::VulkanBackendImpl,
                               vk_proj::Mat4f, frame_idx::Int,
                               width::Int, height::Int)
     dp = backend.deferred_pipeline
@@ -1719,7 +1724,7 @@ frame's lighting pass hasn't run yet. This introduces a one-frame lag for
 reflected dynamic lighting, which mirrors how TAA handles its history target
 and matches what the OpenGL backend does in its `composite_ssr!` flow.
 """
-function _render_ssr_pass!(cmd::CommandBuffer, backend::VulkanBackend,
+function _render_ssr_pass!(cmd::CommandBuffer, backend::VulkanBackendImpl,
                             view::Mat4f, vk_proj::Mat4f, frame_idx::Int,
                             width::Int, height::Int)
     dp = backend.deferred_pipeline
@@ -1774,7 +1779,7 @@ end
 
 Execute TAA pass. Blends current frame with clamped history. Returns the TAA result view.
 """
-function _render_taa_pass!(cmd::CommandBuffer, backend::VulkanBackend,
+function _render_taa_pass!(cmd::CommandBuffer, backend::VulkanBackendImpl,
                              frame_idx::Int, vk_proj::Mat4f, view::Mat4f,
                              width::Int, height::Int,
                              source_view::ImageView)
@@ -1834,7 +1839,7 @@ end
 Execute bloom extraction, blur, and composite (tone mapping + gamma).
 Returns the final post-processed result view.
 """
-function _render_post_process_passes!(cmd::CommandBuffer, backend::VulkanBackend,
+function _render_post_process_passes!(cmd::CommandBuffer, backend::VulkanBackendImpl,
                                         frame_idx::Int, source_view::ImageView,
                                         width::Int, height::Int)
     pp = backend.post_process
@@ -1940,7 +1945,7 @@ end
 
 # ---- Shader operations ----
 
-function backend_create_shader(backend::VulkanBackend, vertex_src::String, fragment_src::String)
+function backend_create_shader(backend::VulkanBackendImpl, vertex_src::String, fragment_src::String)
     return vk_compile_and_create_pipeline(backend.device, vertex_src, fragment_src,
         VulkanPipelineConfig(
             backend.present_render_pass, UInt32(0),
@@ -1953,7 +1958,7 @@ function backend_create_shader(backend::VulkanBackend, vertex_src::String, fragm
         ))
 end
 
-function backend_destroy_shader!(backend::VulkanBackend, shader::VulkanShaderProgram)
+function backend_destroy_shader!(backend::VulkanBackendImpl, shader::VulkanShaderProgram)
     finalize(shader.pipeline)
     finalize(shader.pipeline_layout)
     shader.vert_module !== nothing && finalize(shader.vert_module)
@@ -1961,13 +1966,13 @@ function backend_destroy_shader!(backend::VulkanBackend, shader::VulkanShaderPro
     return nothing
 end
 
-function backend_use_shader!(backend::VulkanBackend, shader::VulkanShaderProgram)
+function backend_use_shader!(backend::VulkanBackendImpl, shader::VulkanShaderProgram)
     # In Vulkan, pipeline binding happens in the command buffer, not globally.
     # This is a no-op — pipelines are bound during render passes.
     return nothing
 end
 
-function backend_set_uniform!(backend::VulkanBackend, shader::VulkanShaderProgram, name::String, value)
+function backend_set_uniform!(backend::VulkanBackendImpl, shader::VulkanShaderProgram, name::String, value)
     # In Vulkan, uniforms are set via UBOs and push constants, not per-name.
     # This is a no-op for the Vulkan backend.
     return nothing
@@ -1975,75 +1980,75 @@ end
 
 # ---- Mesh operations ----
 
-function backend_upload_mesh!(backend::VulkanBackend, entity_id, mesh)
+function backend_upload_mesh!(backend::VulkanBackendImpl, entity_id, mesh)
     return vk_upload_mesh!(backend.gpu_cache, backend.device, backend.physical_device,
                             backend.command_pool, backend.graphics_queue, entity_id, mesh)
 end
 
-function backend_draw_mesh!(backend::VulkanBackend, gpu_mesh::VulkanGPUMesh)
+function backend_draw_mesh!(backend::VulkanBackendImpl, gpu_mesh::VulkanGPUMesh)
     # Draw calls happen within command buffers during render passes.
     # This standalone method is not directly usable in Vulkan.
     return nothing
 end
 
-function backend_destroy_mesh!(backend::VulkanBackend, gpu_mesh::VulkanGPUMesh)
+function backend_destroy_mesh!(backend::VulkanBackendImpl, gpu_mesh::VulkanGPUMesh)
     vk_destroy_mesh!(backend.device, gpu_mesh)
     return nothing
 end
 
 # ---- Texture operations ----
 
-function backend_upload_texture!(backend::VulkanBackend, pixels::Vector{UInt8},
+function backend_upload_texture!(backend::VulkanBackendImpl, pixels::Vector{UInt8},
                                   width::Int, height::Int, channels::Int)
     return vk_upload_texture(backend.device, backend.physical_device,
                               backend.command_pool, backend.graphics_queue,
                               pixels, width, height, channels)
 end
 
-function backend_bind_texture!(backend::VulkanBackend, texture::VulkanGPUTexture, unit::Int)
+function backend_bind_texture!(backend::VulkanBackendImpl, texture::VulkanGPUTexture, unit::Int)
     # In Vulkan, textures are bound via descriptor sets, not texture units.
     return nothing
 end
 
-function backend_destroy_texture!(backend::VulkanBackend, texture::VulkanGPUTexture)
+function backend_destroy_texture!(backend::VulkanBackendImpl, texture::VulkanGPUTexture)
     vk_destroy_texture!(backend.device, texture)
     return nothing
 end
 
 # ---- Framebuffer operations ----
 
-function backend_create_framebuffer!(backend::VulkanBackend, width::Int, height::Int)
+function backend_create_framebuffer!(backend::VulkanBackendImpl, width::Int, height::Int)
     return vk_create_render_target(backend.device, backend.physical_device, width, height)
 end
 
-function backend_bind_framebuffer!(backend::VulkanBackend, fb::VulkanFramebuffer)
+function backend_bind_framebuffer!(backend::VulkanBackendImpl, fb::VulkanFramebuffer)
     # In Vulkan, framebuffers are bound via render passes in command buffers.
     return nothing
 end
 
-function backend_unbind_framebuffer!(backend::VulkanBackend)
+function backend_unbind_framebuffer!(backend::VulkanBackendImpl)
     return nothing
 end
 
-function backend_destroy_framebuffer!(backend::VulkanBackend, fb::VulkanFramebuffer)
+function backend_destroy_framebuffer!(backend::VulkanBackendImpl, fb::VulkanFramebuffer)
     vk_destroy_render_target!(backend.device, fb)
     return nothing
 end
 
 # ---- G-Buffer operations ----
 
-function backend_create_gbuffer!(backend::VulkanBackend, width::Int, height::Int)
+function backend_create_gbuffer!(backend::VulkanBackendImpl, width::Int, height::Int)
     return vk_create_gbuffer(backend.device, backend.physical_device, width, height)
 end
 
 # ---- Shadow map operations ----
 
-function backend_create_shadow_map!(backend::VulkanBackend, width::Int, height::Int)
+function backend_create_shadow_map!(backend::VulkanBackendImpl, width::Int, height::Int)
     fb, rp, depth_tex = vk_create_depth_only_render_target(backend.device, backend.physical_device, width, height)
     return VulkanShadowMap(fb, rp, depth_tex, width, height)
 end
 
-function backend_create_csm!(backend::VulkanBackend, num_cascades::Int, resolution::Int,
+function backend_create_csm!(backend::VulkanBackendImpl, num_cascades::Int, resolution::Int,
                                near::Float32, far::Float32)
     csm = vk_create_csm(backend.device, backend.physical_device, num_cascades, resolution, near, far)
 
@@ -2083,7 +2088,7 @@ end
 
 # ---- IBL operations ----
 
-function backend_create_ibl_environment!(backend::VulkanBackend, path::String, intensity::Float32)
+function backend_create_ibl_environment!(backend::VulkanBackendImpl, path::String, intensity::Float32)
     ibl = vk_create_ibl_environment(backend.device, backend.physical_device,
                                      backend.command_pool, backend.graphics_queue,
                                      path, intensity)
@@ -2103,7 +2108,7 @@ end
 
 # ---- Screen-space effect operations ----
 
-function backend_create_ssr_pass!(backend::VulkanBackend, width::Int, height::Int)
+function backend_create_ssr_pass!(backend::VulkanBackendImpl, width::Int, height::Int)
     ssr = vk_create_ssr_pass(backend.device, backend.physical_device, width, height,
                               backend.fullscreen_layout, backend.descriptor_pool)
     _vk_transition_framebuffer_readable!(backend.device, backend.command_pool,
@@ -2111,7 +2116,7 @@ function backend_create_ssr_pass!(backend::VulkanBackend, width::Int, height::In
     return ssr
 end
 
-function backend_create_ssao_pass!(backend::VulkanBackend, width::Int, height::Int)
+function backend_create_ssao_pass!(backend::VulkanBackendImpl, width::Int, height::Int)
     ssao = vk_create_ssao_pass(backend.device, backend.physical_device,
                                 backend.command_pool, backend.graphics_queue,
                                 width, height, backend.fullscreen_layout, backend.descriptor_pool)
@@ -2122,7 +2127,7 @@ function backend_create_ssao_pass!(backend::VulkanBackend, width::Int, height::I
     return ssao
 end
 
-function backend_create_taa_pass!(backend::VulkanBackend, width::Int, height::Int)
+function backend_create_taa_pass!(backend::VulkanBackendImpl, width::Int, height::Int)
     taa = vk_create_taa_pass(backend.device, backend.physical_device, width, height,
                               backend.fullscreen_layout, backend.descriptor_pool)
 
@@ -2137,7 +2142,7 @@ end
 
 # ---- Post-processing operations ----
 
-function backend_create_post_process!(backend::VulkanBackend, width::Int, height::Int, config)
+function backend_create_post_process!(backend::VulkanBackendImpl, width::Int, height::Int, config)
     pp_config = config isa PostProcessConfig ? config : PostProcessConfig()
     return vk_create_post_process(backend.device, backend.physical_device, width, height,
                                    pp_config, backend.fullscreen_layout, backend.descriptor_pool)
@@ -2145,12 +2150,12 @@ end
 
 # ---- DOF / Motion Blur ----
 
-function backend_create_dof_pass!(backend::VulkanBackend, width::Int, height::Int)
+function backend_create_dof_pass!(backend::VulkanBackendImpl, width::Int, height::Int)
     return vk_create_dof_pass(backend.device, backend.physical_device, width, height,
                                backend.fullscreen_layout, backend.descriptor_pool)
 end
 
-function backend_create_motion_blur_pass!(backend::VulkanBackend, width::Int, height::Int)
+function backend_create_motion_blur_pass!(backend::VulkanBackendImpl, width::Int, height::Int)
     return vk_create_motion_blur_pass(backend.device, backend.physical_device, width, height,
                                        backend.fullscreen_layout, backend.descriptor_pool)
 end
@@ -2158,71 +2163,71 @@ end
 # ---- Render state operations ----
 # In Vulkan, most of these are set per-pipeline or per-render-pass, not globally.
 
-function backend_set_viewport!(backend::VulkanBackend, x::Int, y::Int, width::Int, height::Int)
+function backend_set_viewport!(backend::VulkanBackendImpl, x::Int, y::Int, width::Int, height::Int)
     return nothing  # Set within command buffers
 end
 
-function backend_clear!(backend::VulkanBackend; color::Bool=true, depth::Bool=true)
+function backend_clear!(backend::VulkanBackendImpl; color::Bool=true, depth::Bool=true)
     return nothing  # Handled by render pass load ops
 end
 
-function backend_set_depth_test!(backend::VulkanBackend; enabled::Bool=true, write::Bool=true)
+function backend_set_depth_test!(backend::VulkanBackendImpl; enabled::Bool=true, write::Bool=true)
     return nothing  # Set per-pipeline
 end
 
-function backend_set_blend!(backend::VulkanBackend; enabled::Bool=false)
+function backend_set_blend!(backend::VulkanBackendImpl; enabled::Bool=false)
     return nothing  # Set per-pipeline
 end
 
-function backend_set_cull_face!(backend::VulkanBackend; enabled::Bool=true, front::Bool=false)
+function backend_set_cull_face!(backend::VulkanBackendImpl; enabled::Bool=true, front::Bool=false)
     return nothing  # Set per-pipeline
 end
 
-function backend_swap_buffers!(backend::VulkanBackend)
+function backend_swap_buffers!(backend::VulkanBackendImpl)
     return nothing  # Handled by queue_present_khr in render_frame!
 end
 
-function backend_draw_fullscreen_quad!(backend::VulkanBackend, quad_handle)
+function backend_draw_fullscreen_quad!(backend::VulkanBackendImpl, quad_handle)
     return nothing  # Called within command buffers
 end
 
-function backend_blit_framebuffer!(backend::VulkanBackend, src, dst, width::Int, height::Int;
+function backend_blit_framebuffer!(backend::VulkanBackendImpl, src, dst, width::Int, height::Int;
                                     color::Bool=false, depth::Bool=false)
     return nothing  # Handled via image blit commands in render passes
 end
 
 # ---- Windowing / event loop operations ----
 
-function backend_should_close(backend::VulkanBackend)
+function backend_should_close(backend::VulkanBackendImpl)
     backend.window === nothing && return true
     return GLFW.WindowShouldClose(backend.window.handle)
 end
 
-function backend_poll_events!(backend::VulkanBackend)
+function backend_poll_events!(backend::VulkanBackendImpl)
     GLFW.PollEvents()
     return nothing
 end
 
-function backend_get_time(backend::VulkanBackend)
+function backend_get_time(backend::VulkanBackendImpl)
     return get_time()
 end
 
-function backend_capture_cursor!(backend::VulkanBackend)
+function backend_capture_cursor!(backend::VulkanBackendImpl)
     backend.window === nothing && return
     capture_cursor!(backend.window)
     return nothing
 end
 
-function backend_release_cursor!(backend::VulkanBackend)
+function backend_release_cursor!(backend::VulkanBackendImpl)
     backend.window === nothing && return
     release_cursor!(backend.window)
     return nothing
 end
 
-function backend_is_key_pressed(backend::VulkanBackend, key)
+function backend_is_key_pressed(backend::VulkanBackendImpl, key)
     return is_key_pressed(backend.input, key)
 end
 
-function backend_get_input(backend::VulkanBackend)
+function backend_get_input(backend::VulkanBackendImpl)
     return backend.input
 end

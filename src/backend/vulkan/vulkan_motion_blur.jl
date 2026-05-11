@@ -153,7 +153,7 @@ end
 Execute motion blur: velocity buffer → directional blur.
 Returns the blurred result view, or source_view if motion blur is disabled.
 """
-function _render_motion_blur_pass!(cmd::CommandBuffer, backend::VulkanBackend,
+function _render_motion_blur_pass!(cmd::CommandBuffer, backend::VulkanBackendImpl,
                                     frame_idx::Int, source_view::ImageView,
                                     vk_proj::Mat4f, view::Mat4f,
                                     width::Int, height::Int)

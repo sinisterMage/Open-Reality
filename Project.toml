@@ -23,8 +23,13 @@ Quaternions = "94ee1d12-ae83-5a48-8b1c-48b8ff168ae0"
 Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
-Vulkan = "9f14b124-c50e-4008-a7d4-969b3a6cd68a"
 glslang_jll = "6fd5517d-459c-5c5a-9b1a-c968b4e37a81"
+
+[weakdeps]
+Vulkan = "9f14b124-c50e-4008-a7d4-969b3a6cd68a"
+
+[extensions]
+OpenRealityVulkanExt = "Vulkan"
 
 [compat]
 Ark = "0.4"
@@ -39,14 +44,16 @@ ImageIO = "0.6.9"
 MeshIO = "0.4.13"
 ModernGL = "1"
 Observables = "0.5"
-OpenAL_jll = "1.21 - 1.23" # Added a range as 1.21 did not have a windows artifact.
+OpenAL_jll = "1.21 - 1.23"
 Quaternions = "0.7.7"
 StaticArrays = "1.5"
 TOML = "1.0.3"
+Vulkan = "0.6.29"
 julia = "1.9"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+Vulkan = "9f14b124-c50e-4008-a7d4-969b3a6cd68a"
 
 [targets]
 test = ["Test"]

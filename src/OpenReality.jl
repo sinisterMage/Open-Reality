@@ -265,40 +265,32 @@ if Sys.isapple()
     include("backend/metal/metal_backend.jl")
 end
 
-# Vulkan backend implementation (Linux/Windows, after frame_preparation — uses FrameLightData)
-if !Sys.isapple()
-    include("backend/vulkan/vulkan_types.jl")
-    include("backend/vulkan/vulkan_memory.jl")
-    include("backend/vulkan/vulkan_device.jl")
-    include("backend/vulkan/vulkan_swapchain.jl")
-    include("backend/vulkan/vulkan_descriptors.jl")
-    include("backend/vulkan/vulkan_uniforms.jl")
-    include("backend/vulkan/vulkan_shader.jl")
-    include("backend/vulkan/vulkan_mesh.jl")
-    include("backend/vulkan/vulkan_instancing.jl")
-    include("backend/vulkan/vulkan_texture.jl")
-    include("backend/vulkan/vulkan_framebuffer.jl")
-    include("backend/vulkan/vulkan_pbr.jl")
-    include("backend/vulkan/vulkan_shadows.jl")
-    include("backend/vulkan/vulkan_ibl.jl")
-    include("backend/vulkan/vulkan_ssao.jl")
-    include("backend/vulkan/vulkan_ssr.jl")
-    include("backend/vulkan/vulkan_taa.jl")
-    include("backend/vulkan/vulkan_postprocess.jl")
-    include("backend/vulkan/vulkan_deferred.jl")
-    include("backend/vulkan/vulkan_backend.jl")
-    include("backend/vulkan/vulkan_ui.jl")
-    include("backend/vulkan/vulkan_particles.jl")
-    include("backend/vulkan/vulkan_terrain.jl")
-    include("backend/vulkan/vulkan_dof.jl")
-    include("backend/vulkan/vulkan_motion_blur.jl")
-    include("backend/vulkan/vulkan_debug_draw.jl")
-    # Vulkan render graph (after vulkan_backend.jl + render graph core)
-    include("backend/vulkan/vulkan_graph_executor.jl")
-    include("backend/vulkan/vulkan_graph_passes.jl")
-    # Framebuffer capture for visual regression tests
-    include("backend/vulkan/vulkan_capture.jl")
-end
+# Vulkan backend — abstract stub.
+#
+# The concrete implementation (`VulkanBackendImpl`) lives in the
+# `OpenRealityVulkanExt` package extension (see `ext/OpenRealityVulkanExt.jl`)
+# and is only loaded when `Vulkan.jl` is available. This lets macOS skip the
+# Vulkan.jl precompilation (which is broken there and isn't needed thanks to
+# the Metal backend), while Linux/Windows users still get the full Vulkan path
+# via the auto-install logic in `__init__` below.
+"""
+    VulkanBackend <: AbstractBackend
+
+Abstract supertype for the Vulkan rendering backend. The concrete
+implementation is provided by the `OpenRealityVulkanExt` package extension,
+which is loaded automatically on Linux/Windows once `Vulkan.jl` is installed.
+
+`VulkanBackend()` constructs the concrete backend when the extension is
+loaded; otherwise it raises an informative error. On macOS, use
+[`MetalBackend`](@ref).
+"""
+abstract type VulkanBackend <: AbstractBackend end
+
+(::Type{VulkanBackend})(args...; kwargs...) = error(
+    "VulkanBackend requires Vulkan.jl. On Linux/Windows: " *
+    "`using Pkg; Pkg.add(\"Vulkan\"); using Vulkan`. " *
+    "macOS users should use MetalBackend() (Vulkan.jl precompilation is broken on macOS)."
+)
 
 # WebGPU backend (all platforms, requires compiled Rust FFI library)
 # Types are always defined (pure Julia structs); FFI/backend only loaded when library exists.
@@ -642,11 +634,11 @@ export get_index_count, get_width, get_height
 # Export Backend
 export AbstractBackend, initialize!, shutdown!, render_frame!
 export OpenGLBackend
+# VulkanBackend is the abstract stub defined above; the concrete impl is
+# provided by `OpenRealityVulkanExt` (loaded when `Vulkan.jl` is available).
+export VulkanBackend
 if Sys.isapple()
     export MetalBackend
-end
-if !Sys.isapple()
-    export VulkanBackend
 end
 
 """
@@ -665,9 +657,10 @@ opt back into the legacy OpenGL path.
 function default_backend()
     if Sys.isapple()
         return @isdefined(MetalBackend) ? MetalBackend() : OpenGLBackend()
-    elseif @isdefined(VulkanBackend)
+    end
+    try
         return VulkanBackend()
-    else
+    catch
         return OpenGLBackend()
     end
 end
@@ -961,5 +954,65 @@ export capture_framebuffer, save_capture, load_reference
 export ImageDiffResult, compare_images, compute_psnr
 export VisualStory, VisualTestResult, @visual_story, visual_story
 export clear_visual_stories!, run_visual_tests
+
+# Auto-load the Vulkan backend extension on Linux/Windows.
+#
+# Vulkan.jl is declared as a weak dependency, so it isn't installed (or
+# precompiled) by default — this avoids the broken Vulkan.jl precompilation
+# path on macOS. On non-Apple platforms, we install it on demand into the
+# user's active project and ask Julia to load it via `Base.require`, which
+# triggers the `OpenRealityVulkanExt` extension (defined in
+# `ext/OpenRealityVulkanExt.jl`) without polluting `Main`.
+#
+# Set `ENV["OPENREALITY_SKIP_VULKAN"] = "1"` to skip the whole dance and
+# stay on OpenGL.
+const _VULKAN_PKGID = Base.PkgId(
+    Base.UUID("9f14b124-c50e-4008-a7d4-969b3a6cd68a"), "Vulkan"
+)
+
+# Detect when `using OpenReality` is happening from a checkout of OpenReality
+# itself (i.e. `--project=.` inside this repo). In that case auto-`Pkg.add`
+# would mutate this Project.toml, which we don't want.
+function _is_openreality_dev_project()
+    try
+        active = Base.active_project()
+        active === nothing && return false
+        active_dir = dirname(active)
+        our_dir = pkgdir(@__MODULE__)
+        our_dir === nothing && return false
+        return realpath(active_dir) == realpath(our_dir)
+    catch
+        return false
+    end
+end
+
+function __init__()
+    Sys.isapple() && return
+    if get(ENV, "OPENREALITY_SKIP_VULKAN", "0") == "1"
+        return
+    end
+    if Base.find_package("Vulkan") === nothing
+        if _is_openreality_dev_project()
+            @info "OpenReality: Vulkan.jl not installed. Run `Pkg.add(\"Vulkan\")` (it will be picked up via the weak dep + extension on next session)."
+            return
+        end
+        try
+            @info "OpenReality: installing Vulkan.jl (default backend on Linux/Windows)..."
+            Pkg = Base.require(Base.PkgId(
+                Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f"), "Pkg"
+            ))
+            Base.invokelatest(Pkg.add, "Vulkan")
+        catch e
+            @warn "OpenReality: failed to auto-install Vulkan.jl — the OpenGL fallback will be used. " *
+                  "Install manually with `Pkg.add(\"Vulkan\")`, or set `ENV[\"OPENREALITY_SKIP_VULKAN\"]=\"1\"` to silence this." exception=e
+            return
+        end
+    end
+    try
+        Base.require(_VULKAN_PKGID)
+    catch e
+        @warn "OpenReality: loading Vulkan.jl failed — the OpenGL fallback will be used." exception=e
+    end
+end
 
 end  # module OpenReality

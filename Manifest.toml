@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "05920b917316b6a3e2c70813a1374f403333524c"
+project_hash = "7ffcce1d7fb90746c65dc96dd4530a938a936dc5"
 
 [[deps.Accessors]]
 deps = ["CompositionsBase", "ConstructionBase", "Dates", "InverseFunctions", "MacroTools"]
@@ -767,10 +767,14 @@ uuid = "18a262bb-aa17-5467-a713-aee519bc75cb"
 version = "3.4.4+0"
 
 [[deps.OpenReality]]
-deps = ["Ark", "Base64", "ColorTypes", "CompositionsBase", "FileIO", "FreeTypeAbstraction", "GLFW", "GLTF", "GeometryBasics", "ImageIO", "LinearAlgebra", "MeshIO", "ModernGL", "Observables", "OpenAL_jll", "Quaternions", "Serialization", "StaticArrays", "TOML", "Vulkan", "glslang_jll"]
+deps = ["Ark", "Base64", "ColorTypes", "CompositionsBase", "FileIO", "FreeTypeAbstraction", "GLFW", "GLTF", "GeometryBasics", "ImageIO", "LinearAlgebra", "MeshIO", "ModernGL", "Observables", "OpenAL_jll", "Quaternions", "Serialization", "StaticArrays", "TOML", "glslang_jll"]
 path = "."
 uuid = "b08b1914-4d33-46de-8c63-ba029b7f1c5f"
 version = "0.1.0"
+weakdeps = ["Vulkan"]
+
+    [deps.OpenReality.extensions]
+    OpenRealityVulkanExt = "Vulkan"
 
 [[deps.OpenSSL_jll]]
 deps = ["Artifacts", "Libdl"]

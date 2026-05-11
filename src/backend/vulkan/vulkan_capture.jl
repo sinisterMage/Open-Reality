@@ -4,7 +4,7 @@
 # Matrix{RGBA{Float32}} suitable for FileIO.save() and image-diff comparison.
 
 """
-    vk_capture_framebuffer(backend::VulkanBackend; width, height) -> Matrix{RGBA{Float32}}
+    vk_capture_framebuffer(backend::VulkanBackendImpl; width, height) -> Matrix{RGBA{Float32}}
 
 Read back the contents of the most recently presented swapchain image. Returns a
 `(height x width)` matrix of `RGBA{Float32}` pixels in standard image orientation
@@ -18,7 +18,7 @@ the hot rendering path.
 If the swapchain uses a BGRA format (the common case on Linux/Windows) the
 channels are swizzled to RGBA before being returned.
 """
-function vk_capture_framebuffer(backend::VulkanBackend;
+function vk_capture_framebuffer(backend::VulkanBackendImpl;
                                  width::Int=Int(backend.swapchain_extent.width),
                                  height::Int=Int(backend.swapchain_extent.height))
     backend.initialized || error("Vulkan backend not initialized")
@@ -97,11 +97,11 @@ end
 # overload working while letting tests pass an explicit backend instance.
 
 """
-    capture_framebuffer(backend::VulkanBackend, width, height) -> Matrix{RGBA{Float32}}
+    capture_framebuffer(backend::VulkanBackendImpl, width, height) -> Matrix{RGBA{Float32}}
 
 Backend-dispatched form of [`capture_framebuffer`](@ref). Equivalent to
 `vk_capture_framebuffer(backend; width=width, height=height)`.
 """
-function capture_framebuffer(backend::VulkanBackend, width::Int, height::Int)
+function capture_framebuffer(backend::VulkanBackendImpl, width::Int, height::Int)
     return vk_capture_framebuffer(backend; width=width, height=height)
 end

@@ -179,7 +179,7 @@ function get_physical_resource(exec::VulkanGraphExecutor, handle::RGResourceHand
 end
 
 function execute_graph!(exec::VulkanGraphExecutor, graph::RenderGraph,
-                         backend::VulkanBackend, ctx::RGExecuteContext)
+                         backend::VulkanBackendImpl, ctx::RGExecuteContext)
     @assert graph.compiled "Render graph not compiled"
 
     for (order, pi) in enumerate(graph.sorted_passes)

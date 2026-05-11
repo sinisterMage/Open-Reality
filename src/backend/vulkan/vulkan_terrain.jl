@@ -300,7 +300,7 @@ end
 Render all terrain entities into the currently active G-Buffer render pass.
 Called after opaque entities and before cmd_end_render_pass.
 """
-function vk_render_terrain_gbuffer!(cmd::CommandBuffer, backend::VulkanBackend,
+function vk_render_terrain_gbuffer!(cmd::CommandBuffer, backend::VulkanBackendImpl,
                                      frame_idx::Int, vk_proj::Mat4f, view::Mat4f,
                                      cam_pos::Vec3f, width::Int, height::Int)
     renderer = backend.terrain_renderer
@@ -325,7 +325,7 @@ end
 
 Render a single terrain entity: bind pipeline, create descriptor set, draw visible chunks.
 """
-function _vk_render_one_terrain!(cmd::CommandBuffer, backend::VulkanBackend,
+function _vk_render_one_terrain!(cmd::CommandBuffer, backend::VulkanBackendImpl,
                                   renderer::VulkanTerrainRenderer,
                                   entity_id::EntityID, td::TerrainData,
                                   comp::TerrainComponent,
@@ -460,13 +460,13 @@ function reset_vk_streaming_terrain_caches!()
 end
 
 """
-    render_streaming_terrain_gbuffer!(backend::VulkanBackend, entity_id, streaming_sys,
+    render_streaming_terrain_gbuffer!(backend::VulkanBackendImpl, entity_id, streaming_sys,
                                        comp, view, proj, cam_pos, frustum, texture_cache)
 
 Render streaming terrain chunks via Vulkan. Iterates active streaming chunks
 instead of the fixed chunk matrix.
 """
-function render_streaming_terrain_gbuffer!(backend::VulkanBackend, entity_id::EntityID,
+function render_streaming_terrain_gbuffer!(backend::VulkanBackendImpl, entity_id::EntityID,
                                             streaming_sys::ChunkStreamingSystem,
                                             comp::TerrainComponent,
                                             view::Mat4f, proj::Mat4f, cam_pos::Vec3f,
