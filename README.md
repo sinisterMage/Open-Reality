@@ -69,6 +69,8 @@ OpenReality provides AAA-quality rendering with a clean functional API. Define s
 ### Really apperciate your contribution!!!!
 [ameligrana](https://github.com/ameligrana) - first ever contributer to OpenReality 🎉
 
+[Bran](https://github.com/Brandarius) - contributed windows and macOS openAL platform bug fixes 🎉
+
 ---
 
 ## Quick Start
